@@ -20,7 +20,7 @@ func (c *Connector) commandAddProvider() commands.CommandHandler {
 			}
 			loginID := networkid.UserLoginID(ce.Args[0])
 			if ce.Args[0] == "default" {
-				loginID = aiid.DefaultLoginID(ce.User.MXID)
+				loginID = c.defaultLoginID(ce.User.MXID)
 			}
 			provider, err := buildProviderFromCommandArgs(ce.Args[1:])
 			if err != nil {

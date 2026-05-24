@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -27,16 +28,27 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 
 	publisher := &recordingStreamPublisher{}
 	client := &Client{}
-	streamFn := client.streamPublisher(publisher, "!room:example.com", "$event")
+	streamFn := client.streamPublisher(publisher, "!room:example.com", "$event", aistream.RunInfo{
+		MessageID:  "assistant:run",
+		ModelID:    "fake",
+		ProviderID: "beeper",
+		RunID:      "run",
+		ThreadID:   "thread",
+	})
 	result := streamFn(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
 	if result.StopReason != ai.StopReasonStop {
 		t.Fatalf("unexpected stream result %#v", result)
 	}
-	if len(publisher.updates) != 2 {
-		t.Fatalf("expected two text deltas, got %#v", publisher.updates)
+	if len(publisher.updates) != 3 {
+		t.Fatalf("expected two stream updates, got %#v", publisher.updates)
 	}
-	if publisher.updates[0]["op"] != "text_delta" || publisher.updates[0]["delta"] != "hel" {
+	deltas, ok := publisher.updates[0][aistream.LLMStreamDeltasKey].([]map[string]any)
+	if !ok || len(deltas) != 2 {
 		t.Fatalf("unexpected first delta %#v", publisher.updates[0])
+	}
+	part, _ := deltas[1]["part"].(map[string]any)
+	if part["type"] != "TEXT_MESSAGE_CONTENT" || part["delta"] != "hel" {
+		t.Fatalf("unexpected first text part %#v", part)
 	}
 }
 
@@ -49,6 +61,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		"gpt-5",
 		"run",
 		&event.BeeperStreamInfo{Type: "com.beeper.ai.response"},
+		aistream.RunInfo{MessageID: "assistant:run", ModelID: "gpt-5", ProviderID: "beeper", RunID: "run", ThreadID: "thread"},
 	)
 	if metadata.StreamStatus != "streaming" {
 		t.Fatalf("expected streaming metadata, got %#v", metadata)

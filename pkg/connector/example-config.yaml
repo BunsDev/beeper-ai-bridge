@@ -1,6 +1,6 @@
 beeper_env_tld: beeper.com
 default_provider:
-  base_url: https://ai-services.beeper.com/proxy/v1/responses
+  base_url: https://ai-proxy.beeper.com/v1/responses
   models:
   - id: gpt-5
     name: GPT-5
@@ -12,7 +12,7 @@ default_provider:
     contextWindow: 400000
     maxTokens: 128000
 room_state_event_type: com.beeper.ai.room_config
-stream_type: com.beeper.ai.response
+stream_type: com.beeper.llm.deltas
 tools:
     enabled: false
     workspace_roots: []

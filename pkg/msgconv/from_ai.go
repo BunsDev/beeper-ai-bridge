@@ -9,19 +9,23 @@ import (
 )
 
 func AssistantText(message ai.Message) string {
+	var text string
 	switch content := message.Content.(type) {
 	case string:
-		return content
+		text = content
 	case []ai.ContentBlock:
-		return textFromBlocks(content)
+		text = textFromBlocks(content)
 	case []any:
-		return textFromAnyBlocks(content)
+		text = textFromAnyBlocks(content)
 	default:
-		if message.ErrorMessage != "" {
-			return message.ErrorMessage
+		if content != nil {
+			text = fmt.Sprint(content)
 		}
-		return fmt.Sprint(content)
 	}
+	if text == "" && message.ErrorMessage != "" {
+		return message.ErrorMessage
+	}
+	return text
 }
 
 func TextContent(body string) *event.MessageEventContent {

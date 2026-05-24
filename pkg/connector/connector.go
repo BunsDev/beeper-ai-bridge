@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aidb"
@@ -12,6 +13,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/id"
 )
 
 type Connector struct {
@@ -51,7 +53,7 @@ func (c *Connector) Start(ctx context.Context) error {
 	if err := c.Store.Upgrade(ctx); err != nil {
 		return bridgev2.DBUpgradeError{Err: err, Section: "ai"}
 	}
-	return nil
+	return c.ensureDefaultLoginsForExistingUsers(ctx)
 }
 
 func (c *Connector) ValidateConfig() error {
@@ -77,7 +79,7 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 }
 
 func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 1
+	return 1, 2
 }
 
 func (c *Connector) defaultProviderConfig() aiid.ProviderConfig {
@@ -119,8 +121,45 @@ func defaultModelID(models []ai.Model) string {
 	return models[0].ID
 }
 
+func (c *Connector) defaultLoginID(mxid id.UserID) networkid.UserLoginID {
+	if c.Bridge != nil && c.Bridge.Bot != nil {
+		if localpart := c.Bridge.Bot.GetMXID().Localpart(); localpart != "" {
+			return networkid.UserLoginID(strings.TrimSuffix(localpart, "bot"))
+		}
+	}
+	return aiid.DefaultLoginID(mxid)
+}
+
+func (c *Connector) ensureDefaultLoginsForExistingUsers(ctx context.Context) error {
+	rows, err := c.Bridge.DB.User.GetDB().Query(ctx, `SELECT mxid FROM "user" WHERE bridge_id=$1`, c.Bridge.ID)
+	if err != nil {
+		return fmt.Errorf("query existing users: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mxid id.UserID
+		if err = rows.Scan(&mxid); err != nil {
+			return fmt.Errorf("scan existing user: %w", err)
+		}
+		user, err := c.Bridge.GetExistingUserByMXID(ctx, mxid)
+		if err != nil {
+			return fmt.Errorf("load existing user %s: %w", mxid, err)
+		}
+		if user == nil {
+			continue
+		}
+		if _, err = c.EnsureDefaultLogin(ctx, user); err != nil {
+			return fmt.Errorf("ensure default login for %s: %w", mxid, err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("iterate existing users: %w", err)
+	}
+	return nil
+}
+
 func (c *Connector) EnsureDefaultLogin(ctx context.Context, user *bridgev2.User) (*bridgev2.UserLogin, error) {
-	loginID := aiid.DefaultLoginID(user.MXID)
+	loginID := c.defaultLoginID(user.MXID)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
 		return cached, nil
 	}

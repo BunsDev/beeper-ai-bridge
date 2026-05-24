@@ -46,7 +46,7 @@ func (c *Config) ApplyDefaults() {
 		c.BeeperEnvTLD = "beeper.com"
 	}
 	if c.DefaultProvider.BaseURL == "" {
-		c.DefaultProvider.BaseURL = "https://ai-services." + c.BeeperEnvTLD + "/proxy/v1/responses"
+		c.DefaultProvider.BaseURL = "https://ai-proxy." + c.BeeperEnvTLD + "/v1/responses"
 	}
 	if c.RoomStateEventType == "" {
 		c.RoomStateEventType = aiid.RoomConfigType

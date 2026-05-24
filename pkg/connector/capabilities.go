@@ -45,6 +45,12 @@ var roomCaps = &event.RoomFeatures{
 func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 	return &bridgev2.NetworkGeneralCapabilities{
 		Provisioning: bridgev2.ProvisioningCapabilities{
+			ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
+				CreateDM:       true,
+				LookupUsername: true,
+				ContactList:    true,
+				Search:         true,
+			},
 			GroupCreation: map[string]bridgev2.GroupTypeCapabilities{
 				"ai": {
 					TypeDescription: "AI session",

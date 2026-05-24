@@ -15,7 +15,7 @@ const (
 	DefaultLoginName = "beeper"
 	DefaultProvider  = "beeper"
 	RoomConfigType   = "com.beeper.ai.room_config"
-	StreamType       = "com.beeper.ai.response"
+	StreamType       = "com.beeper.llm.deltas"
 )
 
 func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {
@@ -34,8 +34,16 @@ func PortalKey(roomID id.RoomID, loginID networkid.UserLoginID) networkid.Portal
 	return networkid.PortalKey{ID: PortalID(roomID), Receiver: loginID}
 }
 
+func ModelPortalID(providerID string, modelID string) networkid.PortalID {
+	return networkid.PortalID("model:" + encode(providerID) + ":" + encode(modelID))
+}
+
+func ModelPortalKey(providerID string, modelID string, loginID networkid.UserLoginID) networkid.PortalKey {
+	return networkid.PortalKey{ID: ModelPortalID(providerID, modelID), Receiver: loginID}
+}
+
 func AssistantUserID(providerID string, modelID string) networkid.UserID {
-	return networkid.UserID("assistant:" + sanitizeID(providerID) + ":" + sanitizeID(modelID))
+	return networkid.UserID("assistant:" + encode(providerID) + ":" + encode(modelID))
 }
 
 func ParseAssistantUserID(userID networkid.UserID) (providerID string, modelID string, ok bool) {
@@ -47,7 +55,15 @@ func ParseAssistantUserID(userID networkid.UserID) (providerID string, modelID s
 	if !ok || providerID == "" || modelID == "" {
 		return "", "", false
 	}
-	return providerID, modelID, true
+	decodedProvider, err := decode(providerID)
+	if err != nil {
+		return "", "", false
+	}
+	decodedModel, err := decode(modelID)
+	if err != nil {
+		return "", "", false
+	}
+	return decodedProvider, decodedModel, true
 }
 
 func UserMessageID(entryID string) networkid.MessageID {
@@ -94,6 +110,14 @@ func ParseMediaID(mediaID networkid.MediaID) (MediaMetadata, error) {
 
 func encode(value string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func decode(value string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func sanitizeID(value string) string {

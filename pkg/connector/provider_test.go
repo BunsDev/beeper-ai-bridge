@@ -71,9 +71,17 @@ func TestConfigDefaults(t *testing.T) {
 }
 
 func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
-	caps := (&Connector{}).GetCapabilities()
+	conn := &Connector{}
+	caps := conn.GetCapabilities()
 	if _, ok := caps.Provisioning.GroupCreation["ai"]; !ok {
 		t.Fatalf("expected AI group creation capability, got %#v", caps.Provisioning.GroupCreation)
+	}
+	if !caps.Provisioning.ResolveIdentifier.ContactList || !caps.Provisioning.ResolveIdentifier.Search || !caps.Provisioning.ResolveIdentifier.CreateDM {
+		t.Fatalf("expected contact list/search/create DM capabilities, got %#v", caps.Provisioning.ResolveIdentifier)
+	}
+	_, capVersion := conn.GetBridgeInfoVersion()
+	if capVersion < 2 {
+		t.Fatalf("capability version must bump when provisioning capabilities change, got %d", capVersion)
 	}
 }
 

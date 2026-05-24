@@ -21,7 +21,7 @@ func TestPortalAndAssistantIDsAreStable(t *testing.T) {
 	if portalKey.Receiver != loginID {
 		t.Fatalf("expected receiver %q, got %q", loginID, portalKey.Receiver)
 	}
-	if got := AssistantUserID("beeper/openai", "gpt-5:latest"); got != "assistant:beeper_openai:gpt-5_latest" {
+	if got := AssistantUserID("beeper/openai", "gpt-5:latest"); got != "assistant:YmVlcGVyL29wZW5haQ:Z3B0LTU6bGF0ZXN0" {
 		t.Fatalf("unexpected assistant ID %q", got)
 	}
 	providerID, modelID, ok := ParseAssistantUserID(AssistantUserID("beeper", "gpt-5"))
