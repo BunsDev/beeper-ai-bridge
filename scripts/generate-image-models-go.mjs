@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const sourcePath = process.argv[2] ?? '../pi/packages/ai/src/image-models.generated.ts';
-const outputPath = process.argv[3] ?? 'packages/ai/src/image_models_generated.go';
+const outputPath = process.argv[3] ?? 'pkg/ai/image_models_generated.go';
 const input = fs.readFileSync(sourcePath, 'utf8');
 let code = input
   .replace(/^\s*\/\/.*$/gm, '')
