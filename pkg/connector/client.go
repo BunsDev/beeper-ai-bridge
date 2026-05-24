@@ -10,12 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	"github.com/beeper/ai-bridge/pkg/agent/sessiontitle"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	aibridgev2 "github.com/beeper/ai-bridge/pkg/ai-stream/bridgev2"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
 	"maunium.net/go/mautrix/bridgev2"
@@ -165,15 +167,8 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	streamPublisher := cl.Main.Bridge.GetBeeperStreamPublisher()
 	runID := session.CreateSessionID()
 	assistantMessageID := aiid.AssistantMessageID(runID)
-	runInfo := aistream.RunInfo{
-		AgentDisplayName: provider.DisplayName,
-		AgentID:          string(aiid.AssistantUserID(provider.ID, model.ID)),
-		MessageID:        string(assistantMessageID),
-		ModelID:          model.ID,
-		ProviderID:       provider.ID,
-		RunID:            runID,
-		ThreadID:         portalMeta.SessionID,
-	}
+	run := aistream.NewRun(runID, portalMeta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID(provider.ID, model.ID)), provider.DisplayName, time.Now())
+	run.MessageID = string(assistantMessageID)
 	assistantEventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(
 		msg.Portal.MXID,
 		msg.Portal.PortalKey,
@@ -184,14 +179,14 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if err != nil {
 		return nil, err
 	}
-	assistantEvent, assistantMetadata := cl.assistantEvent(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, descriptor, runInfo)
+	assistantEvent, assistantMetadata := cl.assistantEvent(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, descriptor, *run)
 	cl.UserLogin.QueueRemoteEvent(assistantEvent)
 	if err := streamPublisher.Register(ctx, msg.Portal.MXID, assistantEventID, descriptor); err != nil {
 		return nil, err
 	}
 	defer streamPublisher.Unregister(msg.Portal.MXID, assistantEventID)
 
-	streamFn := cl.streamPublisher(streamPublisher, msg.Portal.MXID, assistantEventID, runInfo)
+	streamFn := cl.streamPublisher(streamPublisher, msg.Portal.MXID, assistantEventID, run)
 	options := harness.AgentHarnessOptions{
 		Session:             agentSession,
 		Model:               model,
@@ -229,7 +224,7 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	}
 	fillAssistantMetadata(assistantMetadata, promptResult.AssistantEntryID, provider.ID, model.ID, runID, assistantMessage)
 	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), msg.Portal.PortalKey, assistantMessageID, assistantMetadata)
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, runInfo, assistantMessage, assistantMetadata))
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, *run, assistantMessage, assistantMetadata))
 	cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
 	cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, assistantEventID, agentHarness, agentSession, model, assistantMessage)
 	portalMeta.LastRunID = runID
@@ -418,9 +413,7 @@ func (cl *Client) ensureUsablePortal(portal *bridgev2.Portal) error {
 	return nil
 }
 
-func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, descriptor *event.BeeperStreamInfo, runInfo aistream.RunInfo) (*simplevent.PreConvertedMessage, *aiid.MessageMetadata) {
-	content := msgconv.TextContent("...")
-	content.BeeperStream = descriptor
+func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, descriptor *event.BeeperStreamInfo, run aistream.Run) (*simplevent.PreConvertedMessage, *aiid.MessageMetadata) {
 	metadata := &aiid.MessageMetadata{
 		Role:         "assistant",
 		ProviderID:   providerID,
@@ -428,28 +421,136 @@ func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networ
 		RunID:        runID,
 		StreamStatus: "streaming",
 	}
-	return &simplevent.PreConvertedMessage{
-		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventMessage,
-			PortalKey: portalKey,
-			Sender: bridgev2.EventSender{
-				Sender: aiid.AssistantUserID(providerID, modelID),
-			},
-			Timestamp: time.Now(),
-		},
-		ID: messageID,
-		Data: &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
-			ID:         aiid.PartID("text"),
-			Type:       event.EventMessage,
-			Content:    content,
-			Extra:      aistream.InitialMessageExtra(runInfo),
-			DBMetadata: metadata,
-		}}},
-	}, metadata
+	msg := aibridgev2.Anchor(portalKey, aiid.AssistantUserID(providerID, modelID), run, time.Now())
+	if len(msg.Data.Parts) > 0 {
+		msg.Data.Parts[0].ID = aiid.PartID("text")
+		msg.Data.Parts[0].Content.BeeperStream = descriptor
+		msg.Data.Parts[0].DBMetadata = metadata
+	}
+	return msg, metadata
 }
 
-func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, runInfo aistream.RunInfo, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*bridgev2.ConvertedEdit] {
-	content, extra, topLevelExtra := aistream.FinalMessageContent(runInfo, message)
+func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
+	if message.StopReason == ai.StopReasonError {
+		run.Status = aistream.Status{State: "error", FinishReason: string(message.StopReason), Error: map[string]any{"message": message.ErrorMessage}}
+	} else if run.Status.State == "streaming" {
+		run.Status = aistream.Status{State: "complete", FinishReason: string(message.StopReason)}
+	}
+	run.Usage = aguiUsage(message.Usage)
+	if run.Preview.Text == "" {
+		run.Preview = aistream.PreviewFromText(msgconv.AssistantText(message), aistream.PreviewBudgetBytes)
+	}
+	edit := aibridgev2.FinalMetadataEdit(portalKey, aiid.AssistantUserID(providerID, modelID), messageID, run, time.Now())
+	originalConvert := edit.ConvertEditFunc
+	edit.ConvertEditFunc = func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *aistream.Run) (*bridgev2.ConvertedEdit, error) {
+		converted, err := originalConvert(ctx, portal, intent, existing, data)
+		if err != nil || converted == nil {
+			return converted, err
+		}
+		if len(existing) > 0 {
+			existing[0].Metadata = metadata
+		}
+		return converted, nil
+	}
+	return edit
+}
+
+func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run) agent.StreamFn {
+	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		upstream := ai.StreamSimple(ctx, model, llmContext, options)
+		downstream := ai.NewAssistantMessageEventStream()
+		writer := aistream.NewWriter(run, time.Now)
+		writer.Start()
+		published := 0
+		nextSeq := 1
+		publishNew := func() error {
+			if published >= len(run.Events) {
+				return nil
+			}
+			partial := *run
+			partial.Events = append([]agui.Event(nil), run.Events[published:]...)
+			carriers, err := aistream.PackRunFromSeq(partial, string(eventID), aistream.CarrierBudgetBytes, nextSeq)
+			if err != nil {
+				return err
+			}
+			for _, carrier := range carriers {
+				if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(carrier.Envelopes)); err != nil {
+					return err
+				}
+			}
+			nextSeq = aistream.NextSeq(carriers)
+			published = len(run.Events)
+			return nil
+		}
+		_ = publishNew()
+		go func() {
+			defer downstream.End()
+			for evt := range upstream.Events() {
+				applyAIStreamEvent(writer, evt)
+				if err := publishNew(); err != nil {
+					downstream.Push(ai.AssistantMessageEvent{
+						Type: "error",
+						Error: &ai.Message{
+							Role:         "assistant",
+							ErrorMessage: err.Error(),
+							StopReason:   ai.StopReasonError,
+						},
+					})
+					return
+				}
+				downstream.Push(evt)
+			}
+		}()
+		return downstream
+	}
+}
+
+func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
+	switch evt.Type {
+	case "text_delta":
+		writer.Text(evt.Delta)
+	case "thinking_delta":
+		writer.Thinking(evt.Delta)
+	case "toolcall_start":
+		if evt.ToolCall != nil {
+			writer.ToolStart(evt.ToolCall.ID, evt.ToolCall.Name, evt.ContentIndex, nil)
+		}
+	case "toolcall_delta":
+		if evt.ToolCall != nil {
+			writer.ToolArgs(evt.ToolCall.ID, evt.Delta, evt.ToolCall.Arguments)
+		}
+	case "toolcall_end":
+		if evt.ToolCall != nil {
+			writer.ToolEnd(evt.ToolCall.ID, evt.ToolCall.Name, evt.ToolCall.Arguments, nil)
+		}
+	case "done":
+		writer.Finish(string(evt.Reason))
+		if evt.Message != nil {
+			writer.Run.Usage = aguiUsage(evt.Message.Usage)
+		}
+	case "error":
+		message := "stream error"
+		if evt.Error != nil && evt.Error.ErrorMessage != "" {
+			message = evt.Error.ErrorMessage
+		}
+		writer.Error(message)
+	}
+}
+
+func aguiUsage(usage ai.Usage) agui.Usage {
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.Input + usage.Output
+	}
+	return agui.Usage{
+		PromptTokens:     usage.Input,
+		CompletionTokens: usage.Output,
+		TotalTokens:      total,
+	}
+}
+
+func (cl *Client) oldAssistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*bridgev2.ConvertedEdit] {
+	content := msgconv.TextContent(msgconv.AssistantText(message))
 	return &simplevent.Message[*bridgev2.ConvertedEdit]{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventEdit,
@@ -464,8 +565,7 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 		Data: &bridgev2.ConvertedEdit{ModifiedParts: []*bridgev2.ConvertedEditPart{{
 			Type:          event.EventMessage,
 			Content:       content,
-			Extra:         extra,
-			TopLevelExtra: topLevelExtra,
+			TopLevelExtra: map[string]any{"com.beeper.dont_render_edited": true},
 		}}},
 		ConvertEditFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *bridgev2.ConvertedEdit) (*bridgev2.ConvertedEdit, error) {
 			if len(existing) == 0 {
@@ -475,34 +575,6 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 			data.ModifiedParts[0].Part = existing[0]
 			return data, nil
 		},
-	}
-}
-
-func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, runInfo aistream.RunInfo) agent.StreamFn {
-	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
-		upstream := ai.StreamSimple(ctx, model, llmContext, options)
-		downstream := ai.NewAssistantMessageEventStream()
-		mapper := aistream.NewStreamMapper(runInfo)
-		go func() {
-			defer downstream.End()
-			for evt := range upstream.Events() {
-				if content := mapper.CarrierContent(evt, string(eventID)); content != nil {
-					if err := publisher.Publish(ctx, roomID, eventID, content); err != nil {
-						downstream.Push(ai.AssistantMessageEvent{
-							Type: "error",
-							Error: &ai.Message{
-								Role:         "assistant",
-								ErrorMessage: err.Error(),
-								StopReason:   ai.StopReasonError,
-							},
-						})
-						return
-					}
-				}
-				downstream.Push(evt)
-			}
-		}()
-		return downstream
 	}
 }
 

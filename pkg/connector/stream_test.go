@@ -3,7 +3,9 @@ package connector
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -28,32 +30,30 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 
 	publisher := &recordingStreamPublisher{}
 	client := &Client{}
-	streamFn := client.streamPublisher(publisher, "!room:example.com", "$event", aistream.RunInfo{
-		MessageID:  "assistant:run",
-		ModelID:    "fake",
-		ProviderID: "beeper",
-		RunID:      "run",
-		ThreadID:   "thread",
-	})
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	streamFn := client.streamPublisher(publisher, "!room:example.com", "$event", run)
 	result := streamFn(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
 	if result.StopReason != ai.StopReasonStop {
 		t.Fatalf("unexpected stream result %#v", result)
 	}
-	if len(publisher.updates) != 3 {
-		t.Fatalf("expected two stream updates, got %#v", publisher.updates)
+	if len(publisher.updates) != 4 {
+		t.Fatalf("expected stream updates, got %#v", publisher.updates)
 	}
-	deltas, ok := publisher.updates[0][aistream.LLMStreamDeltasKey].([]map[string]any)
-	if !ok || len(deltas) != 2 {
-		t.Fatalf("unexpected first delta %#v", publisher.updates[0])
+	deltas, ok := publisher.updates[1][aistream.BeeperAIStreamDeltas].([]aistream.Envelope)
+	if !ok || len(deltas) != 1 {
+		t.Fatalf("unexpected first delta %#v", publisher.updates[1])
 	}
-	part, _ := deltas[1]["part"].(map[string]any)
-	if part["type"] != "TEXT_MESSAGE_CONTENT" || part["delta"] != "hel" {
+	part := deltas[0].Part
+	if part["type"] != agui.EventTextMessageContent || part["delta"] != "hel" {
 		t.Fatalf("unexpected first text part %#v", part)
 	}
 }
 
 func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
+	run.MessageID = "assistant:run"
 	assistantEvent, metadata := client.assistantEvent(
 		aiid.PortalKey(id.RoomID("!room:example.com"), "login"),
 		"assistant:run",
@@ -61,7 +61,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		"gpt-5",
 		"run",
 		&event.BeeperStreamInfo{Type: "com.beeper.ai.response"},
-		aistream.RunInfo{MessageID: "assistant:run", ModelID: "gpt-5", ProviderID: "beeper", RunID: "run", ThreadID: "thread"},
+		*run,
 	)
 	if metadata.StreamStatus != "streaming" {
 		t.Fatalf("expected streaming metadata, got %#v", metadata)
@@ -99,4 +99,8 @@ func (p *recordingStreamPublisher) Publish(ctx context.Context, roomID id.RoomID
 }
 
 func (p *recordingStreamPublisher) Unregister(roomID id.RoomID, eventID id.EventID) {
+}
+
+func timeNow() time.Time {
+	return time.Unix(1, 0)
 }
