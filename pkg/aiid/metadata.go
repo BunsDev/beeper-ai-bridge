@@ -33,6 +33,7 @@ type PortalMetadata struct {
 	ThinkingLevel      string `json:"thinking_level,omitempty"`
 	ToolsEnabled       bool   `json:"tools_enabled,omitempty"`
 	Cwd                string `json:"cwd,omitempty"`
+	SessionTitle       string `json:"session_title,omitempty"`
 	LastRunID          string `json:"last_run_id,omitempty"`
 	RoomStateEventID   string `json:"room_state_event_id,omitempty"`
 }

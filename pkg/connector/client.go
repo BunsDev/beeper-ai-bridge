@@ -13,6 +13,7 @@ import (
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	"github.com/beeper/ai-bridge/pkg/agent/sessiontitle"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
@@ -64,6 +65,9 @@ func (cl *Client) IsThisUser(ctx context.Context, userID networkid.UserID) bool 
 
 func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	name := "AI"
+	if meta := portalMetadata(portal); meta.SessionTitle != "" {
+		name = meta.SessionTitle
+	}
 	return &bridgev2.ChatInfo{Name: &name}, nil
 }
 
@@ -235,6 +239,8 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	})
 	fillAssistantMetadata(assistantMetadata, promptResult.AssistantEntryID, provider.ID, model.ID, runID, assistantMessage)
 	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), msg.Portal.PortalKey, assistantMessageID, assistantMetadata)
+	cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
+	cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, assistantEventID, agentHarness, agentSession, model, assistantMessage)
 	portalMeta.LastRunID = runID
 	_ = msg.Portal.Save(ctx)
 	return &bridgev2.MatrixMessageResponse{
@@ -254,6 +260,40 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 			},
 		},
 	}, nil
+}
+
+func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, agentSession *session.Session, provider aiid.ProviderConfig, model ai.Model) {
+	if meta.SessionTitle != "" {
+		return
+	}
+	existingName, err := agentSession.GetSessionName(ctx)
+	if err != nil || existingName != nil {
+		if existingName != nil {
+			meta.SessionTitle = *existingName
+		}
+		return
+	}
+	contextView, err := agentSession.BuildContext(ctx)
+	if err != nil || len(contextView.Messages) < 2 {
+		return
+	}
+	auth, err := cl.authForProvider(provider)(ctx, model)
+	if err != nil {
+		return
+	}
+	title, err := sessiontitle.Generate(ctx, contextView.Messages, sessiontitle.Options{
+		Model:   model,
+		APIKey:  auth.APIKey,
+		Headers: auth.Headers,
+	})
+	if err != nil || title == "" {
+		return
+	}
+	if _, err = agentSession.AppendSessionName(ctx, title); err != nil {
+		return
+	}
+	meta.SessionTitle = title
+	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &title}, cl.UserLogin, nil, time.Now())
 }
 
 func fillAssistantMetadata(metadata *aiid.MessageMetadata, entryID string, providerID string, modelID string, runID string, assistantMessage ai.Message) {

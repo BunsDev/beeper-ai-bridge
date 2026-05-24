@@ -9,6 +9,7 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 )
@@ -38,6 +39,9 @@ func (c *Connector) Init(bridge *bridgev2.Bridge) {
 	c.Config.ApplyDefaults()
 	c.Bridge = bridge
 	c.Store = aidb.NewStore(bridge.DB.Database, dbutil.ZeroLogger(bridge.Log.With().Str("db_section", "ai").Logger()))
+	if processor, ok := bridge.Commands.(*commands.Processor); ok {
+		processor.AddHandler(c.commandAddProvider())
+	}
 }
 
 func (c *Connector) Start(ctx context.Context) error {

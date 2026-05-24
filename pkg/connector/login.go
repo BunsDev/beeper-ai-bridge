@@ -106,18 +106,7 @@ func (l *CustomProviderLogin) SubmitUserInput(ctx context.Context, input map[str
 	if baseURL == "" || apiKey == "" || modelID == "" {
 		return nil, fmt.Errorf("base_url, api_key and default_model are required")
 	}
-	models := providerModels(strings.TrimSpace(input["models"]), modelID, providerID, baseURL)
-	provider := aiid.ProviderConfig{
-		ID:           providerID,
-		DisplayName:  displayName,
-		API:          ai.ApiOpenAIResponses,
-		Provider:     ai.Provider(providerID),
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		DefaultModel: modelID,
-		Models:       models,
-		Enabled:      true,
-	}
+	provider := customProviderConfig(providerID, displayName, baseURL, apiKey, modelID, strings.TrimSpace(input["models"]))
 	meta := &aiid.UserLoginMetadata{
 		Providers:         map[string]aiid.ProviderConfig{providerID: provider},
 		DefaultProviderID: providerID,
@@ -143,6 +132,20 @@ func (l *CustomProviderLogin) SubmitUserInput(ctx context.Context, input map[str
 }
 
 func (l *CustomProviderLogin) Cancel() {}
+
+func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {
+	return aiid.ProviderConfig{
+		ID:           providerID,
+		DisplayName:  displayName,
+		API:          ai.ApiOpenAIResponses,
+		Provider:     ai.Provider(providerID),
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		DefaultModel: defaultModel,
+		Models:       providerModels(modelList, defaultModel, providerID, baseURL),
+		Enabled:      true,
+	}
+}
 
 func providerModels(modelList string, defaultModel string, providerID string, baseURL string) []ai.Model {
 	seen := map[string]bool{}

@@ -87,6 +87,22 @@ func TestProviderModelsParsesOptionalModelList(t *testing.T) {
 	}
 }
 
+func TestBuildProviderFromCommandArgs(t *testing.T) {
+	provider, err := buildProviderFromCommandArgs([]string{"local", "https://example.test/v1/responses", "key", "model-a", "model-b", "model-c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.ID != "local" || provider.APIKey != "key" || provider.DefaultModel != "model-a" {
+		t.Fatalf("unexpected provider %#v", provider)
+	}
+	if provider.BaseURL != "https://example.test/v1" {
+		t.Fatalf("unexpected base URL %q", provider.BaseURL)
+	}
+	if len(provider.Models) != 3 || provider.Models[1].ID != "model-b" || provider.Models[2].ID != "model-c" {
+		t.Fatalf("unexpected models %#v", provider.Models)
+	}
+}
+
 func TestResolveProviderValidatesExplicitModelList(t *testing.T) {
 	conn := &Connector{}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
