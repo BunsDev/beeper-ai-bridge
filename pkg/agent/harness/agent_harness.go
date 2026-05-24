@@ -102,6 +102,7 @@ type AgentHarness struct {
 	activeRunID           int
 	cancelRun             context.CancelFunc
 	runDone               chan struct{}
+	promptEntryIDs        []PromptEntryID
 }
 
 type AgentHarnessSystemPromptContext struct {
@@ -192,6 +193,18 @@ type BranchSummaryResult struct {
 type AbortResult struct {
 	ClearedSteer    []agent.AgentMessage
 	ClearedFollowUp []agent.AgentMessage
+}
+
+type PromptResult struct {
+	Message          agent.AgentMessage
+	UserEntryID      string
+	AssistantEntryID string
+	EntryIDs         []PromptEntryID
+}
+
+type PromptEntryID struct {
+	ID   string
+	Role string
 }
 
 type BeforeAgentStartResult struct {
@@ -304,29 +317,36 @@ func NewAgentHarness(options AgentHarnessOptions) (*AgentHarness, error) {
 }
 
 func (h *AgentHarness) Prompt(ctx context.Context, text string, images ...ai.ContentBlock) (agent.AgentMessage, error) {
+	result, err := h.PromptWithResult(ctx, text, images...)
+	return result.Message, err
+}
+
+func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, images ...ai.ContentBlock) (PromptResult, error) {
 	if h.phase != "idle" {
-		return agent.AgentMessage{}, errors.New("AgentHarness is busy")
+		return PromptResult{}, errors.New("AgentHarness is busy")
 	}
 	h.phase = "turn"
+	h.promptEntryIDs = nil
 	runCtx, finish := h.startRun(ctx)
 	defer func() {
 		h.phase = "idle"
+		h.promptEntryIDs = nil
 		finish()
 	}()
 	turnContext, err := h.createContext(runCtx)
 	if err != nil {
-		return agent.AgentMessage{}, err
+		return PromptResult{}, err
 	}
 	messages := []agent.AgentMessage{createUserMessage(text, images)}
 	if len(h.nextTurnQueue) > 0 {
 		messages = append(append([]agent.AgentMessage{}, h.nextTurnQueue...), messages...)
 		h.nextTurnQueue = nil
 		if err := h.emit(runCtx, AgentHarnessEvent{Type: "queue_update", Steer: h.steerQueue, FollowUp: h.followUpQueue, NextTurn: h.nextTurnQueue}); err != nil {
-			return agent.AgentMessage{}, err
+			return PromptResult{}, err
 		}
 	}
 	if before, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "before_agent_start", Prompt: text, Images: images, SystemPrompt: turnContext.SystemPrompt, Resources: h.GetResources()}); err != nil {
-		return agent.AgentMessage{}, err
+		return PromptResult{}, err
 	} else if result, ok := before.(BeforeAgentStartResult); ok {
 		if len(result.Messages) > 0 {
 			messages = append(messages, result.Messages...)
@@ -338,19 +358,29 @@ func (h *AgentHarness) Prompt(ctx context.Context, text string, images ...ai.Con
 	newMessages, err := agent.RunAgentLoop(runCtx, messages, turnContext, h.loopConfig(runCtx), h.handleAgentEvent, h.createStreamFn())
 	if err != nil {
 		if flushErr := h.flushPendingSessionWrites(runCtx); flushErr != nil {
-			return agent.AgentMessage{}, flushErr
+			return PromptResult{}, flushErr
 		}
-		return agent.AgentMessage{}, err
+		return PromptResult{}, err
 	}
 	if err := h.flushPendingSessionWrites(runCtx); err != nil {
-		return agent.AgentMessage{}, err
+		return PromptResult{}, err
+	}
+	result := PromptResult{EntryIDs: append([]PromptEntryID{}, h.promptEntryIDs...)}
+	for _, entry := range result.EntryIDs {
+		switch entry.Role {
+		case "user":
+			result.UserEntryID = entry.ID
+		case "assistant":
+			result.AssistantEntryID = entry.ID
+		}
 	}
 	for i := len(newMessages) - 1; i >= 0; i-- {
 		if newMessages[i].Role == "assistant" {
-			return newMessages[i], nil
+			result.Message = newMessages[i]
+			return result, nil
 		}
 	}
-	return agent.AgentMessage{}, errors.New("AgentHarness prompt completed without an assistant message")
+	return PromptResult{}, errors.New("AgentHarness prompt completed without an assistant message")
 }
 
 func (h *AgentHarness) AppendMessage(ctx context.Context, message agent.AgentMessage) error {
@@ -905,9 +935,11 @@ func (h *AgentHarness) afterToolCallHook(ctx context.Context, callContext agent.
 
 func (h *AgentHarness) handleAgentEvent(ctx context.Context, event agent.AgentEvent) error {
 	if event.Type == "message_end" && event.Message != nil {
-		if _, err := h.session.AppendMessage(ctx, *event.Message); err != nil {
+		entryID, err := h.session.AppendMessage(ctx, *event.Message)
+		if err != nil {
 			return err
 		}
+		h.promptEntryIDs = append(h.promptEntryIDs, PromptEntryID{ID: entryID, Role: event.Message.Role})
 	}
 	if event.Type == "turn_end" {
 		var eventErr error

@@ -52,12 +52,19 @@ func TestAgentHarnessPromptPersistsMessagesToSQLiteSession(t *testing.T) {
 		seen = append(seen, event.Type)
 		return nil
 	})
-	message, err := harness.Prompt(ctx, "hello")
+	result, err := harness.PromptWithResult(ctx, "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
+	message := result.Message
 	if message.Role != "assistant" {
 		t.Fatalf("expected assistant, got %#v", message)
+	}
+	if result.UserEntryID == "" || result.AssistantEntryID == "" {
+		t.Fatalf("expected prompt result entry IDs, got %#v", result)
+	}
+	if len(result.EntryIDs) != 2 || result.EntryIDs[0].Role != "user" || result.EntryIDs[1].Role != "assistant" {
+		t.Fatalf("unexpected prompt entry IDs %#v", result.EntryIDs)
 	}
 	entries, err := storage.GetEntries(ctx)
 	if err != nil {
