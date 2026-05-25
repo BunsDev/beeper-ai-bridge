@@ -4,8 +4,8 @@ import "testing"
 
 func TestModelRegistryGeneratedSurface(t *testing.T) {
 	providers := GetProviders()
-	if len(providers) == 0 || providers[0] != ProviderCerebras {
-		t.Fatalf("expected generated provider order, got %#v", providers[:min(len(providers), 3)])
+	if len(providers) != 2 || providers[0] != ProviderOpenAI || providers[1] != ProviderOpenRouter {
+		t.Fatalf("expected generated provider order, got %#v", providers)
 	}
 	models := GetModels(ProviderOpenAI)
 	if len(models) == 0 {
