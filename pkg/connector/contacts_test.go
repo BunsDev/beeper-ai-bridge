@@ -59,3 +59,91 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 		t.Fatalf("expected one result, got %#v", results)
 	}
 }
+
+func TestContactListIncludesEnabledConfiguredProviders(t *testing.T) {
+	conn := &Connector{Config: Config{
+		DefaultProvider: DefaultProviderConfig{
+			BaseURL:       "https://ai-proxy.beeper.com/v1/responses",
+			Provider:      ai.ProviderOpenAI,
+			API:           ai.ApiOpenAIResponses,
+			DefaultModel:  "gpt-5.5",
+			AllowedModels: []string{"gpt-5.5"},
+		},
+		Providers: map[string]aiid.ProviderConfig{
+			"openai": {
+				ID:            "openai",
+				DisplayName:   "OpenAI",
+				Provider:      ai.ProviderOpenAI,
+				API:           ai.ApiOpenAIResponses,
+				BaseURL:       "https://api.openai.com/v1",
+				DefaultModel:  "gpt-5.5",
+				AllowedModels: []string{"gpt-5.5"},
+				Enabled:       true,
+			},
+			"openrouter": {
+				ID:            "openrouter",
+				DisplayName:   "OpenRouter",
+				Provider:      ai.ProviderOpenRouter,
+				API:           ai.ApiOpenAICompletions,
+				BaseURL:       "https://openrouter.ai/api/v1",
+				DefaultModel:  "anthropic/claude-sonnet-4.5",
+				AllowedModels: []string{"anthropic/claude-sonnet-4.5"},
+				Enabled:       true,
+			},
+			"disabled": {
+				ID:            "disabled",
+				DisplayName:   "Disabled",
+				Provider:      ai.ProviderOpenAI,
+				API:           ai.ApiOpenAIResponses,
+				DefaultModel:  "gpt-5",
+				AllowedModels: []string{"gpt-5"},
+				Enabled:       false,
+			},
+		},
+	}}
+	client := &Client{
+		Main: conn,
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			ID: "login",
+			Metadata: &aiid.UserLoginMetadata{
+				SyntheticDefault: true,
+				Providers: map[string]aiid.ProviderConfig{
+					"custom": {
+						ID:            "custom",
+						DisplayName:   "Custom",
+						Provider:      "custom",
+						API:           ai.ApiOpenAIResponses,
+						BaseURL:       "https://custom.test/v1",
+						DefaultModel:  "custom-model",
+						AllowedModels: []string{"custom-model"},
+						Enabled:       true,
+					},
+				},
+			},
+		}},
+	}
+
+	contacts, err := client.GetContactList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, contact := range contacts {
+		for _, identifier := range contact.UserInfo.Identifiers {
+			got[identifier] = true
+		}
+	}
+	for _, want := range []string{
+		"beeper/gpt-5.5",
+		"openai/gpt-5.5",
+		"openrouter/anthropic/claude-sonnet-4.5",
+		"custom/custom-model",
+	} {
+		if !got[want] {
+			t.Fatalf("expected contact %s in %#v", want, got)
+		}
+	}
+	if got["disabled/gpt-5"] {
+		t.Fatalf("disabled provider leaked into contact list: %#v", got)
+	}
+}
