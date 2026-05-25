@@ -48,6 +48,7 @@ type PortalMetadata struct {
 	SessionTitle       string   `json:"session_title,omitempty"`
 	LastRunID          string   `json:"last_run_id,omitempty"`
 	RoomStateEventID   string   `json:"room_state_event_id,omitempty"`
+	RoomPromptEventID  string   `json:"room_prompt_event_id,omitempty"`
 }
 
 type GhostMetadata struct {

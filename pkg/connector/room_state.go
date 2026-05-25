@@ -22,6 +22,12 @@ type RoomConfig struct {
 	AdditionalPrompt string
 	ThinkingLevel    string
 	DisabledTools    []string
+
+	modelStatePresent  bool
+	modelStateModel    string
+	modelStateReason   string
+	modelStateEventID  string
+	promptStateEventID string
 }
 
 func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID, portalMeta *aiid.PortalMetadata) (RoomConfig, string, error) {
@@ -41,13 +47,21 @@ func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID, portal
 	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomModelType); err != nil {
 		return RoomConfig{}, "", err
 	} else if raw != nil {
+		config.modelStatePresent = true
+		config.modelStateModel = firstString(raw, "model")
+		config.modelStateReason = firstString(raw, "reasoning")
+		config.modelStateEventID = eventID
 		applyRoomModelConfig(&config, raw)
+		if _, ok := raw["reasoning"]; !ok {
+			config.ThinkingLevel = ""
+		}
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
 	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomPromptType); err != nil {
 		return RoomConfig{}, "", err
 	} else if raw != nil {
 		config.AdditionalPrompt = firstString(raw, "prompt")
+		config.promptStateEventID = eventID
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
 	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomToolsType); err != nil {

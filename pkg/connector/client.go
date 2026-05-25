@@ -158,10 +158,18 @@ func (cl *Client) handleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixM
 	if err := cl.ensureUsablePortal(msg.Portal); err != nil {
 		return nil, err
 	}
+	if resp, handled, err := cl.handleAISlashCommand(ctx, msg); handled {
+		return resp, err
+	}
 	portalMeta := portalMetadata(msg.Portal)
 	roomConfig, roomStateEventID, err := cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID, portalMeta)
 	if err != nil {
 		return nil, err
+	}
+	var resp *bridgev2.MatrixMessageResponse
+	var handled bool
+	if roomConfig, resp, handled, err = cl.normalizeRoomStateForPrompt(ctx, msg, roomConfig, roomStateEventID); handled || err != nil {
+		return resp, err
 	}
 	return cl.handleMatrixMessageWithConfig(ctx, msg, roomConfig, roomStateEventID)
 }
@@ -1009,7 +1017,14 @@ func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal,
 	meta.AdditionalPrompt = roomConfig.AdditionalPrompt
 	meta.ThinkingLevel = cl.reasoningLevel(roomConfig)
 	meta.DisabledTools = roomConfig.DisabledTools
-	meta.RoomStateEventID = stateEventID
+	if roomConfig.modelStateEventID != "" {
+		meta.RoomStateEventID = roomConfig.modelStateEventID
+	} else {
+		meta.RoomStateEventID = stateEventID
+	}
+	if roomConfig.promptStateEventID != "" {
+		meta.RoomPromptEventID = roomConfig.promptStateEventID
+	}
 	if meta.SessionID != "" {
 		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
 			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
