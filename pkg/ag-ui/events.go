@@ -12,21 +12,28 @@ const (
 	EventTextMessageStart   = "TEXT_MESSAGE_START"
 	EventTextMessageContent = "TEXT_MESSAGE_CONTENT"
 	EventTextMessageEnd     = "TEXT_MESSAGE_END"
+	EventTextMessageChunk   = "TEXT_MESSAGE_CHUNK"
 	EventToolCallStart      = "TOOL_CALL_START"
 	EventToolCallArgs       = "TOOL_CALL_ARGS"
 	EventToolCallEnd        = "TOOL_CALL_END"
+	EventToolCallChunk      = "TOOL_CALL_CHUNK"
 	EventToolCallResult     = "TOOL_CALL_RESULT"
 	EventStepStarted        = "STEP_STARTED"
 	EventStepFinished       = "STEP_FINISHED"
 	EventStateSnapshot      = "STATE_SNAPSHOT"
 	EventStateDelta         = "STATE_DELTA"
 	EventMessagesSnapshot   = "MESSAGES_SNAPSHOT"
+	EventActivitySnapshot   = "ACTIVITY_SNAPSHOT"
+	EventActivityDelta      = "ACTIVITY_DELTA"
+	EventRaw                = "RAW"
 	EventCustom             = "CUSTOM"
 	EventReasoningStart     = "REASONING_START"
 	EventReasoningEnd       = "REASONING_END"
 	EventReasoningMsgStart  = "REASONING_MESSAGE_START"
 	EventReasoningMsgCont   = "REASONING_MESSAGE_CONTENT"
 	EventReasoningMsgEnd    = "REASONING_MESSAGE_END"
+	EventReasoningMsgChunk  = "REASONING_MESSAGE_CHUNK"
+	EventReasoningEncrypted = "REASONING_ENCRYPTED_VALUE"
 )
 
 const (
@@ -111,6 +118,7 @@ type ToolApprovalResponse struct {
 type Usage struct {
 	PromptTokens     int `json:"promptTokens,omitempty"`
 	CompletionTokens int `json:"completionTokens,omitempty"`
+	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
 	TotalTokens      int `json:"totalTokens,omitempty"`
 }
 
@@ -148,7 +156,9 @@ func (b EventBuilder) RunFinished(threadID, runID, finishReason string, usage Us
 	evt := b.base(EventRunFinished)
 	evt["threadId"] = threadID
 	evt["runId"] = runID
-	evt["finishReason"] = NormalizeFinishReason(finishReason)
+	if finishReason != "" {
+		evt["finishReason"] = NormalizeFinishReason(finishReason)
+	}
 	evt["usage"] = usage
 	return evt
 }
@@ -187,6 +197,20 @@ func (b EventBuilder) TextMessageEnd(messageID string) Event {
 	return evt
 }
 
+func (b EventBuilder) TextMessageChunk(messageID, role, delta string) Event {
+	evt := b.base(EventTextMessageChunk)
+	if messageID != "" {
+		evt["messageId"] = messageID
+	}
+	if role != "" {
+		evt["role"] = role
+	}
+	if delta != "" {
+		evt["delta"] = delta
+	}
+	return evt
+}
+
 func (b EventBuilder) ReasoningStart(messageID string) Event {
 	evt := b.base(EventReasoningStart)
 	evt["messageId"] = messageID
@@ -202,6 +226,7 @@ func (b EventBuilder) ReasoningEnd(messageID string) Event {
 func (b EventBuilder) ReasoningMessageStart(messageID string) Event {
 	evt := b.base(EventReasoningMsgStart)
 	evt["messageId"] = messageID
+	evt["role"] = "reasoning"
 	return evt
 }
 
@@ -215,6 +240,25 @@ func (b EventBuilder) ReasoningMessageContent(messageID, delta string) Event {
 func (b EventBuilder) ReasoningMessageEnd(messageID string) Event {
 	evt := b.base(EventReasoningMsgEnd)
 	evt["messageId"] = messageID
+	return evt
+}
+
+func (b EventBuilder) ReasoningMessageChunk(messageID, delta string) Event {
+	evt := b.base(EventReasoningMsgChunk)
+	if messageID != "" {
+		evt["messageId"] = messageID
+	}
+	if delta != "" {
+		evt["delta"] = delta
+	}
+	return evt
+}
+
+func (b EventBuilder) ReasoningEncryptedValue(subtype, entityID, encryptedValue string) Event {
+	evt := b.base(EventReasoningEncrypted)
+	evt["subtype"] = subtype
+	evt["entityId"] = entityID
+	evt["encryptedValue"] = encryptedValue
 	return evt
 }
 
@@ -274,6 +318,23 @@ func (b EventBuilder) ToolCallEnd(toolCallID, name string, input, result any, st
 	return evt
 }
 
+func (b EventBuilder) ToolCallChunk(toolCallID, toolCallName, parentMessageID, delta string) Event {
+	evt := b.base(EventToolCallChunk)
+	if toolCallID != "" {
+		evt["toolCallId"] = toolCallID
+	}
+	if toolCallName != "" {
+		evt["toolCallName"] = toolCallName
+	}
+	if parentMessageID != "" {
+		evt["parentMessageId"] = parentMessageID
+	}
+	if delta != "" {
+		evt["delta"] = delta
+	}
+	return evt
+}
+
 func (b EventBuilder) ToolCallResult(messageID, toolCallID, content, state, role string) Event {
 	if role == "" {
 		role = RoleTool
@@ -329,6 +390,34 @@ func (b EventBuilder) StateDelta(delta any) Event {
 func (b EventBuilder) MessagesSnapshot(messages []UIMessage) Event {
 	evt := b.base(EventMessagesSnapshot)
 	evt["messages"] = messages
+	return evt
+}
+
+func (b EventBuilder) ActivitySnapshot(messageID, activityType string, content map[string]any, replace *bool) Event {
+	evt := b.base(EventActivitySnapshot)
+	evt["messageId"] = messageID
+	evt["activityType"] = activityType
+	evt["content"] = content
+	if replace != nil {
+		evt["replace"] = *replace
+	}
+	return evt
+}
+
+func (b EventBuilder) ActivityDelta(messageID, activityType string, patch []any) Event {
+	evt := b.base(EventActivityDelta)
+	evt["messageId"] = messageID
+	evt["activityType"] = activityType
+	evt["patch"] = patch
+	return evt
+}
+
+func (b EventBuilder) Raw(event any, source string) Event {
+	evt := b.base(EventRaw)
+	evt["event"] = event
+	if source != "" {
+		evt["source"] = source
+	}
 	return evt
 }
 

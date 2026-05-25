@@ -8,6 +8,7 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/event"
 )
 
 func TestModelForProviderConstructsCustomModel(t *testing.T) {
@@ -62,11 +63,17 @@ func TestConfigDefaults(t *testing.T) {
 	if config.BeeperEnvTLD != "beeper.com" {
 		t.Fatalf("unexpected env tld %q", config.BeeperEnvTLD)
 	}
-	if config.RoomStateEventType != aiid.RoomConfigType || config.StreamType != aiid.StreamType {
-		t.Fatalf("unexpected event types %#v", config)
+	if config.StreamType != aiid.StreamType {
+		t.Fatalf("unexpected stream type %#v", config)
 	}
 	if config.DefaultProvider.BaseURL == "" || len(config.DefaultProvider.Models) == 0 {
 		t.Fatalf("expected default provider config, got %#v", config.DefaultProvider)
+	}
+	if config.DefaultSystemPrompt == "" || config.DefaultReasoningLevel != "off" {
+		t.Fatalf("expected chat defaults, got %#v", config)
+	}
+	if config.Fetch.TimeoutMS == 0 || config.Fetch.MaxBytes == 0 || config.Fetch.MaxChars == 0 {
+		t.Fatalf("expected fetch defaults, got %#v", config.Fetch)
 	}
 }
 
@@ -80,8 +87,30 @@ func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 		t.Fatalf("expected contact list/search/create DM capabilities, got %#v", caps.Provisioning.ResolveIdentifier)
 	}
 	_, capVersion := conn.GetBridgeInfoVersion()
-	if capVersion < 2 {
+	if capVersion < 3 {
 		t.Fatalf("capability version must bump when provisioning capabilities change, got %d", capVersion)
+	}
+}
+
+func TestRoomFeaturesDisableReactions(t *testing.T) {
+	client := &Client{}
+	caps := client.GetCapabilities(context.Background(), nil)
+	if caps.ID != "" {
+		t.Fatalf("expected room features to use content-derived ID, got %q", caps.ID)
+	}
+	if caps.GetID() == "" {
+		t.Fatalf("expected room features to expose a dedupe ID")
+	}
+	if caps.Reaction != event.CapLevelUnsupported {
+		t.Fatalf("expected reactions to be unsupported, got %d", caps.Reaction)
+	}
+	if !caps.TypingNotifications {
+		t.Fatalf("expected assistant typing notifications")
+	}
+	for _, stateType := range []string{aiid.RoomToolsType, aiid.RoomModelType, aiid.RoomPromptType} {
+		if caps.State[stateType] == nil || caps.State[stateType].Level != event.CapLevelFullySupported {
+			t.Fatalf("expected %s state support, got %#v", stateType, caps.State[stateType])
+		}
 	}
 }
 
@@ -138,5 +167,16 @@ func TestResolveProviderValidatesExplicitModelList(t *testing.T) {
 	}
 	if modelID != "allowed" {
 		t.Fatalf("unexpected model ID %q", modelID)
+	}
+}
+
+func TestValidateReasoningLevelRejectsUnsupportedPair(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model := ai.Model{ID: "plain", Input: []string{"text"}}
+	if err := client.validateReasoningLevel(model, RoomConfig{ThinkingLevel: "high"}); err == nil {
+		t.Fatalf("expected unsupported reasoning level to fail")
+	}
+	if err := client.validateReasoningLevel(model, RoomConfig{ThinkingLevel: "off"}); err != nil {
+		t.Fatalf("expected off reasoning to be accepted: %v", err)
 	}
 }

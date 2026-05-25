@@ -387,7 +387,7 @@ func TestApprovalRequestedValueOwnsStreamPayloadShape(t *testing.T) {
 func TestRunMetadataOwnsMatrixPayloadShape(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
 	run.MessageID = "msg-run-1"
-	run.Usage = agui.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}
+	run.Usage = agui.Usage{PromptTokens: 1, CompletionTokens: 2, ReasoningTokens: 4, TotalTokens: 7}
 	run.Preview = Preview{Text: "hello", Truncated: false}
 
 	metadata := run.Metadata()
@@ -403,11 +403,38 @@ func TestRunMetadataOwnsMatrixPayloadShape(t *testing.T) {
 		t.Fatalf("bad agent metadata: %#v", metadata["agent"])
 	}
 	usage, ok := metadata["usage"].(map[string]any)
-	if !ok || usage["promptTokens"] != 1 || usage["completionTokens"] != 2 || usage["totalTokens"] != 3 {
+	if !ok || usage["promptTokens"] != 1 || usage["completionTokens"] != 2 || usage["reasoningTokens"] != 4 || usage["totalTokens"] != 7 {
 		t.Fatalf("bad usage metadata: %#v", metadata["usage"])
 	}
-	if _, ok := metadata["usageDetails"].(map[string]any); !ok {
+	usageDetails, ok := metadata["usageDetails"].(map[string]any)
+	if !ok || usageDetails["reasoningTokens"] != 4 {
 		t.Fatalf("usage details should always be present: %#v", metadata)
+	}
+}
+
+func TestFinishWithUsageCarriesProviderUsageToTerminalEvents(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text("hello")
+	usage := agui.Usage{PromptTokens: 10, CompletionTokens: 5, ReasoningTokens: 4, TotalTokens: 15}
+	writer.FinishWithUsage(agui.FinishReasonStop, &usage)
+
+	if run.Usage != usage {
+		t.Fatalf("run usage was not preserved: %#v", run.Usage)
+	}
+	var snapshotUsage, finishedUsage agui.Usage
+	for _, evt := range run.Events {
+		switch evt["type"] {
+		case agui.EventMessagesSnapshot:
+			messages := evt["messages"].([]agui.UIMessage)
+			snapshotUsage = messages[0].Metadata["usage"].(agui.Usage)
+		case agui.EventRunFinished:
+			finishedUsage = evt["usage"].(agui.Usage)
+		}
+	}
+	if snapshotUsage != usage || finishedUsage != usage {
+		t.Fatalf("terminal events lost usage: snapshot=%#v finished=%#v", snapshotUsage, finishedUsage)
 	}
 }
 

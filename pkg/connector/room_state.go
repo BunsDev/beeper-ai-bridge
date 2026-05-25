@@ -5,59 +5,58 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
 type RoomConfig struct {
-	LoginID       string `json:"login_id"`
-	ProviderID    string `json:"provider_id"`
-	ModelID       string `json:"model_id"`
-	SystemPrompt  string `json:"system_prompt"`
-	ThinkingLevel string `json:"thinking_level"`
-	ToolsEnabled  bool   `json:"tools_enabled"`
-	Cwd           string `json:"cwd"`
+	ProviderID       string
+	ModelID          string
+	AdditionalPrompt string
+	ThinkingLevel    string
+	DisabledTools    []string
 }
 
 func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID, portalMeta *aiid.PortalMetadata) (RoomConfig, string, error) {
 	config := RoomConfig{}
 	if portalMeta != nil {
-		config.LoginID = portalMeta.SelectedLoginID
 		config.ProviderID = portalMeta.SelectedProviderID
 		config.ModelID = portalMeta.SelectedModelID
-		config.SystemPrompt = portalMeta.SystemPrompt
+		config.AdditionalPrompt = portalMeta.AdditionalPrompt
 		config.ThinkingLevel = portalMeta.ThinkingLevel
-		config.ToolsEnabled = portalMeta.ToolsEnabled
-		config.Cwd = portalMeta.Cwd
+		config.DisabledTools = slices.Clone(portalMeta.DisabledTools)
 	}
 	reader, ok := c.Bridge.Matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
 	if !ok {
 		return config, "", nil
 	}
-	stateType := event.Type{Type: c.Config.RoomStateEventType, Class: event.StateEventType}
-	evt, err := reader.GetStateEvent(ctx, roomID, stateType, "")
-	if errors.Is(err, mautrix.MNotFound) {
-		return config, "", nil
-	} else if err != nil {
-		return RoomConfig{}, "", fmt.Errorf("failed to read %s state: %w", c.Config.RoomStateEventType, err)
-	}
-	if evt == nil {
-		return config, "", nil
-	}
-	raw, err := json.Marshal(evt.Content.Raw)
-	if err != nil {
+	stateEventIDs := []string{}
+	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomModelType); err != nil {
 		return RoomConfig{}, "", err
+	} else if raw != nil {
+		applyRoomModelConfig(&config, raw)
+		stateEventIDs = append(stateEventIDs, eventID)
 	}
-	if err := json.Unmarshal(raw, &config); err != nil {
+	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomPromptType); err != nil {
 		return RoomConfig{}, "", err
+	} else if raw != nil {
+		config.AdditionalPrompt = firstString(raw, "prompt")
+		stateEventIDs = append(stateEventIDs, eventID)
 	}
-	return config, string(evt.ID), nil
+	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomToolsType); err != nil {
+		return RoomConfig{}, "", err
+	} else if raw != nil {
+		config.DisabledTools = stringSlice(raw["disabled"])
+		stateEventIDs = append(stateEventIDs, eventID)
+	}
+	return config, strings.Join(stateEventIDs, ","), nil
 }
 
 func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLogin, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
@@ -89,10 +88,6 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	return provider, modelID, nil
 }
 
-func loginIDFromConfig(config RoomConfig) networkid.UserLoginID {
-	return networkid.UserLoginID(config.LoginID)
-}
-
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {
 	for _, model := range provider.Models {
 		if model.ID == modelID {
@@ -100,4 +95,76 @@ func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {
 		}
 	}
 	return false
+}
+
+func (c *Connector) readRoomState(ctx context.Context, reader bridgev2.MatrixConnectorWithArbitraryRoomState, roomID id.RoomID, stateType string) (map[string]any, string, error) {
+	evt, err := reader.GetStateEvent(ctx, roomID, event.Type{Type: stateType, Class: event.StateEventType}, "")
+	if errors.Is(err, mautrix.MNotFound) {
+		return nil, "", nil
+	} else if err != nil {
+		return nil, "", fmt.Errorf("failed to read %s state: %w", stateType, err)
+	}
+	if evt == nil {
+		return nil, "", nil
+	}
+	raw := evt.Content.Raw
+	if raw == nil && evt.Content.Parsed != nil {
+		encoded, err := json.Marshal(evt.Content.Parsed)
+		if err != nil {
+			return nil, "", err
+		}
+		if err = json.Unmarshal(encoded, &raw); err != nil {
+			return nil, "", err
+		}
+	}
+	return raw, string(evt.ID), nil
+}
+
+func applyRoomModelConfig(config *RoomConfig, raw map[string]any) {
+	providerID, modelID := splitModelRef(firstString(raw, "model"))
+	if providerID != "" {
+		config.ProviderID = providerID
+	}
+	if modelID != "" {
+		config.ModelID = modelID
+	}
+	if reasoning := firstString(raw, "reasoning"); reasoning != "" {
+		config.ThinkingLevel = reasoning
+	}
+}
+
+func splitModelRef(model string) (providerID string, modelID string) {
+	providerID, modelID, _ = strings.Cut(strings.TrimSpace(model), "/")
+	if modelID == "" {
+		return "", providerID
+	}
+	return providerID, modelID
+}
+
+func firstString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := raw[key].(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func stringSlice(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := []string{}
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			text = strings.TrimSpace(text)
+			if text != "" && !slices.Contains(out, text) {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
 }

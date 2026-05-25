@@ -25,17 +25,15 @@ type UserLoginMetadata struct {
 }
 
 type PortalMetadata struct {
-	SessionID          string `json:"session_id,omitempty"`
-	SelectedLoginID    string `json:"selected_login_id,omitempty"`
-	SelectedProviderID string `json:"selected_provider_id,omitempty"`
-	SelectedModelID    string `json:"selected_model_id,omitempty"`
-	SystemPrompt       string `json:"system_prompt,omitempty"`
-	ThinkingLevel      string `json:"thinking_level,omitempty"`
-	ToolsEnabled       bool   `json:"tools_enabled,omitempty"`
-	Cwd                string `json:"cwd,omitempty"`
-	SessionTitle       string `json:"session_title,omitempty"`
-	LastRunID          string `json:"last_run_id,omitempty"`
-	RoomStateEventID   string `json:"room_state_event_id,omitempty"`
+	SessionID          string   `json:"session_id,omitempty"`
+	SelectedProviderID string   `json:"selected_provider_id,omitempty"`
+	SelectedModelID    string   `json:"selected_model_id,omitempty"`
+	AdditionalPrompt   string   `json:"additional_prompt,omitempty"`
+	ThinkingLevel      string   `json:"thinking_level,omitempty"`
+	DisabledTools      []string `json:"disabled_tools,omitempty"`
+	SessionTitle       string   `json:"session_title,omitempty"`
+	LastRunID          string   `json:"last_run_id,omitempty"`
+	RoomStateEventID   string   `json:"room_state_event_id,omitempty"`
 }
 
 type GhostMetadata struct {

@@ -1,8 +1,6 @@
 package harness
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
@@ -23,31 +21,6 @@ const BranchSummaryPrefix = `The following is a summary of a branch that this co
 `
 
 const BranchSummarySuffix = `</summary>`
-
-func BashExecutionToText(msg agent.AgentMessage) string {
-	var builder strings.Builder
-	builder.WriteString("Ran `")
-	builder.WriteString(msg.Command)
-	builder.WriteString("`\n")
-	if msg.Output != "" {
-		builder.WriteString("```\n")
-		builder.WriteString(msg.Output)
-		builder.WriteString("\n```")
-	} else {
-		builder.WriteString("(no output)")
-	}
-	if msg.Cancelled {
-		builder.WriteString("\n\n(command cancelled)")
-	} else if msg.ExitCode != nil && *msg.ExitCode != 0 {
-		builder.WriteString(fmt.Sprintf("\n\nCommand exited with code %d", *msg.ExitCode))
-	}
-	if msg.Truncated && msg.FullOutputPath != "" {
-		builder.WriteString("\n\n[Output truncated. Full output: ")
-		builder.WriteString(msg.FullOutputPath)
-		builder.WriteString("]")
-	}
-	return builder.String()
-}
 
 func CreateBranchSummaryMessage(summary string, fromID string, timestamp string) agent.AgentMessage {
 	return agent.AgentMessage{
@@ -91,15 +64,6 @@ func ConvertToLlm(messages []agent.AgentMessage) []ai.Message {
 
 func convertMessageToLlm(msg agent.AgentMessage) (ai.Message, bool) {
 	switch msg.Role {
-	case "bashExecution":
-		if msg.ExcludeFromContext {
-			return ai.Message{}, false
-		}
-		return ai.Message{
-			Role:      "user",
-			Content:   []ai.ContentBlock{{Type: "text", Text: BashExecutionToText(msg)}},
-			Timestamp: msg.Timestamp,
-		}, true
 	case "custom":
 		return ai.Message{
 			Role:      "user",

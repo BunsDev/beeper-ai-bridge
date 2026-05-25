@@ -32,7 +32,6 @@ func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, crea
 			return nil, err
 		}
 		meta := portalMetadata(portal)
-		meta.SelectedLoginID = string(cl.UserLogin.ID)
 		meta.SelectedProviderID = provider.ID
 		meta.SelectedModelID = model.ID
 		if err = portal.Save(ctx); err != nil {

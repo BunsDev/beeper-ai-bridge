@@ -12,25 +12,6 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
-type Skill struct {
-	Name                   string
-	Description            string
-	Content                string
-	FilePath               string
-	DisableModelInvocation bool
-}
-
-type PromptTemplate struct {
-	Name        string
-	Description string
-	Content     string
-}
-
-type AgentHarnessResources struct {
-	Skills          []Skill
-	PromptTemplates []PromptTemplate
-}
-
 type AgentHarnessStreamOptions struct {
 	Transport       ai.Transport
 	TimeoutMs       *int
@@ -43,13 +24,11 @@ type AgentHarnessStreamOptions struct {
 
 type AgentHarnessOptions struct {
 	Session               *session.Session
-	Env                   *LocalExecutionEnv
 	Model                 ai.Model
 	ThinkingLevel         agent.ThinkingLevel
 	SystemPrompt          string
 	SystemPromptFunc      func(context.Context, AgentHarnessSystemPromptContext) (string, error)
 	StreamOptions         AgentHarnessStreamOptions
-	Resources             AgentHarnessResources
 	Tools                 []agent.AgentTool[any]
 	ActiveToolNames       []string
 	SteeringMode          agent.QueueMode
@@ -69,7 +48,6 @@ type AgentHarnessAuth struct {
 
 type AgentHarness struct {
 	session               *session.Session
-	env                   *LocalExecutionEnv
 	phase                 string
 	pendingSessionWrites  []pendingSessionWrite
 	model                 ai.Model
@@ -77,7 +55,6 @@ type AgentHarness struct {
 	systemPrompt          string
 	systemPromptFunc      func(context.Context, AgentHarnessSystemPromptContext) (string, error)
 	streamOptions         AgentHarnessStreamOptions
-	resources             AgentHarnessResources
 	tools                 map[string]agent.AgentTool[any]
 	activeToolNames       []string
 	steerQueue            []agent.AgentMessage
@@ -106,12 +83,10 @@ type AgentHarness struct {
 }
 
 type AgentHarnessSystemPromptContext struct {
-	Env           *LocalExecutionEnv
 	Session       *session.Session
 	Model         ai.Model
 	ThinkingLevel agent.ThinkingLevel
 	ActiveTools   []agent.AgentTool[any]
-	Resources     AgentHarnessResources
 }
 
 type pendingSessionWrite struct {
@@ -134,8 +109,6 @@ type AgentHarnessEvent struct {
 	PreviousModel         *ai.Model
 	ThinkingLevel         agent.ThinkingLevel
 	PreviousLevel         agent.ThinkingLevel
-	Resources             AgentHarnessResources
-	PreviousResources     AgentHarnessResources
 	HadPendingMutations   bool
 	NextTurnCount         int
 	CompactionEntry       json.RawMessage
@@ -185,9 +158,7 @@ type NavigateTreeResult struct {
 }
 
 type BranchSummaryResult struct {
-	Summary       string
-	ReadFiles     []string
-	ModifiedFiles []string
+	Summary string
 }
 
 type AbortResult struct {
@@ -280,14 +251,12 @@ func NewAgentHarness(options AgentHarnessOptions) (*AgentHarness, error) {
 	}
 	harness := &AgentHarness{
 		session:               options.Session,
-		env:                   options.Env,
 		phase:                 "idle",
 		model:                 options.Model,
 		thinkingLevel:         options.ThinkingLevel,
 		systemPrompt:          options.SystemPrompt,
 		systemPromptFunc:      options.SystemPromptFunc,
 		streamOptions:         cloneHarnessStreamOptions(options.StreamOptions),
-		resources:             cloneResources(options.Resources),
 		tools:                 tools,
 		activeToolNames:       activeToolNames,
 		steeringMode:          options.SteeringMode,
@@ -345,7 +314,7 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, images
 			return PromptResult{}, err
 		}
 	}
-	if before, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "before_agent_start", Prompt: text, Images: images, SystemPrompt: turnContext.SystemPrompt, Resources: h.GetResources()}); err != nil {
+	if before, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "before_agent_start", Prompt: text, Images: images, SystemPrompt: turnContext.SystemPrompt}); err != nil {
 		return PromptResult{}, err
 	} else if result, ok := before.(BeforeAgentStartResult); ok {
 		if len(result.Messages) > 0 {
@@ -435,9 +404,7 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 			return CompactResult{}, err
 		}
 	} else if result.Summary == "" {
-		readFiles, modifiedFiles := ComputeFileLists(preparation.FileOps)
-		summary := "No summary generated" + FormatFileOperations(readFiles, modifiedFiles)
-		result = CompactResult{Summary: summary, FirstKeptEntryID: preparation.FirstKeptEntryID, TokensBefore: preparation.TokensBefore, Details: CompactionDetails{ReadFiles: readFiles, ModifiedFiles: modifiedFiles}}
+		result = CompactResult{Summary: "No summary generated", FirstKeptEntryID: preparation.FirstKeptEntryID, TokensBefore: preparation.TokensBefore}
 	}
 	if result.FirstKeptEntryID == "" {
 		result.FirstKeptEntryID = preparation.FirstKeptEntryID
@@ -504,7 +471,6 @@ func (h *AgentHarness) NavigateTree(ctx context.Context, targetID string, option
 		}
 		if before.Summary != nil {
 			summaryText = before.Summary.Summary
-			summaryDetails = BranchSummaryDetails{ReadFiles: before.Summary.ReadFiles, ModifiedFiles: before.Summary.ModifiedFiles}
 			fromHook = true
 		}
 	}
@@ -527,11 +493,9 @@ func (h *AgentHarness) NavigateTree(ctx context.Context, targetID string, option
 				return NavigateTreeResult{}, err
 			}
 		} else {
-			readFiles, modifiedFiles := ComputeFileLists(preparation.FileOps)
-			summary = BranchSummaryResult{Summary: "No summary generated" + FormatFileOperations(readFiles, modifiedFiles), ReadFiles: readFiles, ModifiedFiles: modifiedFiles}
+			summary = BranchSummaryResult{Summary: "No summary generated"}
 		}
 		summaryText = summary.Summary
-		summaryDetails = BranchSummaryDetails{ReadFiles: summary.ReadFiles, ModifiedFiles: summary.ModifiedFiles}
 	}
 	newLeafID := &targetID
 	editorText := ""
@@ -636,37 +600,6 @@ func (h *AgentHarness) FollowUp(ctx context.Context, text string, images ...ai.C
 	}
 	h.followUpQueue = append(h.followUpQueue, createUserMessage(text, images))
 	return h.emit(ctx, AgentHarnessEvent{Type: "queue_update", Steer: h.steerQueue, FollowUp: h.followUpQueue, NextTurn: h.nextTurnQueue})
-}
-
-func (h *AgentHarness) Skill(ctx context.Context, name string, additionalInstructions string) (agent.AgentMessage, error) {
-	for _, skill := range h.resources.Skills {
-		if skill.Name == name {
-			if skill.DisableModelInvocation {
-				return agent.AgentMessage{}, errors.New("Skill is disabled for model invocation: " + name)
-			}
-			return h.Prompt(ctx, FormatSkillInvocation(skill, additionalInstructions))
-		}
-	}
-	return agent.AgentMessage{}, errors.New("Unknown skill: " + name)
-}
-
-func (h *AgentHarness) PromptFromTemplate(ctx context.Context, name string, args []string) (agent.AgentMessage, error) {
-	for _, template := range h.resources.PromptTemplates {
-		if template.Name == name {
-			return h.Prompt(ctx, FormatPromptTemplateInvocation(template, args))
-		}
-	}
-	return agent.AgentMessage{}, errors.New("Unknown prompt template: " + name)
-}
-
-func (h *AgentHarness) GetResources() AgentHarnessResources {
-	return cloneResources(h.resources)
-}
-
-func (h *AgentHarness) SetResources(ctx context.Context, resources AgentHarnessResources) error {
-	previous := h.GetResources()
-	h.resources = cloneResources(resources)
-	return h.emit(ctx, AgentHarnessEvent{Type: "resources_update", Resources: h.GetResources(), PreviousResources: previous})
 }
 
 func (h *AgentHarness) GetStreamOptions() AgentHarnessStreamOptions {
@@ -1079,12 +1012,10 @@ func (h *AgentHarness) systemPromptOrDefault(ctx context.Context) (string, error
 	}
 	if h.systemPromptFunc != nil {
 		prompt, err := h.systemPromptFunc(ctx, AgentHarnessSystemPromptContext{
-			Env:           h.env,
 			Session:       h.session,
 			Model:         h.model,
 			ThinkingLevel: h.thinkingLevel,
 			ActiveTools:   h.activeTools(),
-			Resources:     h.GetResources(),
 		})
 		if err != nil {
 			return "", err
@@ -1263,13 +1194,6 @@ func hookErrorStream(model ai.Model, err error) *ai.AssistantMessageEventStream 
 		stream.Push(ai.AssistantMessageEvent{Type: "error", Reason: ai.StopReasonError, Error: &message})
 	}()
 	return stream
-}
-
-func cloneResources(resources AgentHarnessResources) AgentHarnessResources {
-	return AgentHarnessResources{
-		Skills:          append([]Skill{}, resources.Skills...),
-		PromptTemplates: append([]PromptTemplate{}, resources.PromptTemplates...),
-	}
 }
 
 func stringsJoin(values []string, separator string) string {

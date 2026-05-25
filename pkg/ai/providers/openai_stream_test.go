@@ -129,6 +129,9 @@ func TestResponsesStreamStateFinalizesReasoningTextToolAndUsage(t *testing.T) {
 				"input_tokens_details": map[string]any{
 					"cached_tokens": float64(3),
 				},
+				"output_tokens_details": map[string]any{
+					"reasoning_tokens": float64(4),
+				},
 			},
 		},
 	})
@@ -148,7 +151,7 @@ func TestResponsesStreamStateFinalizesReasoningTextToolAndUsage(t *testing.T) {
 	if output.StopReason != ai.StopReasonToolUse {
 		t.Fatalf("expected toolUse because response has tool call, got %q", output.StopReason)
 	}
-	if output.Usage.Input != 7 || output.Usage.CacheRead != 3 || output.Usage.Output != 5 {
+	if output.Usage.Input != 7 || output.Usage.CacheRead != 3 || output.Usage.Output != 5 || output.Usage.ReasoningTokens != 4 {
 		t.Fatalf("unexpected usage: %#v", output.Usage)
 	}
 	if output.Usage.Cost.Total != 0.00000925 {

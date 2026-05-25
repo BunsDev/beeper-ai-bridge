@@ -16,20 +16,27 @@ func TestBuildersCoverLifecycleEventsWithTimestamps(t *testing.T) {
 		builder.TextMessageStart("msg", RoleAssistant),
 		builder.TextMessageContent("msg", "hello"),
 		builder.TextMessageEnd("msg"),
+		builder.TextMessageChunk("msg", RoleAssistant, "hello"),
 		builder.ReasoningStart("msg"),
 		builder.ReasoningMessageStart("msg"),
 		builder.ReasoningMessageContent("msg", "thinking"),
 		builder.ReasoningMessageEnd("msg"),
 		builder.ReasoningEnd("msg"),
+		builder.ReasoningMessageChunk("msg", "thinking"),
+		builder.ReasoningEncryptedValue("message", "msg", "encrypted"),
 		builder.ToolCallStart("msg", "tool", "search", &idx, &ToolApproval{ID: "approval", NeedsApproval: true}),
 		builder.ToolCallArgs("tool", `{"q":"he`, nil),
 		builder.ToolCallEnd("tool", "search", map[string]any{"q": "hello"}, `{"ok":true}`, ToolStateInputComplete),
+		builder.ToolCallChunk("tool", "search", "msg", `{"q":"he`),
 		builder.ToolCallResult("msg", "tool", `{"ok":true}`, ToolResultStateComplete, RoleTool),
 		builder.StepStarted("msg", "step"),
 		builder.StepFinished("msg", "step"),
 		builder.StateSnapshot(map[string]any{"open": true}),
 		builder.StateDelta(map[string]any{"path": "/open", "value": false}),
 		builder.MessagesSnapshot([]UIMessage{{ID: "msg", Role: RoleAssistant, Parts: []MessagePart{TextPart("hello")}}}),
+		builder.ActivitySnapshot("msg", "thinking", map[string]any{"text": "working"}, nil),
+		builder.ActivityDelta("msg", "thinking", []any{map[string]any{"op": "add", "path": "/text", "value": "working"}}),
+		builder.Raw(map[string]any{"type": "provider.event"}, "openai"),
 		builder.Custom("com.beeper.test", map[string]any{"ok": true}),
 	}
 	for _, evt := range events {
@@ -46,7 +53,7 @@ func TestBuildersCoverLifecycleEventsWithTimestamps(t *testing.T) {
 	if got := events[2]["message"]; got != "failed" {
 		t.Fatalf("run error message = %#v, want failed", got)
 	}
-	toolStart := events[11]
+	toolStart := events[14]
 	if got := toolStart["index"]; got != 1 {
 		t.Fatalf("tool index = %#v, want 1", got)
 	}
@@ -56,26 +63,30 @@ func TestBuildersCoverLifecycleEventsWithTimestamps(t *testing.T) {
 	if _, hasMessageID := toolStart["messageId"]; hasMessageID {
 		t.Fatalf("tool start should not emit deprecated messageId: %#v", toolStart)
 	}
-	if _, hasSnapshot := events[17]["snapshot"]; !hasSnapshot {
-		t.Fatalf("state snapshot should emit snapshot field: %#v", events[17])
+	if _, hasSnapshot := events[21]["snapshot"]; !hasSnapshot {
+		t.Fatalf("state snapshot should emit snapshot field: %#v", events[21])
 	}
 }
 
 func TestValidateRejectsBadEvents(t *testing.T) {
 	tests := []Event{
 		{},
-		{"type": EventRunStarted, "timestamp": int64(1), "threadId": "thread"},
-		{"type": EventRunError, "timestamp": int64(1), "threadId": "thread", "error": map[string]any{"message": "failed"}},
-		{"type": EventTextMessageContent, "timestamp": int64(1), "messageId": "msg"},
-		{"type": "REASONING_MESSAGE_CONTENT", "timestamp": int64(1)},
-		{"type": EventToolCallStart, "timestamp": int64(1), "toolCallId": "tool", "toolCallName": "search", "state": "output-available"},
-		{"type": EventToolCallStart, "timestamp": int64(1), "toolCallId": "tool", "toolCallName": "search", "state": ToolStateApprovalRequested, "approval": ToolApproval{ID: "", NeedsApproval: true}},
-		{"type": EventToolCallStart, "timestamp": int64(1), "toolCallId": "tool", "toolCallName": "search", "state": ToolStateApprovalRequested, "approval": map[string]any{"id": "approval", "needsApproval": false}},
-		{"type": EventToolCallArgs, "timestamp": int64(1), "toolCallId": "tool", "delta": "{}", "args": map[string]any{"bad": true}},
-		{"type": EventToolCallEnd, "timestamp": int64(1), "toolCallId": "tool", "result": map[string]any{"bad": true}, "state": ToolStateInputComplete},
-		{"type": EventToolCallResult, "timestamp": int64(1), "messageId": "msg", "toolCallId": "tool", "content": "{}", "state": "output-error"},
-		{"type": EventStepStarted, "timestamp": int64(1), "stepId": "deprecated-only"},
-		{"type": EventStateSnapshot, "timestamp": int64(1), "state": map[string]any{}},
+		{"type": EventRunStarted, "threadId": "thread"},
+		{"type": EventRunError, "threadId": "thread", "error": map[string]any{"message": "failed"}},
+		{"type": EventTextMessageContent, "messageId": "msg"},
+		{"type": "REASONING_MESSAGE_CONTENT"},
+		{"type": EventReasoningEncrypted, "subtype": "bad", "entityId": "msg", "encryptedValue": "x"},
+		{"type": EventToolCallStart, "toolCallId": "tool", "toolCallName": "search", "state": "output-available"},
+		{"type": EventToolCallStart, "toolCallId": "tool", "toolCallName": "search", "state": ToolStateApprovalRequested, "approval": ToolApproval{ID: "", NeedsApproval: true}},
+		{"type": EventToolCallStart, "toolCallId": "tool", "toolCallName": "search", "state": ToolStateApprovalRequested, "approval": map[string]any{"id": "approval", "needsApproval": false}},
+		{"type": EventToolCallArgs, "toolCallId": "tool", "delta": "{}", "args": map[string]any{"bad": true}},
+		{"type": EventToolCallEnd, "toolCallId": "tool", "result": map[string]any{"bad": true}, "state": ToolStateInputComplete},
+		{"type": EventToolCallResult, "messageId": "msg", "toolCallId": "tool", "content": "{}", "state": "output-error"},
+		{"type": EventStepStarted, "stepId": "deprecated-only"},
+		{"type": EventStateSnapshot, "state": map[string]any{}},
+		{"type": EventActivitySnapshot, "messageId": "msg", "activityType": "thinking"},
+		{"type": EventActivityDelta, "messageId": "msg", "activityType": "thinking"},
+		{"type": EventRaw},
 	}
 	for _, evt := range tests {
 		if err := ValidateEvent(evt); err == nil {

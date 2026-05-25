@@ -2,10 +2,12 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
+	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -50,6 +52,40 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	}
 }
 
+func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolStart("call-session", "get_session", 0, nil)
+	writer.ToolEnd("call-session", "get_session", map[string]any{}, nil)
+
+	appendToolOutputs(run, []toolOutputEvent{{
+		ID:    "call-session",
+		Name:  "get_session",
+		Input: map[string]any{},
+		Result: agent.AgentToolResult[any]{
+			Content: []ai.ContentBlock{{Type: "text", Text: `{"session_id":"session-1"}`}},
+			Details: struct {
+				SessionID string `json:"session_id"`
+				ModelID   string `json:"model_id"`
+			}{SessionID: "session-1", ModelID: "gpt-5"},
+		},
+	}})
+
+	message := run.FinalUIMessage(0, true)
+	if len(message.Parts) != 1 {
+		t.Fatalf("expected one tool part, got %#v", message.Parts)
+	}
+	output, ok := message.Parts[0]["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object output, got %#v", message.Parts[0]["output"])
+	}
+	if output["session_id"] != "session-1" || output["model_id"] != "gpt-5" || output["state"] != agui.ToolResultStateComplete || output["status"] != "success" {
+		encoded, _ := json.Marshal(output)
+		t.Fatalf("tool output lost structured result: %s", encoded)
+	}
+}
+
 func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	client := &Client{}
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
@@ -78,6 +114,35 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	}
 	if partMetadata.SessionEntryID != "entry" || partMetadata.StreamStatus != "done" || partMetadata.ResponseID != "resp" {
 		t.Fatalf("metadata was not finalized through shared pointer: %#v", partMetadata)
+	}
+}
+
+func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+
+	writer.Start()
+	writer.Text("hello")
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{
+		Type:   "done",
+		Reason: ai.StopReasonStop,
+		Message: &ai.Message{
+			Usage: ai.Usage{Input: 10, Output: 5, ReasoningTokens: 4, TotalTokens: 15},
+		},
+	})
+
+	want := agui.Usage{PromptTokens: 10, CompletionTokens: 5, ReasoningTokens: 4, TotalTokens: 15}
+	if run.Usage != want {
+		t.Fatalf("run usage = %#v, want %#v", run.Usage, want)
+	}
+	var finished agui.Usage
+	for _, evt := range run.Events {
+		if evt["type"] == agui.EventRunFinished {
+			finished = evt["usage"].(agui.Usage)
+		}
+	}
+	if finished != want {
+		t.Fatalf("RUN_FINISHED usage = %#v, want %#v", finished, want)
 	}
 }
 

@@ -55,9 +55,9 @@ func TestCollectEntriesForBranchSummaryUsesCommonAncestor(t *testing.T) {
 	}
 }
 
-func TestPrepareBranchEntriesSkipsToolResultsAndCarriesFileOps(t *testing.T) {
+func TestPrepareBranchEntriesSkipsToolResults(t *testing.T) {
 	entries := []json.RawMessage{
-		rawEntry(map[string]any{"type": "branch_summary", "id": "s", "parentId": nil, "timestamp": "2026-05-23T00:00:00Z", "summary": "prior", "fromId": "x", "details": map[string]any{"readFiles": []string{"/tmp/read"}, "modifiedFiles": []string{"/tmp/old-edit"}}}),
+		rawEntry(map[string]any{"type": "branch_summary", "id": "s", "parentId": nil, "timestamp": "2026-05-23T00:00:00Z", "summary": "prior", "fromId": "x"}),
 		rawEntry(map[string]any{"type": "message", "id": "a", "parentId": "s", "timestamp": "2026-05-23T00:00:01Z", "message": agent.AgentMessage{Role: "toolResult", Content: []ai.ContentBlock{{Type: "text", Text: "skip"}}, Timestamp: 1}}),
 		rawEntry(map[string]any{"type": "message", "id": "b", "parentId": "a", "timestamp": "2026-05-23T00:00:02Z", "message": agent.AgentMessage{Role: "assistant", Content: []ai.ContentBlock{{Type: "toolCall", Name: "edit", Arguments: map[string]any{"path": "/tmp/new-edit"}}}, Timestamp: 2}}),
 	}
@@ -70,12 +70,5 @@ func TestPrepareBranchEntriesSkipsToolResultsAndCarriesFileOps(t *testing.T) {
 	}
 	if prep.Messages[0].Role != "branchSummary" || prep.Messages[1].Role != "assistant" {
 		t.Fatalf("unexpected messages %#v", prep.Messages)
-	}
-	readFiles, modifiedFiles := ComputeFileLists(prep.FileOps)
-	if len(readFiles) != 1 || readFiles[0] != "/tmp/read" {
-		t.Fatalf("unexpected read files %#v", readFiles)
-	}
-	if len(modifiedFiles) != 2 || modifiedFiles[0] != "/tmp/new-edit" || modifiedFiles[1] != "/tmp/old-edit" {
-		t.Fatalf("unexpected modified files %#v", modifiedFiles)
 	}
 }

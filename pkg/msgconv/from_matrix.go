@@ -21,7 +21,7 @@ func FromMatrix(ctx context.Context, intent bridgev2.MatrixAPI, msg *bridgev2.Ma
 	if content == nil {
 		return MatrixPrompt{}, fmt.Errorf("missing message content")
 	}
-	text := withReplyContext(content.Body, msg)
+	text := withReplyContext(matrixPromptText(content), msg)
 	switch content.MsgType {
 	case "", event.MsgText, event.MsgNotice, event.MsgEmote:
 		return MatrixPrompt{Text: text}, nil
@@ -30,10 +30,17 @@ func FromMatrix(ctx context.Context, intent bridgev2.MatrixAPI, msg *bridgev2.Ma
 		if err != nil {
 			return MatrixPrompt{}, err
 		}
-		return MatrixPrompt{Text: withReplyContext(content.GetCaption(), msg), Images: []ai.ContentBlock{block}}, nil
+		return MatrixPrompt{Text: withReplyContext(matrixPromptText(content), msg), Images: []ai.ContentBlock{block}}, nil
 	default:
 		return MatrixPrompt{}, fmt.Errorf("unsupported Matrix message type %s", content.MsgType)
 	}
+}
+
+func matrixPromptText(content *event.MessageEventContent) string {
+	if content.FormattedBody != "" {
+		return content.FormattedBody
+	}
+	return content.Body
 }
 
 func withReplyContext(text string, msg *bridgev2.MatrixMessage) string {

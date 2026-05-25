@@ -89,6 +89,10 @@ type RunMetadata struct {
 }
 
 func (m RunMetadata) Map() map[string]any {
+	usageDetails := map[string]any{}
+	if m.Usage.ReasoningTokens != 0 {
+		usageDetails["reasoningTokens"] = m.Usage.ReasoningTokens
+	}
 	return map[string]any{
 		"schema":    m.Schema,
 		"protocol":  m.Protocol,
@@ -103,9 +107,10 @@ func (m RunMetadata) Map() map[string]any {
 		"usage": map[string]any{
 			"promptTokens":     m.Usage.PromptTokens,
 			"completionTokens": m.Usage.CompletionTokens,
+			"reasoningTokens":  m.Usage.ReasoningTokens,
 			"totalTokens":      m.Usage.TotalTokens,
 		},
-		"usageDetails": map[string]any{},
+		"usageDetails": usageDetails,
 		"status":       m.Status,
 		"approvals":    m.Approvals,
 		"artifacts":    m.Artifacts,
@@ -376,13 +381,21 @@ func (w *Writer) Custom(name string, value any) {
 }
 
 func (w *Writer) Finish(reason string) {
+	w.FinishWithUsage(reason, nil)
+}
+
+func (w *Writer) FinishWithUsage(reason string, usage *agui.Usage) {
 	reason = agui.NormalizeFinishReason(reason)
 	text := w.Run.Text()
 	w.finishReasoning()
-	w.Run.Usage = agui.Usage{
-		PromptTokens:     1,
-		CompletionTokens: utf8.RuneCountInString(text),
-		TotalTokens:      utf8.RuneCountInString(text) + 1,
+	if usage != nil {
+		w.Run.Usage = *usage
+	} else {
+		w.Run.Usage = agui.Usage{
+			PromptTokens:     1,
+			CompletionTokens: utf8.RuneCountInString(text),
+			TotalTokens:      utf8.RuneCountInString(text) + 1,
+		}
 	}
 	w.Run.Status = Status{State: "complete", FinishReason: reason}
 	w.Add(w.builder.TextMessageEnd(w.Run.MessageID))

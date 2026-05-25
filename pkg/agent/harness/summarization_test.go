@@ -9,16 +9,14 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
-func TestGenerateSummaryUsesStreamFunctionAndFileOperations(t *testing.T) {
+func TestGenerateSummaryUsesStreamFunction(t *testing.T) {
 	ctx := context.Background()
 	preparation := CompactionPreparation{
 		FirstKeptEntryID:    "keep",
 		MessagesToSummarize: []agent.AgentMessage{{Role: "user", Content: "hello", Timestamp: 1}},
 		TokensBefore:        100,
-		FileOps:             CreateFileOps(),
 		Settings:            CompactionSettings{ReserveTokens: 100, KeepRecentTokens: 10},
 	}
-	preparation.FileOps.Read["/tmp/a"] = true
 	var captured ai.Context
 	result, err := GenerateSummary(ctx, preparation, SummaryGenerationOptions{
 		Model:    ai.Model{ID: "gpt-test", API: ai.ApiOpenAICompletions, Provider: "openai", MaxTokens: 50},
@@ -31,7 +29,7 @@ func TestGenerateSummaryUsesStreamFunctionAndFileOperations(t *testing.T) {
 	if result.FirstKeptEntryID != "keep" || result.TokensBefore != 100 {
 		t.Fatalf("unexpected result %#v", result)
 	}
-	if !strings.Contains(result.Summary, "summary text") || !strings.Contains(result.Summary, "<read-files>\n/tmp/a\n</read-files>") {
+	if !strings.Contains(result.Summary, "summary text") || strings.Contains(result.Summary, "<read-files>") {
 		t.Fatalf("unexpected summary %q", result.Summary)
 	}
 	if captured.SystemPrompt != SummarizationSystemPrompt {
@@ -44,7 +42,7 @@ func TestGenerateSummaryUsesStreamFunctionAndFileOperations(t *testing.T) {
 
 func TestGenerateBranchSummaryAddsPreambleAndUsesPrompt(t *testing.T) {
 	ctx := context.Background()
-	preparation := BranchPreparation{Messages: []agent.AgentMessage{{Role: "user", Content: "branch", Timestamp: 1}}, FileOps: CreateFileOps()}
+	preparation := BranchPreparation{Messages: []agent.AgentMessage{{Role: "user", Content: "branch", Timestamp: 1}}}
 	var captured ai.Context
 	result, err := GenerateBranchSummary(ctx, preparation, SummaryGenerationOptions{
 		Model:    ai.Model{ID: "gpt-test", API: ai.ApiOpenAICompletions, Provider: "openai"},
@@ -63,7 +61,7 @@ func TestGenerateBranchSummaryAddsPreambleAndUsesPrompt(t *testing.T) {
 
 func TestGenerateBranchSummaryCanReplaceDefaultInstructions(t *testing.T) {
 	ctx := context.Background()
-	preparation := BranchPreparation{Messages: []agent.AgentMessage{{Role: "user", Content: "branch", Timestamp: 1}}, FileOps: CreateFileOps()}
+	preparation := BranchPreparation{Messages: []agent.AgentMessage{{Role: "user", Content: "branch", Timestamp: 1}}}
 	var captured ai.Context
 	_, err := GenerateBranchSummary(ctx, preparation, SummaryGenerationOptions{
 		Model:               ai.Model{ID: "gpt-test", API: ai.ApiOpenAICompletions, Provider: "openai"},

@@ -11,17 +11,6 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
-type FileOperations struct {
-	Read    map[string]bool
-	Written map[string]bool
-	Edited  map[string]bool
-}
-
-type CompactionDetails struct {
-	ReadFiles     []string `json:"readFiles"`
-	ModifiedFiles []string `json:"modifiedFiles"`
-}
-
 type CompactionSettings struct {
 	Enabled          bool
 	ReserveTokens    int
@@ -50,70 +39,7 @@ type CompactionPreparation struct {
 	IsSplitTurn         bool
 	TokensBefore        int
 	PreviousSummary     string
-	FileOps             FileOperations
 	Settings            CompactionSettings
-}
-
-func CreateFileOps() FileOperations {
-	return FileOperations{Read: map[string]bool{}, Written: map[string]bool{}, Edited: map[string]bool{}}
-}
-
-func ExtractFileOpsFromMessage(message agent.AgentMessage, fileOps FileOperations) {
-	if message.Role != "assistant" {
-		return
-	}
-	for _, block := range contentBlocks(message.Content) {
-		if block.Type != "toolCall" {
-			continue
-		}
-		path, _ := block.Arguments["path"].(string)
-		if path == "" {
-			continue
-		}
-		switch block.Name {
-		case "read":
-			fileOps.Read[path] = true
-		case "write":
-			fileOps.Written[path] = true
-		case "edit":
-			fileOps.Edited[path] = true
-		}
-	}
-}
-
-func ComputeFileLists(fileOps FileOperations) (readFiles []string, modifiedFiles []string) {
-	modified := map[string]bool{}
-	for path := range fileOps.Edited {
-		modified[path] = true
-	}
-	for path := range fileOps.Written {
-		modified[path] = true
-	}
-	for path := range fileOps.Read {
-		if !modified[path] {
-			readFiles = append(readFiles, path)
-		}
-	}
-	for path := range modified {
-		modifiedFiles = append(modifiedFiles, path)
-	}
-	sort.Strings(readFiles)
-	sort.Strings(modifiedFiles)
-	return readFiles, modifiedFiles
-}
-
-func FormatFileOperations(readFiles []string, modifiedFiles []string) string {
-	sections := []string{}
-	if len(readFiles) > 0 {
-		sections = append(sections, "<read-files>\n"+strings.Join(readFiles, "\n")+"\n</read-files>")
-	}
-	if len(modifiedFiles) > 0 {
-		sections = append(sections, "<modified-files>\n"+strings.Join(modifiedFiles, "\n")+"\n</modified-files>")
-	}
-	if len(sections) == 0 {
-		return ""
-	}
-	return "\n\n" + strings.Join(sections, "\n\n")
 }
 
 func SerializeConversation(messages []ai.Message) string {
@@ -322,12 +248,6 @@ func PrepareCompaction(rawEntries []json.RawMessage, settings CompactionSettings
 			}
 		}
 	}
-	fileOps := extractFileOperations(messagesToSummarize, entries, prevCompactionIndex)
-	if cutPoint.IsSplitTurn {
-		for _, message := range turnPrefixMessages {
-			ExtractFileOpsFromMessage(message, fileOps)
-		}
-	}
 	return &CompactionPreparation{
 		FirstKeptEntryID:    firstKeptEntry.ID,
 		MessagesToSummarize: messagesToSummarize,
@@ -335,7 +255,6 @@ func PrepareCompaction(rawEntries []json.RawMessage, settings CompactionSettings
 		IsSplitTurn:         cutPoint.IsSplitTurn,
 		TokensBefore:        tokensBefore,
 		PreviousSummary:     previousSummary,
-		FileOps:             fileOps,
 		Settings:            settings,
 	}, true, nil
 }
@@ -477,25 +396,6 @@ func findValidCutPoints(entries []SessionEntry, startIndex int, endIndex int) []
 		}
 	}
 	return cutPoints
-}
-
-func extractFileOperations(messages []agent.AgentMessage, entries []SessionEntry, prevCompactionIndex int) FileOperations {
-	fileOps := CreateFileOps()
-	if prevCompactionIndex >= 0 {
-		prev := entries[prevCompactionIndex]
-		if !prev.FromHook && prev.Details != nil {
-			for _, path := range stringSliceFromAny(prev.Details["readFiles"]) {
-				fileOps.Read[path] = true
-			}
-			for _, path := range stringSliceFromAny(prev.Details["modifiedFiles"]) {
-				fileOps.Edited[path] = true
-			}
-		}
-	}
-	for _, msg := range messages {
-		ExtractFileOpsFromMessage(msg, fileOps)
-	}
-	return fileOps
 }
 
 func messageFromEntryForCompaction(entry SessionEntry) (agent.AgentMessage, bool) {

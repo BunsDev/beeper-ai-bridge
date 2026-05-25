@@ -8,14 +8,8 @@ import (
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 )
 
-type BranchSummaryDetails struct {
-	ReadFiles     []string `json:"readFiles"`
-	ModifiedFiles []string `json:"modifiedFiles"`
-}
-
 type BranchPreparation struct {
 	Messages    []agent.AgentMessage
-	FileOps     FileOperations
 	TotalTokens int
 }
 
@@ -85,25 +79,13 @@ func PrepareBranchEntries(rawEntries []json.RawMessage, tokenBudget int) (Branch
 		return BranchPreparation{}, err
 	}
 	messages := []agent.AgentMessage{}
-	fileOps := CreateFileOps()
 	totalTokens := 0
-	for _, entry := range entries {
-		if entry.Type == "branch_summary" && !entry.FromHook && entry.Details != nil {
-			for _, path := range stringSliceFromAny(entry.Details["readFiles"]) {
-				fileOps.Read[path] = true
-			}
-			for _, path := range stringSliceFromAny(entry.Details["modifiedFiles"]) {
-				fileOps.Edited[path] = true
-			}
-		}
-	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 		message, ok := messageFromEntryForBranch(entry)
 		if !ok {
 			continue
 		}
-		ExtractFileOpsFromMessage(message, fileOps)
 		tokens := EstimateTokens(message)
 		if tokenBudget > 0 && totalTokens+tokens > tokenBudget {
 			if entry.Type == "compaction" || entry.Type == "branch_summary" {
@@ -117,7 +99,7 @@ func PrepareBranchEntries(rawEntries []json.RawMessage, tokenBudget int) (Branch
 		messages = append([]agent.AgentMessage{message}, messages...)
 		totalTokens += tokens
 	}
-	return BranchPreparation{Messages: messages, FileOps: fileOps, TotalTokens: totalTokens}, nil
+	return BranchPreparation{Messages: messages, TotalTokens: totalTokens}, nil
 }
 
 func messageFromEntryForBranch(entry SessionEntry) (agent.AgentMessage, bool) {

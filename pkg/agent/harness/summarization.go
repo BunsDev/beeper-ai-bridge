@@ -171,9 +171,7 @@ func GenerateSummary(ctx context.Context, preparation CompactionPreparation, opt
 			return CompactResult{}, err
 		}
 	}
-	readFiles, modifiedFiles := ComputeFileLists(preparation.FileOps)
-	summary += FormatFileOperations(readFiles, modifiedFiles)
-	return CompactResult{Summary: summary, FirstKeptEntryID: preparation.FirstKeptEntryID, TokensBefore: preparation.TokensBefore, Details: CompactionDetails{ReadFiles: readFiles, ModifiedFiles: modifiedFiles}}, nil
+	return CompactResult{Summary: summary, FirstKeptEntryID: preparation.FirstKeptEntryID, TokensBefore: preparation.TokensBefore}, nil
 }
 
 func GenerateBranchSummary(ctx context.Context, preparation BranchPreparation, options SummaryGenerationOptions) (BranchSummaryResult, error) {
@@ -203,9 +201,7 @@ func GenerateBranchSummary(ctx context.Context, preparation BranchPreparation, o
 		return BranchSummaryResult{}, fmt.Errorf("Branch summary failed: %s", nonEmpty(response.ErrorMessage, "Unknown error"))
 	}
 	summary := branchSummaryPreamble + assistantText(response)
-	readFiles, modifiedFiles := ComputeFileLists(preparation.FileOps)
-	summary += FormatFileOperations(readFiles, modifiedFiles)
-	return BranchSummaryResult{Summary: nonEmpty(summary, "No summary generated"), ReadFiles: readFiles, ModifiedFiles: modifiedFiles}, nil
+	return BranchSummaryResult{Summary: nonEmpty(summary, "No summary generated")}, nil
 }
 
 func generateSummaryText(ctx context.Context, messages []agent.AgentMessage, previousSummary string, reserveTokens int, options SummaryGenerationOptions) (string, error) {

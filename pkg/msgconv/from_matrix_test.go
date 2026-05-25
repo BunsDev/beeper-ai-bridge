@@ -11,21 +11,21 @@ import (
 	"maunium.net/go/mautrix/event"
 )
 
-func TestFromMatrixUsesPlainBodyForFormattedText(t *testing.T) {
+func TestFromMatrixUsesMatrixHTMLForFormattedText(t *testing.T) {
 	prompt, err := FromMatrix(context.Background(), nil, &bridgev2.MatrixMessage{
 		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
 			Content: &event.MessageEventContent{
 				MsgType:       event.MsgText,
 				Body:          "plain text",
-				FormattedBody: "<b>plain text</b>",
+				FormattedBody: "<strong>plain text</strong>",
 			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt.Text != "plain text" {
-		t.Fatalf("expected formatted text to downgrade to body, got %q", prompt.Text)
+	if prompt.Text != "<strong>plain text</strong>" {
+		t.Fatalf("expected Matrix HTML prompt text, got %q", prompt.Text)
 	}
 }
 

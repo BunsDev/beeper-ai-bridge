@@ -139,63 +139,6 @@ func TestAgentHarnessNextTurnAndSetters(t *testing.T) {
 	}
 }
 
-func TestAgentHarnessSkillAndPromptFromTemplateExecuteTurns(t *testing.T) {
-	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer storage.Close()
-
-	var captured [][]ai.Message
-	harness, err := NewAgentHarness(AgentHarnessOptions{
-		Session: session.NewSession(storage),
-		Model:   harnessTestModel(),
-		Resources: AgentHarnessResources{
-			Skills: []Skill{{
-				Name:        "reader",
-				Description: "Read things",
-				Content:     "Use rg first.",
-				FilePath:    "/repo/skills/reader/SKILL.md",
-			}},
-			PromptTemplates: []PromptTemplate{{
-				Name:    "fix",
-				Content: "Fix $1 with $ARGUMENTS",
-			}},
-		},
-		StreamFn: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
-			captured = append(captured, append([]ai.Message{}, llmContext.Messages...))
-			stream := ai.NewAssistantMessageEventStream()
-			go func() {
-				output := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "ok"}}, API: model.API, Provider: model.Provider, Model: model.ID, StopReason: ai.StopReasonStop}
-				stream.Push(ai.AssistantMessageEvent{Type: "start", Partial: &output})
-				stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &output})
-			}()
-			return stream
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := harness.Skill(ctx, "reader", "Only inspect files."); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := harness.PromptFromTemplate(ctx, "fix", []string{"bug", "now"}); err != nil {
-		t.Fatal(err)
-	}
-	if len(captured) != 2 {
-		t.Fatalf("expected skill and prompt template turns, got %#v", captured)
-	}
-	first := textFromContent(captured[0][0].Content)
-	if first == "" || !containsText(first, "<skill name=\"reader\"") || !containsText(first, "Only inspect files.") {
-		t.Fatalf("expected formatted skill invocation, got %q", first)
-	}
-	second := textFromContent(captured[1][2].Content)
-	if second != "Fix bug with bug now" {
-		t.Fatalf("expected prompt template substitution, got %q", second)
-	}
-}
-
 func TestAgentHarnessUnsubscribeRemovesOnlyTargetHandlers(t *testing.T) {
 	ctx := context.Background()
 	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
@@ -220,17 +163,17 @@ func TestAgentHarnessUnsubscribeRemovesOnlyTargetHandlers(t *testing.T) {
 	})
 	firstHandlerCalls := 0
 	secondHandlerCalls := 0
-	removeHandler := harness.On("resources_update", func(context.Context, AgentHarnessEvent) (any, error) {
+	removeHandler := harness.On("model_select", func(context.Context, AgentHarnessEvent) (any, error) {
 		firstHandlerCalls++
 		return nil, nil
 	})
-	harness.On("resources_update", func(context.Context, AgentHarnessEvent) (any, error) {
+	harness.On("model_select", func(context.Context, AgentHarnessEvent) (any, error) {
 		secondHandlerCalls++
 		return nil, nil
 	})
 	removeSubscriber()
 	removeHandler()
-	if err := harness.SetResources(ctx, AgentHarnessResources{}); err != nil {
+	if err := harness.SetModel(ctx, ai.Model{ID: "next", API: ai.ApiOpenAIResponses, Provider: "openai"}); err != nil {
 		t.Fatal(err)
 	}
 	if firstSubscriberCalls != 0 || firstHandlerCalls != 0 {
@@ -471,17 +414,8 @@ func TestAgentHarnessSystemPromptCallbackRefreshesAtSavePoint(t *testing.T) {
 		Session:       session.NewSession(storage),
 		Model:         harnessTestModel(),
 		ThinkingLevel: agent.ThinkingLevelOff,
-		Resources: AgentHarnessResources{Skills: []Skill{{
-			Name:        "prompt",
-			Description: "prompt",
-			Content:     "first prompt",
-			FilePath:    "/skills/prompt",
-		}}},
 		SystemPromptFunc: func(ctx context.Context, promptContext AgentHarnessSystemPromptContext) (string, error) {
-			if len(promptContext.Resources.Skills) == 0 {
-				return "missing prompt", nil
-			}
-			return promptContext.Resources.Skills[0].Content, nil
+			return "prompt for " + promptContext.Model.ID, nil
 		},
 		Tools: []agent.AgentTool[any]{{
 			Tool: ai.Tool{Name: "calculate", Description: "calculate"},
@@ -517,19 +451,13 @@ func TestAgentHarnessSystemPromptCallbackRefreshesAtSavePoint(t *testing.T) {
 			if err := harness.SetModel(ctx, secondModel); err != nil {
 				return err
 			}
-			return harness.SetResources(ctx, AgentHarnessResources{Skills: []Skill{{
-				Name:        "prompt",
-				Description: "prompt",
-				Content:     "second prompt",
-				FilePath:    "/skills/prompt",
-			}}})
 		}
 		return nil
 	})
 	if _, err := harness.Prompt(ctx, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if len(captured) != 2 || captured[0] != "first prompt" || captured[1] != "second prompt" {
+	if len(captured) != 2 || captured[0] != "prompt for gpt-test" || captured[1] != "prompt for second" {
 		t.Fatalf("expected refreshed system prompts, got %#v", captured)
 	}
 }
@@ -876,8 +804,7 @@ func TestAgentHarnessNavigateTreeMovesLeafAndCreatesSummary(t *testing.T) {
 			if len(prep.Messages) != 1 || prep.Messages[0].Role != "assistant" {
 				t.Fatalf("unexpected branch prep %#v", prep)
 			}
-			readFiles, modifiedFiles := ComputeFileLists(prep.FileOps)
-			return BranchSummaryResult{Summary: "branch summary", ReadFiles: readFiles, ModifiedFiles: modifiedFiles}, nil
+			return BranchSummaryResult{Summary: "branch summary"}, nil
 		},
 	})
 	if err != nil {
@@ -960,7 +887,7 @@ func TestAgentHarnessNavigateTreeHookCanCancelOrProvideSummary(t *testing.T) {
 	}
 	remove()
 	harness.On("session_before_tree", func(ctx context.Context, event AgentHarnessEvent) (any, error) {
-		return SessionBeforeTreeResult{Summary: &BranchSummaryResult{Summary: "hook branch summary", ReadFiles: []string{"/tmp/a"}}}, nil
+		return SessionBeforeTreeResult{Summary: &BranchSummaryResult{Summary: "hook branch summary"}}, nil
 	})
 	result, err := harness.NavigateTree(ctx, targetID, NavigateTreeOptions{Summarize: true})
 	if err != nil {

@@ -14,11 +14,13 @@ import (
 var ExampleConfig string
 
 type Config struct {
-	BeeperEnvTLD       string                `yaml:"beeper_env_tld"`
-	DefaultProvider    DefaultProviderConfig `yaml:"default_provider"`
-	RoomStateEventType string                `yaml:"room_state_event_type"`
-	StreamType         string                `yaml:"stream_type"`
-	Tools              ToolsConfig           `yaml:"tools"`
+	BeeperEnvTLD          string                `yaml:"beeper_env_tld"`
+	DefaultProvider       DefaultProviderConfig `yaml:"default_provider"`
+	DefaultSystemPrompt   string                `yaml:"default_system_prompt"`
+	DefaultReasoningLevel string                `yaml:"default_reasoning_level"`
+	Fetch                 FetchConfig           `yaml:"fetch"`
+	Search                SearchConfig          `yaml:"search"`
+	StreamType            string                `yaml:"stream_type"`
 }
 
 type DefaultProviderConfig struct {
@@ -26,9 +28,16 @@ type DefaultProviderConfig struct {
 	Models  []ai.Model `yaml:"models"`
 }
 
-type ToolsConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	WorkspaceRoots []string `yaml:"workspace_roots"`
+type FetchConfig struct {
+	TimeoutMS int   `yaml:"timeout_ms"`
+	MaxBytes  int64 `yaml:"max_bytes"`
+	MaxChars  int   `yaml:"max_chars"`
+}
+
+type SearchConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"`
+	APIKey   string `yaml:"api_key"`
 }
 
 type umConfig Config
@@ -48,11 +57,23 @@ func (c *Config) ApplyDefaults() {
 	if c.DefaultProvider.BaseURL == "" {
 		c.DefaultProvider.BaseURL = "https://ai-proxy." + c.BeeperEnvTLD + "/v1/responses"
 	}
-	if c.RoomStateEventType == "" {
-		c.RoomStateEventType = aiid.RoomConfigType
-	}
 	if c.StreamType == "" {
 		c.StreamType = aiid.StreamType
+	}
+	if c.DefaultSystemPrompt == "" {
+		c.DefaultSystemPrompt = "You are a helpful assistant inside Beeper."
+	}
+	if c.DefaultReasoningLevel == "" {
+		c.DefaultReasoningLevel = "off"
+	}
+	if c.Fetch.TimeoutMS == 0 {
+		c.Fetch.TimeoutMS = 10000
+	}
+	if c.Fetch.MaxBytes == 0 {
+		c.Fetch.MaxBytes = 2 * 1024 * 1024
+	}
+	if c.Fetch.MaxChars == 0 {
+		c.Fetch.MaxChars = 20000
 	}
 	if len(c.DefaultProvider.Models) == 0 {
 		c.DefaultProvider.Models = []ai.Model{{
@@ -97,9 +118,11 @@ func normalizeResponsesBaseURL(baseURL string) string {
 func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "beeper_env_tld")
 	helper.Copy(up.Map, "default_provider")
-	helper.Copy(up.Str, "room_state_event_type")
+	helper.Copy(up.Str, "default_system_prompt")
+	helper.Copy(up.Str, "default_reasoning_level")
+	helper.Copy(up.Map, "fetch")
+	helper.Copy(up.Map, "search")
 	helper.Copy(up.Str, "stream_type")
-	helper.Copy(up.Map, "tools")
 }
 
 func (c *Connector) GetConfig() (string, any, up.Upgrader) {

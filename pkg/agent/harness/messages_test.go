@@ -1,39 +1,14 @@
 package harness
 
 import (
-	"strings"
 	"testing"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
-func TestBashExecutionToTextMatchesTypeScriptFormatting(t *testing.T) {
-	exitCode := 2
-	text := BashExecutionToText(agent.AgentMessage{
-		Role:           "bashExecution",
-		Command:        "npm run check",
-		Output:         "failed",
-		ExitCode:       &exitCode,
-		Truncated:      true,
-		FullOutputPath: "/tmp/out.log",
-	})
-
-	for _, want := range []string{
-		"Ran `npm run check`",
-		"```\nfailed\n```",
-		"Command exited with code 2",
-		"[Output truncated. Full output: /tmp/out.log]",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("expected %q in %q", want, text)
-		}
-	}
-}
-
 func TestConvertToLlmHandlesCustomHarnessMessages(t *testing.T) {
 	messages := []agent.AgentMessage{
-		{Role: "bashExecution", Command: "ls", Output: "", Timestamp: 1, ExcludeFromContext: true},
 		CreateCustomMessage("note", "hello", true, nil, "2026-05-23T00:00:00Z"),
 		CreateBranchSummaryMessage("branch", "a", "2026-05-23T00:00:01Z"),
 		CreateCompactionSummaryMessage("compact", 42, "2026-05-23T00:00:02Z"),

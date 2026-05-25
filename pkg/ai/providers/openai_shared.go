@@ -930,11 +930,15 @@ func parseResponsesUsageMap(rawUsage map[string]any, model ai.Model) ai.Usage {
 	if details, ok := rawUsage["input_tokens_details"].(map[string]any); ok {
 		cachedTokens = intFromAny(details["cached_tokens"])
 	}
+	reasoningTokens := 0
+	if details, ok := rawUsage["output_tokens_details"].(map[string]any); ok {
+		reasoningTokens = intFromAny(details["reasoning_tokens"])
+	}
 	input := inputTokens - cachedTokens
 	if input < 0 {
 		input = 0
 	}
-	usage := ai.Usage{Input: input, Output: outputTokens, CacheRead: cachedTokens, TotalTokens: totalTokens}
+	usage := ai.Usage{Input: input, Output: outputTokens, CacheRead: cachedTokens, ReasoningTokens: reasoningTokens, TotalTokens: totalTokens}
 	ai.CalculateCost(model, &usage)
 	return usage
 }

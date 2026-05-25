@@ -3,10 +3,9 @@ package connector
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
@@ -40,6 +39,8 @@ type Client struct {
 var _ bridgev2.NetworkAPI = (*Client)(nil)
 var _ bridgev2.NetworkAPIWithUserID = (*Client)(nil)
 var _ bridgev2.RedactionHandlingNetworkAPI = (*Client)(nil)
+var _ bridgev2.RoomTopicHandlingNetworkAPI = (*Client)(nil)
+var _ bridgev2.DisappearTimerChangingNetworkAPI = (*Client)(nil)
 var _ bridgev2.GroupCreatingNetworkAPI = (*Client)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*Client)(nil)
 var _ bridgev2.ContactListingNetworkAPI = (*Client)(nil)
@@ -113,6 +114,7 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 func (cl *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
 	resp, err := cl.handleMatrixMessage(ctx, msg)
 	if err != nil && msg != nil && msg.Portal != nil {
+		cl.logMatrixMessageError(msg, err, "AI prompt failed")
 		cl.queueMatrixError(msg.Portal, err)
 	}
 	return resp, err
@@ -127,22 +129,6 @@ func (cl *Client) handleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixM
 	if err != nil {
 		return nil, err
 	}
-	if requestedLoginID := loginIDFromConfig(roomConfig); requestedLoginID != "" && requestedLoginID != cl.UserLogin.ID {
-		targetLogin, err := cl.resolveRequestedLogin(ctx, requestedLoginID)
-		if err != nil {
-			return nil, err
-		}
-		targetClient, err := cl.clientForLogin(ctx, targetLogin)
-		if err != nil {
-			return nil, err
-		}
-		targetPortal, err := cl.switchPortalLogin(ctx, msg.Portal, requestedLoginID)
-		if err != nil {
-			return nil, err
-		}
-		msg.Portal = targetPortal
-		return targetClient.handleMatrixMessageWithConfig(ctx, msg, roomConfig, roomStateEventID)
-	}
 	return cl.handleMatrixMessageWithConfig(ctx, msg, roomConfig, roomStateEventID)
 }
 
@@ -153,6 +139,9 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 		return nil, err
 	}
 	model := cl.Main.ModelForProvider(provider, modelID)
+	if err := cl.validateReasoningLevel(model, roomConfig); err != nil {
+		return nil, err
+	}
 	prompt, err := msgconv.FromMatrix(ctx, cl.Main.Bridge.Matrix.BotIntent(), msg)
 	if err != nil {
 		return nil, err
@@ -190,18 +179,11 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	options := harness.AgentHarnessOptions{
 		Session:             agentSession,
 		Model:               model,
-		ThinkingLevel:       agent.ThinkingLevel(roomConfig.ThinkingLevel),
-		SystemPrompt:        roomConfig.SystemPrompt,
+		ThinkingLevel:       agent.ThinkingLevel(cl.reasoningLevel(roomConfig)),
+		SystemPrompt:        cl.systemPrompt(roomConfig),
+		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, prompt),
 		StreamFn:            streamFn,
 		GetAPIKeyAndHeaders: cl.authForProvider(provider),
-	}
-	env, err := cl.executionEnv(roomConfig)
-	if err != nil {
-		return nil, err
-	}
-	if env != nil {
-		options.Env = env
-		options.Tools = workspaceTools(env)
 	}
 	agentHarness, err := harness.NewAgentHarness(options)
 	if err != nil {
@@ -209,9 +191,31 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	}
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)
 	defer cl.clearActiveHarness(msg.Portal.PortalKey, agentHarness)
+	cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 30*time.Second)
+	defer cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 0)
+	var toolOutputs []toolOutputEvent
+	unsubscribeToolOutputs := agentHarness.Subscribe(func(ctx context.Context, event harness.AgentHarnessEvent) error {
+		if event.Type != "tool_execution_end" || event.AgentEvent == nil || event.AgentEvent.ToolCallID == "" {
+			return nil
+		}
+		result, ok := event.AgentEvent.Result.(agent.AgentToolResult[any])
+		if !ok {
+			return nil
+		}
+		toolOutputs = append(toolOutputs, toolOutputEvent{
+			ID:      event.AgentEvent.ToolCallID,
+			Name:    event.AgentEvent.ToolName,
+			Input:   event.AgentEvent.Args,
+			Result:  result,
+			IsError: event.AgentEvent.IsError,
+		})
+		return nil
+	})
+	defer unsubscribeToolOutputs()
 
 	promptResult, err := agentHarness.PromptWithResult(ctx, prompt.Text, prompt.Images...)
 	if err != nil {
+		cl.logMatrixMessageError(msg, err, "AI harness prompt failed")
 		_ = streamPublisher.Publish(ctx, msg.Portal.MXID, assistantEventID, map[string]any{
 			"op":      "error",
 			"message": err.Error(),
@@ -223,6 +227,7 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 		return nil, fmt.Errorf("prompt did not create expected user and assistant session entries")
 	}
 	fillAssistantMetadata(assistantMetadata, promptResult.AssistantEntryID, provider.ID, model.ID, runID, assistantMessage)
+	appendToolOutputs(run, toolOutputs)
 	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), msg.Portal.PortalKey, assistantMessageID, assistantMetadata)
 	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, *run, assistantMessage, assistantMetadata))
 	cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
@@ -280,6 +285,21 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	}
 	meta.SessionTitle = title
 	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &title}, cl.UserLogin, nil, time.Now())
+}
+
+func (cl *Client) queueAssistantTyping(portalKey networkid.PortalKey, providerID string, modelID string, timeout time.Duration) {
+	cl.UserLogin.QueueRemoteEvent(&simplevent.Typing{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventTyping,
+			PortalKey: portalKey,
+			Sender: bridgev2.EventSender{
+				Sender: aiid.AssistantUserID(providerID, modelID),
+			},
+			Timestamp: time.Now(),
+		},
+		Timeout: timeout,
+		Type:    bridgev2.TypingTypeText,
+	})
 }
 
 func fillAssistantMetadata(metadata *aiid.MessageMetadata, entryID string, providerID string, modelID string, runID string, assistantMessage ai.Message) {
@@ -351,6 +371,35 @@ func (cl *Client) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.M
 	}
 	_, err := h.Abort(ctx)
 	return err
+}
+
+func (cl *Client) HandleMatrixRoomTopic(ctx context.Context, msg *bridgev2.MatrixRoomTopic) (bool, error) {
+	if msg == nil || msg.Portal == nil || msg.Content == nil {
+		return false, nil
+	}
+	topic := msg.Content.Topic
+	msg.Portal.Topic = topic
+	msg.Portal.TopicSet = topic != ""
+	meta := portalMetadata(msg.Portal)
+	if meta.SessionID != "" {
+		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
+			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
+		})
+		if err == nil {
+			_, _ = agentSession.AppendCustomMessageEntry(ctx, "room_topic", map[string]any{"topic": topic}, false, nil)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func (cl *Client) HandleMatrixDisappearingTimer(ctx context.Context, msg *bridgev2.MatrixDisappearingTimer) (bool, error) {
+	if msg == nil || msg.Portal == nil {
+		return false, nil
+	}
+	msg.Portal.Disappear = database.DisappearingSettingFromEvent(msg.Content)
+	return true, nil
 }
 
 func (cl *Client) resolveRequestedLogin(ctx context.Context, requested networkid.UserLoginID) (*bridgev2.UserLogin, error) {
@@ -496,6 +545,7 @@ func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, room
 							StopReason:   ai.StopReasonError,
 						},
 					})
+					cl.logStreamError(err, roomID, eventID, run, "Failed to publish AI stream carrier")
 					return
 				}
 				downstream.Push(evt)
@@ -503,6 +553,52 @@ func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, room
 		}()
 		return downstream
 	}
+}
+
+func (cl *Client) logMatrixMessageError(msg *bridgev2.MatrixMessage, err error, message string) {
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil {
+		return
+	}
+	event := cl.Main.Bridge.Log.Error().Err(err)
+	if msg != nil {
+		if msg.Portal != nil {
+			event = event.
+				Str("portal_id", string(msg.Portal.ID)).
+				Str("portal_receiver", string(msg.Portal.Receiver)).
+				Str("portal_mxid", string(msg.Portal.MXID))
+		}
+		if msg.Event != nil {
+			event = event.
+				Str("event_id", string(msg.Event.ID)).
+				Str("event_type", string(msg.Event.Type.Type)).
+				Str("sender", string(msg.Event.Sender))
+		}
+	}
+	if cl.UserLogin != nil {
+		event = event.Str("login_id", string(cl.UserLogin.ID))
+	}
+	event.Msg(message)
+}
+
+func (cl *Client) logStreamError(err error, roomID id.RoomID, eventID id.EventID, run *aistream.Run, message string) {
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil {
+		return
+	}
+	event := cl.Main.Bridge.Log.Error().
+		Err(err).
+		Str("room_id", string(roomID)).
+		Str("event_id", string(eventID))
+	if run != nil {
+		event = event.
+			Str("run_id", run.RunID).
+			Str("thread_id", run.ThreadID).
+			Str("message_id", run.MessageID).
+			Str("model", run.Model)
+	}
+	if cl.UserLogin != nil {
+		event = event.Str("login_id", string(cl.UserLogin.ID))
+	}
+	event.Msg(message)
 }
 
 func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
@@ -524,9 +620,11 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 			writer.ToolEnd(evt.ToolCall.ID, evt.ToolCall.Name, evt.ToolCall.Arguments, nil)
 		}
 	case "done":
-		writer.Finish(string(evt.Reason))
 		if evt.Message != nil {
-			writer.Run.Usage = aguiUsage(evt.Message.Usage)
+			usage := aguiUsage(evt.Message.Usage)
+			writer.FinishWithUsage(string(evt.Reason), &usage)
+		} else {
+			writer.Finish(string(evt.Reason))
 		}
 	case "error":
 		message := "stream error"
@@ -537,6 +635,79 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 	}
 }
 
+type toolOutputEvent struct {
+	ID      string
+	Name    string
+	Input   any
+	Result  agent.AgentToolResult[any]
+	IsError bool
+}
+
+func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent) {
+	if run == nil || len(outputs) == 0 {
+		return
+	}
+	writer := aistream.NewWriter(run, time.Now)
+	for _, output := range outputs {
+		writer.ToolEnd(output.ID, output.Name, output.Input, toolOutput(output.Result, output.IsError))
+	}
+}
+
+func toolOutput(result agent.AgentToolResult[any], isError bool) any {
+	output := mapFromAny(result.Details)
+	if output == nil {
+		if text := textFromBlocks(result.Content); text != "" {
+			output = map[string]any{"content": text}
+		} else {
+			output = map[string]any{}
+		}
+	}
+	if isError {
+		output["state"] = agui.ToolResultStateError
+		output["status"] = "failed"
+	} else {
+		output["state"] = agui.ToolResultStateComplete
+		output["status"] = "success"
+	}
+	return output
+}
+
+func mapFromAny(value any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	if source, ok := value.(map[string]any); ok {
+		clone := map[string]any{}
+		for key, item := range source {
+			clone[key] = item
+		}
+		return clone
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{"result": value}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err == nil && out != nil {
+		return out
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		return map[string]any{"result": decoded}
+	}
+	return map[string]any{"result": value}
+}
+
+func textFromBlocks(blocks []ai.ContentBlock) string {
+	var out string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			out += block.Text
+		}
+	}
+	return out
+}
+
 func aguiUsage(usage ai.Usage) agui.Usage {
 	total := usage.TotalTokens
 	if total == 0 {
@@ -545,6 +716,7 @@ func aguiUsage(usage ai.Usage) agui.Usage {
 	return agui.Usage{
 		PromptTokens:     usage.Input,
 		CompletionTokens: usage.Output,
+		ReasoningTokens:  usage.ReasoningTokens,
 		TotalTokens:      total,
 	}
 }
@@ -583,16 +755,11 @@ func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal,
 		meta = &aiid.PortalMetadata{}
 		portal.Metadata = meta
 	}
-	if meta.SelectedLoginID != "" && meta.SelectedLoginID != string(cl.UserLogin.ID) {
-		meta.SessionID = ""
-	}
-	meta.SelectedLoginID = string(cl.UserLogin.ID)
 	meta.SelectedProviderID = providerID
 	meta.SelectedModelID = modelID
-	meta.SystemPrompt = roomConfig.SystemPrompt
-	meta.ThinkingLevel = roomConfig.ThinkingLevel
-	meta.ToolsEnabled = roomConfig.ToolsEnabled
-	meta.Cwd = roomConfig.Cwd
+	meta.AdditionalPrompt = roomConfig.AdditionalPrompt
+	meta.ThinkingLevel = cl.reasoningLevel(roomConfig)
+	meta.DisabledTools = roomConfig.DisabledTools
 	meta.RoomStateEventID = stateEventID
 	if meta.SessionID != "" {
 		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
@@ -606,7 +773,7 @@ func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal,
 			return nil, err
 		}
 	}
-	agentSession, err := cl.Main.Store.CreateSession(ctx, session.SQLiteSessionCreateOptions{Cwd: roomConfig.Cwd})
+	agentSession, err := cl.Main.Store.CreateSession(ctx, session.SQLiteSessionCreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -638,42 +805,6 @@ func matrixEventTime(evt *event.Event) time.Time {
 		return time.Now()
 	}
 	return time.UnixMilli(evt.Timestamp)
-}
-
-func (cl *Client) executionEnv(config RoomConfig) (*harness.LocalExecutionEnv, error) {
-	if !cl.Main.Config.Tools.Enabled || !config.ToolsEnabled || config.Cwd == "" {
-		if cl.Main.Config.Tools.Enabled && config.ToolsEnabled {
-			return nil, fmt.Errorf("workspace tools require cwd in %s state", cl.Main.Config.RoomStateEventType)
-		}
-		return nil, nil
-	}
-	cwd, err := filepath.Abs(config.Cwd)
-	if err != nil {
-		return nil, err
-	}
-	for _, root := range cl.Main.Config.Tools.WorkspaceRoots {
-		rootAbs, err := filepath.Abs(root)
-		if err != nil {
-			continue
-		}
-		if cwd == rootAbs || slices.Contains(splitPathParents(cwd), rootAbs) {
-			return harness.NewLocalExecutionEnv(cwd), nil
-		}
-	}
-	return nil, fmt.Errorf("cwd %s is outside configured workspace roots", config.Cwd)
-}
-
-func splitPathParents(path string) []string {
-	parents := []string{}
-	current := filepath.Clean(path)
-	for {
-		parent := filepath.Dir(current)
-		if parent == current {
-			return parents
-		}
-		parents = append(parents, parent)
-		current = parent
-	}
 }
 
 func (cl *Client) setActiveHarness(key networkid.PortalKey, h *harness.AgentHarness) {

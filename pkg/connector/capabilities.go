@@ -3,12 +3,12 @@ package connector
 import (
 	"context"
 
+	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
 
 var roomCaps = &event.RoomFeatures{
-	ID: "com.beeper.ai.capabilities.v1",
 	Formatting: event.FormattingFeatureMap{
 		event.FmtBold:          event.CapLevelPartialSupport,
 		event.FmtItalic:        event.CapLevelPartialSupport,
@@ -33,13 +33,26 @@ var roomCaps = &event.RoomFeatures{
 			MaxCaptionLength: 20000,
 		},
 	},
-	MaxTextLength:       20000,
-	Reply:               event.CapLevelFullySupported,
-	Edit:                event.CapLevelRejected,
-	Delete:              event.CapLevelPartialSupport,
+	State: event.StateFeatureMap{
+		aiid.RoomToolsType:                      {Level: event.CapLevelFullySupported},
+		aiid.RoomModelType:                      {Level: event.CapLevelFullySupported},
+		aiid.RoomPromptType:                     {Level: event.CapLevelFullySupported},
+		event.StateTopic.Type:                   {Level: event.CapLevelFullySupported},
+		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
+	},
+	MaxTextLength: 20000,
+	Reply:         event.CapLevelFullySupported,
+	Edit:          event.CapLevelRejected,
+	Delete:        event.CapLevelPartialSupport,
+	DisappearingTimer: &event.DisappearingTimerCapability{
+		Types: []event.DisappearingType{
+			event.DisappearingTypeAfterSend,
+			event.DisappearingTypeAfterRead,
+		},
+	},
 	Reaction:            event.CapLevelUnsupported,
 	ReadReceipts:        false,
-	TypingNotifications: false,
+	TypingNotifications: true,
 }
 
 func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {

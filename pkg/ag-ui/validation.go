@@ -10,14 +10,11 @@ func ValidateEvent(evt Event) error {
 	if eventType == "" {
 		return fmt.Errorf("ag-ui event missing type")
 	}
-	if _, ok := evt["timestamp"]; !ok {
-		return fmt.Errorf("%s missing timestamp", eventType)
-	}
 	switch eventType {
 	case EventRunStarted:
 		return require(evt, "threadId", "runId")
 	case EventRunFinished:
-		return require(evt, "threadId", "runId", "finishReason")
+		return require(evt, "threadId", "runId")
 	case EventRunError:
 		return require(evt, "message")
 	case EventTextMessageStart:
@@ -29,6 +26,13 @@ func ValidateEvent(evt Event) error {
 		return requireStringField(evt, "delta")
 	case EventTextMessageEnd:
 		return require(evt, "messageId")
+	case EventTextMessageChunk:
+		if messageID, _ := evt["messageId"].(string); messageID == "" {
+			if delta, _ := evt["delta"].(string); delta == "" {
+				return fmt.Errorf("%s requires messageId or delta", eventType)
+			}
+		}
+		return nil
 	case EventReasoningStart, EventReasoningEnd, EventReasoningMsgStart, EventReasoningMsgEnd:
 		return require(evt, "messageId")
 	case EventReasoningMsgCont:
@@ -36,6 +40,18 @@ func ValidateEvent(evt Event) error {
 			return err
 		}
 		return requireStringField(evt, "delta")
+	case EventReasoningMsgChunk:
+		if messageID, _ := evt["messageId"].(string); messageID == "" {
+			if delta, _ := evt["delta"].(string); delta == "" {
+				return fmt.Errorf("%s requires messageId or delta", eventType)
+			}
+		}
+		return nil
+	case EventReasoningEncrypted:
+		if err := require(evt, "subtype", "entityId", "encryptedValue"); err != nil {
+			return err
+		}
+		return validateStringSet(evt, "subtype", true, map[string]bool{"message": true, "tool-call": true})
 	case EventToolCallStart:
 		if err := require(evt, "toolCallId", "toolCallName"); err != nil {
 			return err
@@ -72,6 +88,13 @@ func ValidateEvent(evt Event) error {
 			}
 		}
 		return validateStringSet(evt, "state", true, validToolStates)
+	case EventToolCallChunk:
+		if toolCallID, _ := evt["toolCallId"].(string); toolCallID == "" {
+			if delta, _ := evt["delta"].(string); delta == "" {
+				return fmt.Errorf("%s requires toolCallId or delta", eventType)
+			}
+		}
+		return nil
 	case EventToolCallResult:
 		if err := require(evt, "messageId", "toolCallId", "content"); err != nil {
 			return err
@@ -85,6 +108,12 @@ func ValidateEvent(evt Event) error {
 		return require(evt, "delta")
 	case EventMessagesSnapshot:
 		return require(evt, "messages")
+	case EventActivitySnapshot:
+		return require(evt, "messageId", "activityType", "content")
+	case EventActivityDelta:
+		return require(evt, "messageId", "activityType", "patch")
+	case EventRaw:
+		return require(evt, "event")
 	case EventCustom:
 		return require(evt, "name")
 	default:

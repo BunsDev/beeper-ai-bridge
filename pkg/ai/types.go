@@ -166,12 +166,13 @@ type ModelCost struct {
 }
 
 type Usage struct {
-	Input       int       `json:"input"`
-	Output      int       `json:"output"`
-	CacheRead   int       `json:"cacheRead"`
-	CacheWrite  int       `json:"cacheWrite"`
-	TotalTokens int       `json:"totalTokens"`
-	Cost        UsageCost `json:"cost"`
+	Input           int       `json:"input"`
+	Output          int       `json:"output"`
+	CacheRead       int       `json:"cacheRead"`
+	CacheWrite      int       `json:"cacheWrite"`
+	ReasoningTokens int       `json:"reasoningTokens,omitempty"`
+	TotalTokens     int       `json:"totalTokens"`
+	Cost            UsageCost `json:"cost"`
 }
 
 type UsageCost struct {

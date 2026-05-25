@@ -9,7 +9,6 @@ import (
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 )
 
-type BranchSummaryDetails = harness.BranchSummaryDetails
 type BranchPreparation = harness.BranchPreparation
 type CollectEntriesResult = harness.CollectEntriesResult
 

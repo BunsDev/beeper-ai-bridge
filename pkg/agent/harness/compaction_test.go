@@ -9,27 +9,13 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
-func TestCompactionFileOperationsAndSerialization(t *testing.T) {
+func TestCompactionSerialization(t *testing.T) {
 	message := agent.AgentMessage{Role: "assistant", Content: []ai.ContentBlock{
 		{Type: "thinking", Thinking: "plan"},
 		{Type: "text", Text: "done"},
 		{Type: "toolCall", Name: "read", Arguments: map[string]any{"path": "/tmp/a"}},
 		{Type: "toolCall", Name: "write", Arguments: map[string]any{"path": "/tmp/b"}},
 	}}
-	fileOps := CreateFileOps()
-	ExtractFileOpsFromMessage(message, fileOps)
-	readFiles, modifiedFiles := ComputeFileLists(fileOps)
-	if len(readFiles) != 1 || readFiles[0] != "/tmp/a" {
-		t.Fatalf("unexpected read files %#v", readFiles)
-	}
-	if len(modifiedFiles) != 1 || modifiedFiles[0] != "/tmp/b" {
-		t.Fatalf("unexpected modified files %#v", modifiedFiles)
-	}
-	formatted := FormatFileOperations(readFiles, modifiedFiles)
-	if !strings.Contains(formatted, "<read-files>\n/tmp/a\n</read-files>") || !strings.Contains(formatted, "<modified-files>\n/tmp/b\n</modified-files>") {
-		t.Fatalf("unexpected formatted files %q", formatted)
-	}
-
 	serialized := SerializeConversation([]ai.Message{
 		{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: "hello"}}},
 		message,
@@ -63,7 +49,7 @@ func TestEstimateContextTokensUsesLastAssistantUsage(t *testing.T) {
 	}
 }
 
-func TestPrepareCompactionSelectsCutPointAndFileOps(t *testing.T) {
+func TestPrepareCompactionSelectsCutPoint(t *testing.T) {
 	entries := []json.RawMessage{
 		rawEntry(map[string]any{"type": "message", "id": "a", "parentId": nil, "timestamp": "2026-05-23T00:00:00Z", "message": agent.AgentMessage{Role: "user", Content: "start", Timestamp: 1}}),
 		rawEntry(map[string]any{"type": "message", "id": "b", "parentId": "a", "timestamp": "2026-05-23T00:00:01Z", "message": agent.AgentMessage{Role: "assistant", Content: []ai.ContentBlock{{Type: "toolCall", Name: "read", Arguments: map[string]any{"path": "/tmp/a"}}}, Timestamp: 2}}),
@@ -85,10 +71,6 @@ func TestPrepareCompactionSelectsCutPointAndFileOps(t *testing.T) {
 	}
 	if len(prep.MessagesToSummarize) != 2 || len(prep.TurnPrefixMessages) != 1 {
 		t.Fatalf("unexpected messages to summarize %#v prefix %#v", prep.MessagesToSummarize, prep.TurnPrefixMessages)
-	}
-	readFiles, _ := ComputeFileLists(prep.FileOps)
-	if len(readFiles) != 1 || readFiles[0] != "/tmp/a" {
-		t.Fatalf("expected read file from summarized assistant tool call, got %#v", readFiles)
 	}
 }
 

@@ -58,9 +58,6 @@ func (c *Connector) Start(ctx context.Context) error {
 
 func (c *Connector) ValidateConfig() error {
 	c.Config.ApplyDefaults()
-	if c.Config.Tools.Enabled && len(c.Config.Tools.WorkspaceRoots) == 0 {
-		return fmt.Errorf("network.tools.workspace_roots must be configured when tools are enabled")
-	}
 	if c.Config.DefaultProvider.BaseURL == "" {
 		return fmt.Errorf("network.default_provider.base_url is required")
 	}
@@ -79,7 +76,7 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 }
 
 func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 2
+	return 1, 3
 }
 
 func (c *Connector) defaultProviderConfig() aiid.ProviderConfig {

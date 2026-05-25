@@ -11,8 +11,14 @@ default_provider:
     - image
     contextWindow: 400000
     maxTokens: 128000
-room_state_event_type: com.beeper.ai.room_config
+default_system_prompt: You are a helpful assistant inside Beeper.
+default_reasoning_level: "off"
+fetch:
+  timeout_ms: 10000
+  max_bytes: 2097152
+  max_chars: 20000
+search:
+  enabled: false
+  endpoint: ""
+  api_key: ""
 stream_type: com.beeper.llm.deltas
-tools:
-    enabled: false
-    workspace_roots: []

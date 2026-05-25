@@ -1,1 +1,29 @@
 /mautrix-ai
+
+# Local runtime config/state
+/config.yaml
+/logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Build/test outputs
+/bin/
+/dist/
+/build/
+*.test
+coverage.out
+*.coverprofile
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
+*~

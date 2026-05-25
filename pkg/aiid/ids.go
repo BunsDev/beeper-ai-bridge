@@ -14,7 +14,9 @@ const (
 	BeeperBridgeType = "ai"
 	DefaultLoginName = "beeper"
 	DefaultProvider  = "beeper"
-	RoomConfigType   = "com.beeper.ai.room_config"
+	RoomToolsType    = "com.beeper.ai.tools"
+	RoomModelType    = "com.beeper.ai.model"
+	RoomPromptType   = "com.beeper.ai.additional_prompt"
 	StreamType       = "com.beeper.llm.deltas"
 )
 
