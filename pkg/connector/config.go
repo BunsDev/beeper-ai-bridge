@@ -14,18 +14,23 @@ import (
 var ExampleConfig string
 
 type Config struct {
-	BeeperEnvTLD          string                `yaml:"beeper_env_tld"`
-	DefaultProvider       DefaultProviderConfig `yaml:"default_provider"`
-	DefaultSystemPrompt   string                `yaml:"default_system_prompt"`
-	DefaultReasoningLevel string                `yaml:"default_reasoning_level"`
-	Fetch                 FetchConfig           `yaml:"fetch"`
-	Search                SearchConfig          `yaml:"search"`
-	StreamType            string                `yaml:"stream_type"`
+	BeeperEnvTLD          string                         `yaml:"beeper_env_tld"`
+	DefaultProvider       DefaultProviderConfig          `yaml:"default_provider"`
+	Providers             map[string]aiid.ProviderConfig `yaml:"providers"`
+	DefaultSystemPrompt   string                         `yaml:"default_system_prompt"`
+	DefaultReasoningLevel string                         `yaml:"default_reasoning_level"`
+	Fetch                 FetchConfig                    `yaml:"fetch"`
+	Search                SearchConfig                   `yaml:"search"`
+	StreamType            string                         `yaml:"stream_type"`
 }
 
 type DefaultProviderConfig struct {
-	BaseURL string     `yaml:"base_url"`
-	Models  []ai.Model `yaml:"models"`
+	BaseURL       string      `yaml:"base_url"`
+	Provider      ai.Provider `yaml:"provider"`
+	API           ai.Api      `yaml:"api"`
+	DefaultModel  string      `yaml:"default_model"`
+	AllowedModels []string    `yaml:"allowed_models"`
+	Models        []ai.Model  `yaml:"models"`
 }
 
 type FetchConfig struct {
@@ -75,17 +80,17 @@ func (c *Config) ApplyDefaults() {
 	if c.Fetch.MaxChars == 0 {
 		c.Fetch.MaxChars = 20000
 	}
-	if len(c.DefaultProvider.Models) == 0 {
-		c.DefaultProvider.Models = []ai.Model{{
-			ID:            "gpt-5",
-			Name:          "GPT-5",
-			API:           ai.ApiOpenAIResponses,
-			Provider:      ai.Provider(aiid.DefaultProvider),
-			BaseURL:       normalizeResponsesBaseURL(c.DefaultProvider.BaseURL),
-			Input:         []string{"text", "image"},
-			ContextWindow: 400000,
-			MaxTokens:     128000,
-		}}
+	if c.DefaultProvider.Provider == "" {
+		c.DefaultProvider.Provider = ai.ProviderOpenAI
+	}
+	if c.DefaultProvider.API == "" {
+		c.DefaultProvider.API = ai.ApiOpenAIResponses
+	}
+	if c.DefaultProvider.DefaultModel == "" {
+		c.DefaultProvider.DefaultModel = "gpt-5.5"
+	}
+	if len(c.DefaultProvider.AllowedModels) == 0 && len(c.DefaultProvider.Models) == 0 {
+		c.DefaultProvider.AllowedModels = []string{c.DefaultProvider.DefaultModel, "gpt-5.4", "gpt-5"}
 	}
 	for i := range c.DefaultProvider.Models {
 		c.DefaultProvider.Models[i] = normalizeDefaultModel(c.DefaultProvider.Models[i], c.DefaultProvider.BaseURL)
@@ -97,7 +102,7 @@ func normalizeDefaultModel(model ai.Model, baseURL string) ai.Model {
 		model.API = ai.ApiOpenAIResponses
 	}
 	if model.Provider == "" {
-		model.Provider = ai.Provider(aiid.DefaultProvider)
+		model.Provider = ai.ProviderOpenAI
 	}
 	if model.BaseURL == "" {
 		model.BaseURL = normalizeResponsesBaseURL(baseURL)
@@ -118,6 +123,7 @@ func normalizeResponsesBaseURL(baseURL string) string {
 func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "beeper_env_tld")
 	helper.Copy(up.Map, "default_provider")
+	helper.Copy(up.Map, "providers")
 	helper.Copy(up.Str, "default_system_prompt")
 	helper.Copy(up.Str, "default_reasoning_level")
 	helper.Copy(up.Map, "fetch")

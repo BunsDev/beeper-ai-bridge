@@ -61,7 +61,7 @@ func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID, portal
 
 func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLogin, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
 	meta := login.Metadata.(*aiid.UserLoginMetadata)
-	ensureMetadataDefaults(meta, c.defaultProviderConfig())
+	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
 	providerID := roomConfig.ProviderID
 	if providerID == "" {
 		providerID = meta.DefaultProviderID
@@ -80,12 +80,25 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	if modelID == "" {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s has no selected model", providerID)
 	}
-	if len(provider.Models) > 0 && !providerHasModel(provider, modelID) {
+	if !providerAllowsModel(provider, modelID) {
+		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
+	}
+	if len(provider.Models) == 0 && len(provider.AllowedModels) == 0 {
 		if _, ok := ai.GetModel(provider.Provider, modelID); !ok {
 			return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
 		}
 	}
 	return provider, modelID, nil
+}
+
+func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
+	if len(provider.Models) > 0 {
+		return providerHasModel(provider, modelID)
+	}
+	if len(provider.AllowedModels) > 0 {
+		return slices.Contains(provider.AllowedModels, modelID)
+	}
+	return true
 }
 
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {

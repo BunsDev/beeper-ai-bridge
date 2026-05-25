@@ -113,7 +113,7 @@ func (cl *Client) loginMetadata() *aiid.UserLoginMetadata {
 		return nil
 	}
 	if cl.Main != nil {
-		ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig())
+		ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig(), cl.Main.configuredProviders())
 	}
 	return meta
 }
@@ -122,10 +122,27 @@ func contactModels(provider aiid.ProviderConfig) []ai.Model {
 	if len(provider.Models) > 0 {
 		return provider.Models
 	}
+	if len(provider.AllowedModels) > 0 {
+		models := make([]ai.Model, 0, len(provider.AllowedModels))
+		for _, modelID := range provider.AllowedModels {
+			if modelID == "" {
+				continue
+			}
+			models = append(models, normalizeProviderModel(modelForProviderCatalog(provider, modelID), provider))
+		}
+		return models
+	}
+	if models := ai.GetModels(provider.Provider); len(models) > 0 {
+		out := make([]ai.Model, 0, len(models))
+		for _, model := range models {
+			out = append(out, normalizeProviderModel(model, provider))
+		}
+		return out
+	}
 	if provider.DefaultModel == "" {
 		return nil
 	}
-	return []ai.Model{{ID: provider.DefaultModel, Name: provider.DefaultModel, Provider: provider.Provider, API: provider.API, BaseURL: provider.BaseURL}}
+	return []ai.Model{normalizeProviderModel(modelForProviderCatalog(provider, provider.DefaultModel), provider)}
 }
 
 func modelDisplayName(provider aiid.ProviderConfig, model ai.Model) string {

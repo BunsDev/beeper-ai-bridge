@@ -68,7 +68,7 @@ func (c *Connector) AddProviderToLogin(ctx context.Context, login *bridgev2.User
 	if !ok {
 		return fmt.Errorf("unexpected login metadata type %T", login.Metadata)
 	}
-	ensureMetadataDefaults(meta, c.defaultProviderConfig())
+	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
 	meta.Providers[provider.ID] = provider
 	if meta.DefaultProviderID == "" || meta.DefaultProviderID == aiid.DefaultProvider && !meta.SyntheticDefault {
 		meta.DefaultProviderID = provider.ID

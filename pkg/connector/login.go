@@ -134,20 +134,41 @@ func (l *CustomProviderLogin) SubmitUserInput(ctx context.Context, input map[str
 func (l *CustomProviderLogin) Cancel() {}
 
 func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {
-	return aiid.ProviderConfig{
-		ID:           providerID,
-		DisplayName:  displayName,
-		API:          ai.ApiOpenAIResponses,
-		Provider:     ai.Provider(providerID),
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		DefaultModel: defaultModel,
-		Models:       providerModels(modelList, defaultModel, providerID, baseURL),
-		Enabled:      true,
+	provider, api := inferProviderRoute(providerID, baseURL)
+	modelIDs := providerModelIDs(modelList, defaultModel)
+	config := aiid.ProviderConfig{
+		ID:            providerID,
+		DisplayName:   displayName,
+		API:           api,
+		Provider:      provider,
+		BaseURL:       baseURL,
+		APIKey:        apiKey,
+		DefaultModel:  defaultModel,
+		AllowedModels: modelIDs,
+		Enabled:       true,
 	}
+	if _, ok := ai.GetModel(provider, defaultModel); !ok {
+		config.AllowedModels = nil
+		config.Models = providerModelsFromIDs(modelIDs, providerID, provider, api, baseURL)
+	}
+	return config
+}
+
+func inferProviderRoute(providerID string, baseURL string) (ai.Provider, ai.Api) {
+	providerID = strings.ToLower(providerID)
+	baseURL = strings.ToLower(baseURL)
+	if providerID == string(ai.ProviderOpenRouter) || strings.Contains(baseURL, "openrouter.ai") {
+		return ai.ProviderOpenRouter, ai.ApiOpenAICompletions
+	}
+	return ai.ProviderOpenAI, ai.ApiOpenAIResponses
 }
 
 func providerModels(modelList string, defaultModel string, providerID string, baseURL string) []ai.Model {
+	provider, api := inferProviderRoute(providerID, baseURL)
+	return providerModelsFromIDs(providerModelIDs(modelList, defaultModel), providerID, provider, api, baseURL)
+}
+
+func providerModelIDs(modelList string, defaultModel string) []string {
 	seen := map[string]bool{}
 	modelIDs := []string{defaultModel}
 	for _, raw := range strings.FieldsFunc(modelList, func(r rune) bool {
@@ -158,17 +179,29 @@ func providerModels(modelList string, defaultModel string, providerID string, ba
 			modelIDs = append(modelIDs, modelID)
 		}
 	}
-	models := make([]ai.Model, 0, len(modelIDs))
+	out := make([]string, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		if seen[modelID] {
 			continue
 		}
 		seen[modelID] = true
+		out = append(out, modelID)
+	}
+	return out
+}
+
+func providerModelsFromIDs(modelIDs []string, providerID string, provider ai.Provider, api ai.Api, baseURL string) []ai.Model {
+	models := make([]ai.Model, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		modelProvider := provider
+		if providerID != string(ai.ProviderOpenAI) && providerID != string(ai.ProviderOpenRouter) {
+			modelProvider = ai.Provider(providerID)
+		}
 		models = append(models, ai.Model{
 			ID:            modelID,
 			Name:          modelID,
-			API:           ai.ApiOpenAIResponses,
-			Provider:      ai.Provider(providerID),
+			API:           api,
+			Provider:      modelProvider,
 			BaseURL:       baseURL,
 			Input:         []string{"text", "image"},
 			ContextWindow: 128000,

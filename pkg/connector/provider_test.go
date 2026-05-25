@@ -66,8 +66,11 @@ func TestConfigDefaults(t *testing.T) {
 	if config.StreamType != aiid.StreamType {
 		t.Fatalf("unexpected stream type %#v", config)
 	}
-	if config.DefaultProvider.BaseURL == "" || len(config.DefaultProvider.Models) == 0 {
+	if config.DefaultProvider.BaseURL == "" || len(config.DefaultProvider.AllowedModels) == 0 {
 		t.Fatalf("expected default provider config, got %#v", config.DefaultProvider)
+	}
+	if config.DefaultProvider.Provider != ai.ProviderOpenAI || config.DefaultProvider.DefaultModel != "gpt-5.5" {
+		t.Fatalf("expected default provider to route canonical OpenAI models, got %#v", config.DefaultProvider)
 	}
 	if config.DefaultSystemPrompt == "" || config.DefaultReasoningLevel != "off" {
 		t.Fatalf("expected chat defaults, got %#v", config)
@@ -137,6 +140,43 @@ func TestBuildProviderFromCommandArgs(t *testing.T) {
 	}
 	if len(provider.Models) != 3 || provider.Models[1].ID != "model-b" || provider.Models[2].ID != "model-c" {
 		t.Fatalf("unexpected models %#v", provider.Models)
+	}
+}
+
+func TestBuildProviderFromCommandArgsUsesCanonicalOpenRouterModels(t *testing.T) {
+	provider, err := buildProviderFromCommandArgs([]string{"openrouter", "https://openrouter.ai/api/v1", "env:OPENROUTER_API_KEY", "anthropic/claude-sonnet-4.5", "moonshotai/kimi-k2.6"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.Provider != ai.ProviderOpenRouter || provider.API != ai.ApiOpenAICompletions {
+		t.Fatalf("expected OpenRouter route, got %#v", provider)
+	}
+	if len(provider.Models) != 0 {
+		t.Fatalf("expected route to use generated catalog instead of duplicating models, got %#v", provider.Models)
+	}
+	if len(provider.AllowedModels) != 2 || provider.AllowedModels[0] != "anthropic/claude-sonnet-4.5" {
+		t.Fatalf("unexpected allowed models %#v", provider.AllowedModels)
+	}
+}
+
+func TestModelForProviderAppliesRouteBaseURLToCatalogModel(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:            aiid.DefaultProvider,
+		API:           ai.ApiOpenAIResponses,
+		Provider:      ai.ProviderOpenAI,
+		BaseURL:       "https://ai-proxy.beeper.com/v1/responses",
+		AllowedModels: []string{"gpt-5.5"},
+	}
+	model := conn.ModelForProvider(provider, "gpt-5.5")
+	if model.Provider != ai.ProviderOpenAI || model.ID != "gpt-5.5" {
+		t.Fatalf("expected canonical OpenAI model, got %#v", model)
+	}
+	if model.BaseURL != "https://ai-proxy.beeper.com/v1" {
+		t.Fatalf("expected route base URL override, got %q", model.BaseURL)
+	}
+	if model.ContextWindow == 0 || model.MaxTokens == 0 {
+		t.Fatalf("expected generated model metadata to be preserved, got %#v", model)
 	}
 }
 
