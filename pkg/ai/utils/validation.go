@@ -215,55 +215,6 @@ func coerceArrayItems(value []any, schema map[string]any) {
 	}
 }
 
-func validateJSONSchema(value any, schema map[string]any, path string) []string {
-	errors := []string{}
-	types := schemaTypes(schema)
-	if len(types) > 0 && !matchesAnyJSONType(value, types) {
-		errors = append(errors, fmt.Sprintf("  - %s: expected %s", formatValidationPath(path), strings.Join(types, " or ")))
-		return errors
-	}
-	if containsString(types, "object") {
-		object, ok := value.(map[string]any)
-		if !ok {
-			return errors
-		}
-		for _, required := range stringList(schema["required"]) {
-			if _, ok := object[required]; !ok {
-				errors = append(errors, fmt.Sprintf("  - %s: required property is missing", formatValidationPath(joinPath(path, required))))
-			}
-		}
-		if properties, ok := schema["properties"].(map[string]any); ok {
-			for key, rawSchema := range properties {
-				if current, ok := object[key]; ok {
-					if propertySchema, ok := rawSchema.(map[string]any); ok {
-						errors = append(errors, validateJSONSchema(current, propertySchema, joinPath(path, key))...)
-					}
-				}
-			}
-		}
-	}
-	if containsString(types, "array") {
-		items, ok := value.([]any)
-		if !ok {
-			return errors
-		}
-		if itemSchema, ok := schema["items"].(map[string]any); ok {
-			for i, item := range items {
-				errors = append(errors, validateJSONSchema(item, itemSchema, joinPath(path, strconv.Itoa(i)))...)
-			}
-		}
-	}
-	if enumValues, ok := schema["enum"].([]any); ok && len(enumValues) > 0 {
-		for _, enumValue := range enumValues {
-			if jsonStableEqual(value, enumValue) {
-				return errors
-			}
-		}
-		errors = append(errors, fmt.Sprintf("  - %s: must match one of the allowed values", formatValidationPath(path)))
-	}
-	return errors
-}
-
 func schemaTypes(schema map[string]any) []string {
 	switch raw := schema["type"].(type) {
 	case string:
@@ -413,20 +364,6 @@ func schemaList(value any) []map[string]any {
 	return out
 }
 
-func stringList(value any) []string {
-	rawList, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	out := []string{}
-	for _, item := range rawList {
-		if text, ok := item.(string); ok {
-			out = append(out, text)
-		}
-	}
-	return out
-}
-
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -434,24 +371,4 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func jsonStableEqual(left any, right any) bool {
-	leftJSON, leftErr := json.Marshal(left)
-	rightJSON, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
-}
-
-func formatValidationPath(path string) string {
-	if path == "" {
-		return "root"
-	}
-	return path
-}
-
-func joinPath(base string, part string) string {
-	if base == "" {
-		return part
-	}
-	return base + "." + part
 }

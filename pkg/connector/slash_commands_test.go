@@ -73,27 +73,6 @@ func TestRoomReasoningValidationSyntax(t *testing.T) {
 	}
 }
 
-func TestRoomStateChangedDetectsNewDirectState(t *testing.T) {
-	meta := &aiid.PortalMetadata{
-		SelectedProviderID: "beeper",
-		SelectedModelID:    "gpt-5",
-		ThinkingLevel:      "low",
-		RoomStateEventID:   "$old",
-	}
-	config := RoomConfig{
-		ThinkingLevel:     "low",
-		modelStatePresent: true,
-		modelStateEventID: "$new",
-	}
-	if !roomStateChanged(meta, config, "beeper", "gpt-5", "$new") {
-		t.Fatalf("expected changed state event to be noticed")
-	}
-	meta.RoomStateEventID = "$new"
-	if roomStateChanged(meta, config, "beeper", "gpt-5", "$new") {
-		t.Fatalf("expected unchanged state to be ignored")
-	}
-}
-
 func canonicalTestClient() *Client {
 	conn := &Connector{}
 	conn.Config.ApplyDefaults()

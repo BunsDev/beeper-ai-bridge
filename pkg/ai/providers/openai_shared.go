@@ -211,10 +211,6 @@ func compatMap(model ai.Model, key string, fallback map[string]any) map[string]a
 	return value
 }
 
-func assistantMessageParam(msg ai.Message) map[string]any {
-	return assistantMessageParamWithCompat(msg, ai.Model{}, ResolvedOpenAICompletionsCompat{})
-}
-
 func assistantMessageParamWithCompat(msg ai.Message, model ai.Model, compat ResolvedOpenAICompletionsCompat) map[string]any {
 	out := map[string]any{"role": "assistant", "content": nil}
 	if compat.RequiresAssistantAfterToolResult {
@@ -366,16 +362,6 @@ func mustJSON(value any) string {
 		return "{}"
 	}
 	return string(raw)
-}
-
-func ensureTextBlock(blocks *[]ai.ContentBlock) int {
-	for i := range *blocks {
-		if (*blocks)[i].Type == "text" {
-			return i
-		}
-	}
-	*blocks = append(*blocks, ai.ContentBlock{Type: "text"})
-	return len(*blocks) - 1
 }
 
 func finishBlocks(stream *ai.AssistantMessageEventStream, output *ai.Message, blocks []ai.ContentBlock) {
@@ -532,12 +518,6 @@ func (s *completionsStreamState) ensureToolCall(stream *ai.AssistantMessageEvent
 	output.Content = s.blocks
 	stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: contentIndex, Partial: output})
 	return contentIndex
-}
-
-func parseCompletionsUsage(input int64, output int64, model ai.Model) ai.Usage {
-	usage := ai.Usage{Input: int(input), Output: int(output), TotalTokens: int(input + output)}
-	ai.CalculateCost(model, &usage)
-	return usage
 }
 
 func parseCompletionsUsageMap(rawUsage map[string]any, model ai.Model) ai.Usage {

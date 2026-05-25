@@ -122,7 +122,7 @@ func (cl *Client) IsThisUser(ctx context.Context, userID networkid.UserID) bool 
 }
 
 func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	name := cl.defaultConversationTitle(portal)
+	name := cl.defaultConversationTitle(ctx, portal)
 	if meta := portalMetadata(portal); meta.SessionTitle != "" {
 		name = meta.SessionTitle
 	}
@@ -132,12 +132,7 @@ func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*br
 
 func (cl *Client) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	isBot := true
-	name := "AI Assistant"
-	if meta, ok := ghost.Metadata.(*aiid.GhostMetadata); ok && meta.ModelID != "" {
-		name = meta.ModelID
-	} else if _, modelID, ok := aiid.ParseAssistantUserID(ghost.ID); ok {
-		name = modelID
-	}
+	name := "AI"
 	return &bridgev2.UserInfo{
 		Name:  &name,
 		IsBot: &isBot,
@@ -181,20 +176,19 @@ func (cl *Client) handleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixM
 	if resp, handled, err := cl.handleAISlashCommand(ctx, msg); handled {
 		return resp, err
 	}
-	portalMeta := portalMetadata(msg.Portal)
-	roomConfig, roomStateEventID, err := cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID, portalMeta)
+	roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID)
 	if err != nil {
 		return nil, err
 	}
 	var resp *bridgev2.MatrixMessageResponse
 	var handled bool
-	if roomConfig, resp, handled, err = cl.normalizeRoomStateForPrompt(ctx, msg, roomConfig, roomStateEventID); handled || err != nil {
+	if roomConfig, resp, handled, err = cl.normalizeRoomStateForPrompt(ctx, msg, roomConfig); handled || err != nil {
 		return resp, err
 	}
-	return cl.handleMatrixMessageWithConfig(ctx, msg, roomConfig, roomStateEventID)
+	return cl.handleMatrixMessageWithConfig(ctx, msg, roomConfig)
 }
 
-func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridgev2.MatrixMessage, roomConfig RoomConfig, roomStateEventID string) (*bridgev2.MatrixMessageResponse, error) {
+func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridgev2.MatrixMessage, roomConfig RoomConfig) (*bridgev2.MatrixMessageResponse, error) {
 	portalMeta := portalMetadata(msg.Portal)
 	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
 	if err != nil {
@@ -211,7 +205,7 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if len(prompt.Images) > 0 && !isImageModel(model) {
 		return nil, fmt.Errorf("model %s does not support image input", model.ID)
 	}
-	agentSession, err := cl.sessionForPortal(ctx, msg.Portal, portalMeta, roomConfig, roomStateEventID, provider.ID, model.ID)
+	agentSession, err := cl.sessionForPortal(ctx, msg.Portal, portalMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +228,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 	streamPublisher := cl.Main.Bridge.GetBeeperStreamPublisher()
 	runID := session.CreateSessionID()
 	streamFn := cl.assistantStreamPublisher(streamPublisher, msg.Portal, portalMeta, provider, model, func() {
-		cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 0)
+		cl.queueAssistantTyping(msg.Portal.PortalKey, 0)
 	})
 	options := harness.AgentHarnessOptions{
 		Session:             agentSession,
@@ -291,13 +285,13 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &title}, cl.UserLogin, nil, time.Now())
 }
 
-func (cl *Client) queueAssistantTyping(portalKey networkid.PortalKey, providerID string, modelID string, timeout time.Duration) {
+func (cl *Client) queueAssistantTyping(portalKey networkid.PortalKey, timeout time.Duration) {
 	cl.UserLogin.QueueRemoteEvent(&simplevent.Typing{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventTyping,
 			PortalKey: portalKey,
 			Sender: bridgev2.EventSender{
-				Sender: aiid.AssistantUserID(providerID, modelID),
+				Sender: aiid.AssistantUserID(),
 			},
 			Timestamp: time.Now(),
 		},
@@ -351,10 +345,10 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 	}()
 	defer cl.clearActiveHarness(msg.Portal.PortalKey, agentHarness)
 	defer cl.clearActiveRun(msg.Portal.PortalKey, active)
-	defer cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 0)
+	defer cl.queueAssistantTyping(msg.Portal.PortalKey, 0)
 	defer active.failAll(ctx, cl, fmt.Errorf("AI run ended before queued message was consumed"))
 
-	cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 30*time.Second)
+	cl.queueAssistantTyping(msg.Portal.PortalKey, 30*time.Second)
 	unsubscribeToolOutputs := agentHarness.Subscribe(func(ctx context.Context, event harness.AgentHarnessEvent) error {
 		if event.Type == "message_end" && event.Message != nil && event.Message.Role == "user" && event.SessionEntryID != "" {
 			active.markConsumed(ctx, cl, event.SessionEntryID, time.Now())
@@ -590,56 +584,6 @@ func (cl *Client) HandleMatrixDisappearingTimer(ctx context.Context, msg *bridge
 	return true, nil
 }
 
-func (cl *Client) resolveRequestedLogin(ctx context.Context, requested networkid.UserLoginID) (*bridgev2.UserLogin, error) {
-	if cl.UserLogin.User != nil {
-		return cl.Main.ResolveLogin(ctx, cl.UserLogin.User, requested)
-	}
-	login, err := cl.Main.Bridge.GetExistingUserLoginByID(ctx, requested)
-	if err != nil {
-		return nil, err
-	}
-	if login == nil || login.UserMXID != cl.UserLogin.UserMXID {
-		return nil, fmt.Errorf("unknown or inaccessible login %s", requested)
-	}
-	return login, nil
-}
-
-func (cl *Client) clientForLogin(ctx context.Context, login *bridgev2.UserLogin) (*Client, error) {
-	if login.Client == nil {
-		if err := cl.Main.LoadUserLogin(ctx, login); err != nil {
-			return nil, err
-		}
-	}
-	target, ok := login.Client.(*Client)
-	if !ok || target == nil {
-		return nil, fmt.Errorf("login %s is not an AI bridge login", login.ID)
-	}
-	return target, nil
-}
-
-func (cl *Client) switchPortalLogin(ctx context.Context, portal *bridgev2.Portal, loginID networkid.UserLoginID) (*bridgev2.Portal, error) {
-	targetKey := portal.PortalKey
-	targetKey.Receiver = loginID
-	_, targetPortal, err := cl.Main.Bridge.ReIDPortal(ctx, portal.PortalKey, targetKey)
-	if err != nil {
-		return nil, err
-	}
-	if targetPortal != nil {
-		return targetPortal, nil
-	}
-	targetPortal, err = cl.Main.Bridge.GetPortalByKey(ctx, targetKey)
-	if err != nil {
-		return nil, err
-	}
-	if targetPortal.MXID == "" {
-		targetPortal.MXID = portal.MXID
-		if err := targetPortal.Save(ctx); err != nil {
-			return nil, err
-		}
-	}
-	return targetPortal, nil
-}
-
 func (cl *Client) ensureUsablePortal(portal *bridgev2.Portal) error {
 	if portal == nil {
 		return fmt.Errorf("missing portal")
@@ -650,25 +594,19 @@ func (cl *Client) ensureUsablePortal(portal *bridgev2.Portal) error {
 	return nil
 }
 
-func (cl *Client) defaultConversationTitle(portal *bridgev2.Portal) string {
-	meta := portalMetadata(portal)
-	if meta.SelectedModelID == "" {
-		return "New AI Chat"
-	}
-	if loginMeta := cl.loginMetadata(); loginMeta != nil {
-		if provider, ok := loginMeta.Providers[meta.SelectedProviderID]; ok {
-			var model ai.Model
-			if cl.Main != nil {
-				model = cl.Main.ModelForProvider(provider, meta.SelectedModelID)
-			} else if resolved, ok := resolveModelForProvider(provider, meta.SelectedModelID); ok {
-				model = resolved
-			} else {
-				model = ai.Model{ID: meta.SelectedModelID, Name: meta.SelectedModelID}
+func (cl *Client) defaultConversationTitle(ctx context.Context, portal *bridgev2.Portal) string {
+	if cl != nil && cl.Main != nil && portal != nil && portal.MXID != "" {
+		if roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, portal.MXID); err == nil {
+			if provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig); err == nil && roomConfig.modelStatePresent {
+				model := cl.Main.ModelForProvider(provider, modelID)
+				if resolved, ok := resolveModelForProvider(provider, modelID); ok {
+					model = resolved
+				}
+				return defaultConversationTitle(provider, model)
 			}
-			return defaultConversationTitle(provider, model)
 		}
 	}
-	return "New AI Chat with " + meta.SelectedModelID
+	return "New AI Chat"
 }
 
 func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, descriptor *event.BeeperStreamInfo, run aistream.Run) (*simplevent.PreConvertedMessage, *aiid.MessageMetadata) {
@@ -679,10 +617,11 @@ func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networ
 		RunID:        runID,
 		StreamStatus: "streaming",
 	}
-	msg := aibridgev2.Anchor(portalKey, aiid.AssistantUserID(providerID, modelID), run, time.Now())
+	msg := aibridgev2.Anchor(portalKey, aiid.AssistantUserID(), run, time.Now())
 	if len(msg.Data.Parts) > 0 {
 		msg.Data.Parts[0].ID = aiid.PartID("text")
 		msg.Data.Parts[0].Content.BeeperStream = descriptor
+		cl.applyModelProfile(msg.Data.Parts[0].Content, providerID, modelID)
 		msg.Data.Parts[0].DBMetadata = metadata
 	}
 	return msg, metadata
@@ -698,7 +637,7 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 	if run.Preview.Text == "" {
 		run.Preview = aistream.PreviewFromText(msgconv.AssistantText(message), aistream.PreviewBudgetBytes)
 	}
-	edit := aibridgev2.FinalMetadataEdit(portalKey, aiid.AssistantUserID(providerID, modelID), messageID, run, time.Now())
+	edit := aibridgev2.FinalMetadataEdit(portalKey, aiid.AssistantUserID(), messageID, run, time.Now())
 	originalConvert := edit.ConvertEditFunc
 	edit.ConvertEditFunc = func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *aistream.Run) (*bridgev2.ConvertedEdit, error) {
 		converted, err := originalConvert(ctx, portal, intent, existing, data)
@@ -708,9 +647,35 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 		if len(existing) > 0 {
 			existing[0].Metadata = metadata
 		}
+		if len(converted.ModifiedParts) > 0 && converted.ModifiedParts[0].Content != nil {
+			cl.applyModelProfile(converted.ModifiedParts[0].Content, providerID, modelID)
+		}
 		return converted, nil
 	}
 	return edit
+}
+
+func (cl *Client) applyModelProfile(content *event.MessageEventContent, providerID string, modelID string) {
+	if content == nil {
+		return
+	}
+	displayName := modelID
+	if loginMeta := cl.loginMetadata(); loginMeta != nil {
+		if provider, ok := loginMeta.Providers[providerID]; ok {
+			model := ai.Model{ID: modelID, Name: modelID}
+			if resolved, ok := resolveModelForProvider(provider, modelID); ok {
+				model = resolved
+			} else if cl.Main != nil {
+				model = cl.Main.ModelForProvider(provider, modelID)
+			}
+			displayName = modelDisplayName(provider, model)
+		}
+	}
+	content.BeeperPerMessageProfile = &event.BeeperPerMessageProfile{
+		ID:          providerID + "/" + modelID,
+		Displayname: displayName,
+		HasFallback: true,
+	}
 }
 
 func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublisher, portal *bridgev2.Portal, meta *aiid.PortalMetadata, provider aiid.ProviderConfig, model ai.Model, onSecondVisibleChunk ...func()) agent.StreamFn {
@@ -722,7 +687,7 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		}
 		runID := session.CreateSessionID()
 		messageID := aiid.AssistantMessageID(runID)
-		run := aistream.NewRun(runID, meta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID(provider.ID, model.ID)), provider.DisplayName, time.Now())
+		run := aistream.NewRun(runID, meta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID()), "AI", time.Now())
 		run.MessageID = string(messageID)
 		eventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(
 			portal.MXID,
@@ -1055,52 +1020,10 @@ func aguiUsage(usage ai.Usage) agui.Usage {
 	}
 }
 
-func (cl *Client) oldAssistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*bridgev2.ConvertedEdit] {
-	content := msgconv.TextContent(msgconv.AssistantText(message))
-	return &simplevent.Message[*bridgev2.ConvertedEdit]{
-		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventEdit,
-			PortalKey: portalKey,
-			Sender: bridgev2.EventSender{
-				Sender: aiid.AssistantUserID(providerID, modelID),
-			},
-			Timestamp: time.Now(),
-		},
-		ID:            messageID,
-		TargetMessage: messageID,
-		Data: &bridgev2.ConvertedEdit{ModifiedParts: []*bridgev2.ConvertedEditPart{{
-			Type:          event.EventMessage,
-			Content:       content,
-			TopLevelExtra: map[string]any{"com.beeper.dont_render_edited": true},
-		}}},
-		ConvertEditFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *bridgev2.ConvertedEdit) (*bridgev2.ConvertedEdit, error) {
-			if len(existing) == 0 {
-				return nil, fmt.Errorf("missing existing assistant message %s for final edit", messageID)
-			}
-			existing[0].Metadata = metadata
-			data.ModifiedParts[0].Part = existing[0]
-			return data, nil
-		},
-	}
-}
-
-func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, roomConfig RoomConfig, stateEventID string, providerID string, modelID string) (*session.Session, error) {
+func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata) (*session.Session, error) {
 	if meta == nil {
 		meta = &aiid.PortalMetadata{}
 		portal.Metadata = meta
-	}
-	meta.SelectedProviderID = providerID
-	meta.SelectedModelID = modelID
-	meta.AdditionalPrompt = roomConfig.AdditionalPrompt
-	meta.ThinkingLevel = cl.reasoningLevel(roomConfig)
-	meta.DisabledTools = roomConfig.DisabledTools
-	if roomConfig.modelStateEventID != "" {
-		meta.RoomStateEventID = roomConfig.modelStateEventID
-	} else {
-		meta.RoomStateEventID = stateEventID
-	}
-	if roomConfig.promptStateEventID != "" {
-		meta.RoomPromptEventID = roomConfig.promptStateEventID
 	}
 	if meta.SessionID != "" {
 		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{

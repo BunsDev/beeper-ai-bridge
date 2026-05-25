@@ -49,8 +49,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	if msg.Portal == nil {
 		return nil, true, fmt.Errorf("missing portal for AI command")
 	}
-	portalMeta := portalMetadata(msg.Portal)
-	roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID, portalMeta)
+	roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID)
 	if err != nil {
 		return nil, true, err
 	}
@@ -60,7 +59,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 			cl.queueCommandNotice(msg.Portal, "Usage: /model <model>")
 			return cl.commandHandledResponse(msg, "usage"), true, nil
 		}
-		if err = cl.applyModelCommand(ctx, msg.Portal, portalMeta, roomConfig, cmd.arg); err != nil {
+		if err = cl.applyModelCommand(ctx, msg.Portal, roomConfig, cmd.arg); err != nil {
 			cl.queueCommandNotice(msg.Portal, err.Error())
 			return cl.commandHandledResponse(msg, "rejected"), true, nil
 		}
@@ -69,7 +68,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 			cl.queueCommandNotice(msg.Portal, "Usage: /reasoning <off|low|medium|high>")
 			return cl.commandHandledResponse(msg, "usage"), true, nil
 		}
-		if err = cl.applyReasoningCommand(ctx, msg.Portal, portalMeta, roomConfig, cmd.arg); err != nil {
+		if err = cl.applyReasoningCommand(ctx, msg.Portal, roomConfig, cmd.arg); err != nil {
 			cl.queueCommandNotice(msg.Portal, err.Error())
 			return cl.commandHandledResponse(msg, "rejected"), true, nil
 		}
@@ -82,13 +81,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 		if strings.EqualFold(prompt, "clear") || strings.EqualFold(prompt, "reset") {
 			prompt = ""
 		}
-		eventID, err := cl.writeRoomPromptState(ctx, msg.Portal, prompt)
-		if err != nil {
-			return nil, true, err
-		}
-		portalMeta.AdditionalPrompt = prompt
-		portalMeta.RoomPromptEventID = string(eventID)
-		if err = msg.Portal.Save(ctx); err != nil {
+		if _, err := cl.writeRoomPromptState(ctx, msg.Portal, prompt); err != nil {
 			return nil, true, err
 		}
 		if prompt == "" {
@@ -100,155 +93,85 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	return cl.commandHandledResponse(msg, cmd.name), true, nil
 }
 
-func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, current RoomConfig, requested string) error {
+func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string) error {
 	target := current
 	providerID, modelID := splitModelRef(requested)
 	if modelID == "" {
-		return fmt.Errorf("AI room settings rejected: model is required. Restored %s.", cl.restoreModelLabel(meta))
+		return fmt.Errorf("AI room settings rejected: model is required")
 	}
 	target.ProviderID = providerID
 	target.ModelID = modelID
-	provider, model, canonical, err := cl.resolveCanonicalRoomModel(ctx, target)
+	_, model, canonical, err := cl.resolveCanonicalRoomModel(ctx, target)
 	if err != nil {
-		if restoreErr := cl.restoreRoomModelState(ctx, portal, meta); restoreErr != nil {
-			return fmt.Errorf("AI room settings rejected: %v. Failed to restore previous settings: %v.", err, restoreErr)
-		}
-		return fmt.Errorf("AI room settings rejected: %v. Restored %s.", err, cl.restoreModelLabel(meta))
+		return fmt.Errorf("AI room settings rejected: %v", err)
 	}
 	if err = cl.validateReasoningLevel(model, target); err != nil {
-		if restoreErr := cl.restoreRoomModelState(ctx, portal, meta); restoreErr != nil {
-			return fmt.Errorf("AI room settings rejected: %v. Failed to restore previous settings: %v.", err, restoreErr)
-		}
-		return fmt.Errorf("AI room settings rejected: %v. Restored %s.", err, cl.restoreModelLabel(meta))
+		return fmt.Errorf("AI room settings rejected: %v", err)
 	}
-	eventID, err := cl.writeRoomModelState(ctx, portal, canonical, target.ThinkingLevel)
-	if err != nil {
-		return err
-	}
-	meta.SelectedProviderID = provider.ID
-	meta.SelectedModelID = model.ID
-	meta.ThinkingLevel = target.ThinkingLevel
-	meta.RoomStateEventID = string(eventID)
-	if err = portal.Save(ctx); err != nil {
+	if _, err = cl.writeRoomModelState(ctx, portal, canonical, target.ThinkingLevel); err != nil {
 		return err
 	}
 	cl.queueCommandNotice(portal, fmt.Sprintf("Model set to `%s`.", canonical))
 	return nil
 }
 
-func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, current RoomConfig, requested string) error {
+func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string) error {
 	reasoning := strings.ToLower(strings.TrimSpace(requested))
 	if !validRoomReasoningLevel(reasoning) {
-		if restoreErr := cl.restoreRoomModelState(ctx, portal, meta); restoreErr != nil {
-			return fmt.Errorf("AI room settings rejected: reasoning level %q is invalid. Failed to restore previous settings: %v.", requested, restoreErr)
-		}
-		return fmt.Errorf("AI room settings rejected: reasoning level %q is invalid. Restored %s.", requested, cl.restoreModelLabel(meta))
+		return fmt.Errorf("AI room settings rejected: reasoning level %q is invalid", requested)
 	}
 	target := current
 	target.ThinkingLevel = reasoning
-	provider, model, canonical, err := cl.resolveCanonicalRoomModel(ctx, target)
+	_, model, canonical, err := cl.resolveCanonicalRoomModel(ctx, target)
 	if err != nil {
-		if restoreErr := cl.restoreRoomModelState(ctx, portal, meta); restoreErr != nil {
-			return fmt.Errorf("AI room settings rejected: %v. Failed to restore previous settings: %v.", err, restoreErr)
-		}
-		return fmt.Errorf("AI room settings rejected: %v. Restored %s.", err, cl.restoreModelLabel(meta))
+		return fmt.Errorf("AI room settings rejected: %v", err)
 	}
 	if err = cl.validateReasoningLevel(model, target); err != nil {
-		if restoreErr := cl.restoreRoomModelState(ctx, portal, meta); restoreErr != nil {
-			return fmt.Errorf("AI room settings rejected: %v. Failed to restore previous settings: %v.", err, restoreErr)
-		}
-		return fmt.Errorf("AI room settings rejected: %v. Restored %s.", err, cl.restoreModelLabel(meta))
+		return fmt.Errorf("AI room settings rejected: %v", err)
 	}
-	eventID, err := cl.writeRoomModelState(ctx, portal, canonical, reasoning)
-	if err != nil {
-		return err
-	}
-	meta.SelectedProviderID = provider.ID
-	meta.SelectedModelID = model.ID
-	meta.ThinkingLevel = reasoning
-	meta.RoomStateEventID = string(eventID)
-	if err = portal.Save(ctx); err != nil {
+	if _, err = cl.writeRoomModelState(ctx, portal, canonical, reasoning); err != nil {
 		return err
 	}
 	cl.queueCommandNotice(portal, fmt.Sprintf("Reasoning set to `%s` for `%s`.", reasoning, canonical))
 	return nil
 }
 
-func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, config RoomConfig, stateEventID string) (RoomConfig, *bridgev2.MatrixMessageResponse, bool, error) {
+func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, config RoomConfig) (RoomConfig, *bridgev2.MatrixMessageResponse, bool, error) {
 	if msg == nil || msg.Portal == nil {
 		return config, nil, false, nil
 	}
-	meta := portalMetadata(msg.Portal)
 	provider, model, canonical, err := cl.resolveCanonicalRoomModel(ctx, config)
 	if err != nil {
 		if !config.modelStatePresent {
 			return config, nil, false, err
 		}
-		if restoreErr := cl.restoreRoomModelState(ctx, msg.Portal, meta); restoreErr != nil {
-			return config, nil, false, restoreErr
-		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: %v. Restored %s.", err, cl.restoreModelLabel(meta)))
+		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err))
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
 	if config.ThinkingLevel != "" && !validRoomReasoningLevel(config.ThinkingLevel) {
 		if !config.modelStatePresent {
 			return config, nil, false, fmt.Errorf("reasoning level %q is invalid", config.ThinkingLevel)
 		}
-		if restoreErr := cl.restoreRoomModelState(ctx, msg.Portal, meta); restoreErr != nil {
-			return config, nil, false, restoreErr
-		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: reasoning level %q is invalid. Restored %s.", config.ThinkingLevel, cl.restoreModelLabel(meta)))
+		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: reasoning level %q is invalid.", config.ThinkingLevel))
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
 	if err = cl.validateReasoningLevel(model, config); err != nil {
 		if !config.modelStatePresent {
 			return config, nil, false, err
 		}
-		if restoreErr := cl.restoreRoomModelState(ctx, msg.Portal, meta); restoreErr != nil {
-			return config, nil, false, restoreErr
-		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: %v. Restored %s.", err, cl.restoreModelLabel(meta)))
+		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err))
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
-	modelEventID := config.modelStateEventID
 	normalized := config.modelStatePresent && (config.modelStateModel != canonical || config.modelStateReason != config.ThinkingLevel)
 	if normalized {
-		var eventID string
-		if eventID, err = cl.writeRoomModelState(ctx, msg.Portal, canonical, config.ThinkingLevel); err != nil {
+		if _, err = cl.writeRoomModelState(ctx, msg.Portal, canonical, config.ThinkingLevel); err != nil {
 			return config, nil, false, err
 		}
-		if eventID != "" {
-			modelEventID = eventID
-		}
 		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings normalized to `%s`.", canonical))
-	} else if roomStateChanged(meta, config, provider.ID, model.ID, modelEventID) {
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings accepted: `%s`.", canonical))
-	}
-	meta.SelectedProviderID = provider.ID
-	meta.SelectedModelID = model.ID
-	meta.ThinkingLevel = config.ThinkingLevel
-	meta.AdditionalPrompt = config.AdditionalPrompt
-	meta.RoomStateEventID = modelEventID
-	meta.RoomPromptEventID = config.promptStateEventID
-	if err = msg.Portal.Save(ctx); err != nil {
-		return config, nil, false, err
 	}
 	config.ProviderID = provider.ID
 	config.ModelID = model.ID
 	return config, nil, false, nil
-}
-
-func roomStateChanged(meta *aiid.PortalMetadata, config RoomConfig, providerID string, modelID string, stateEventID string) bool {
-	if meta == nil {
-		return true
-	}
-	if config.modelStatePresent && (meta.SelectedProviderID != providerID || meta.SelectedModelID != modelID || meta.ThinkingLevel != config.ThinkingLevel || meta.RoomStateEventID != stateEventID) {
-		return true
-	}
-	if config.promptStateEventID != "" && (meta.AdditionalPrompt != config.AdditionalPrompt || meta.RoomPromptEventID != config.promptStateEventID) {
-		return true
-	}
-	return false
 }
 
 func (cl *Client) resolveCanonicalRoomModel(ctx context.Context, config RoomConfig) (aiid.ProviderConfig, ai.Model, string, error) {
@@ -269,39 +192,6 @@ func validRoomReasoningLevel(level string) bool {
 	}
 }
 
-func (cl *Client) restoreRoomModelState(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata) error {
-	restore := RoomConfig{}
-	if meta != nil {
-		restore.ProviderID = meta.SelectedProviderID
-		restore.ModelID = meta.SelectedModelID
-		restore.ThinkingLevel = meta.ThinkingLevel
-	}
-	_, _, canonical, err := cl.resolveCanonicalRoomModel(ctx, restore)
-	if err != nil {
-		return err
-	}
-	if _, err = cl.writeRoomModelState(ctx, portal, canonical, restore.ThinkingLevel); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (cl *Client) restoreModelLabel(meta *aiid.PortalMetadata) string {
-	if meta != nil && meta.SelectedProviderID != "" && meta.SelectedModelID != "" {
-		return "`" + meta.SelectedProviderID + "/" + meta.SelectedModelID + "`"
-	}
-	metaProvider := ""
-	if meta != nil {
-		metaProvider = meta.SelectedProviderID
-	}
-	config := RoomConfig{ProviderID: metaProvider}
-	provider, modelID, err := cl.Main.ResolveProvider(context.Background(), cl.UserLogin, config)
-	if err != nil {
-		return "previous settings"
-	}
-	return "`" + provider.ID + "/" + modelID + "`"
-}
-
 func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Portal, canonicalModel string, reasoning string) (string, error) {
 	content := map[string]any{"model": canonicalModel}
 	if reasoning != "" {
@@ -315,10 +205,10 @@ func (cl *Client) writeRoomPromptState(ctx context.Context, portal *bridgev2.Por
 }
 
 func (cl *Client) writeAIRoomState(ctx context.Context, portal *bridgev2.Portal, stateType string, content map[string]any) (string, error) {
-	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || cl.Main.Bridge.Bot == nil {
-		return "", fmt.Errorf("bridge bot is not available to write room state")
+	if portal == nil || portal.MXID == "" {
+		return "", fmt.Errorf("portal room is not available to write room state")
 	}
-	resp, err := cl.Main.Bridge.Bot.SendState(ctx, portal.MXID, event.Type{Type: stateType, Class: event.StateEventType}, "", &event.Content{Raw: content}, time.Now())
+	resp, err := portal.Internal().SendStateWithIntentOrBot(ctx, nil, event.Type{Type: stateType, Class: event.StateEventType}, "", &event.Content{Raw: content}, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -337,7 +227,7 @@ func (cl *Client) queueCommandNotice(portal *bridgev2.Portal, text string) {
 			Type:      bridgev2.RemoteEventMessage,
 			PortalKey: portal.PortalKey,
 			Sender: bridgev2.EventSender{
-				Sender: aiid.AssistantUserID("system", "settings"),
+				Sender: aiid.AssistantUserID(),
 			},
 			Timestamp: time.Now(),
 		},

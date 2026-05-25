@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -42,30 +41,18 @@ func TestCreateGroupRequiresExistingMatrixRoom(t *testing.T) {
 	}
 }
 
-func TestGetChatInfoUsesDefaultModelTitleAndDMType(t *testing.T) {
+func TestGetChatInfoUsesDefaultTitleAndDMType(t *testing.T) {
 	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: networkid.UserLoginID("login"),
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"local": {
-				ID:          "local",
-				DisplayName: "Local",
-				API:         ai.ApiOpenAIResponses,
-				Provider:    "local",
-				Models:      []ai.Model{{ID: "model-a", Name: "Model Alpha"}},
-				Enabled:     true,
-			},
-		}},
+		ID:       networkid.UserLoginID("login"),
+		Metadata: &aiid.UserLoginMetadata{},
 	}}}
-	portal := &bridgev2.Portal{Portal: &database.Portal{Metadata: &aiid.PortalMetadata{
-		SelectedProviderID: "local",
-		SelectedModelID:    "model-a",
-	}}}
+	portal := &bridgev2.Portal{Portal: &database.Portal{Metadata: &aiid.PortalMetadata{}}}
 
 	info, err := client.GetChatInfo(context.Background(), portal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Name == nil || *info.Name != "New AI Chat with Model Alpha" {
+	if info.Name == nil || *info.Name != "New AI Chat" {
 		t.Fatalf("unexpected default title %#v", info.Name)
 	}
 	if info.Type == nil || *info.Type != database.RoomTypeDM {

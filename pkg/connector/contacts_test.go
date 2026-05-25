@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -34,9 +35,23 @@ func TestModelContactsExposeConfiguredModels(t *testing.T) {
 	if contacts[1].UserInfo == nil || contacts[1].UserInfo.Name == nil || *contacts[1].UserInfo.Name != "Model Bee" {
 		t.Fatalf("unexpected contact info %#v", contacts[1])
 	}
-	providerID, modelID, ok := aiid.ParseAssistantUserID(contacts[0].UserID)
+	providerID, modelID, ok := aiid.ParseModelContactID(contacts[0].UserID)
 	if !ok || providerID != "local" || modelID != "model-a" {
-		t.Fatalf("unexpected ghost ID %q parsed as %q %q", contacts[0].UserID, providerID, modelID)
+		t.Fatalf("unexpected model contact ID %q parsed as %q %q", contacts[0].UserID, providerID, modelID)
+	}
+}
+
+func TestNewAIChatPortalKeyCreatesFreshChatPortal(t *testing.T) {
+	first := newAIChatPortalKey("login")
+	second := newAIChatPortalKey("login")
+	if first.Receiver != "login" || second.Receiver != "login" {
+		t.Fatalf("unexpected receiver: %#v %#v", first, second)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected fresh portal IDs, got %q twice", first.ID)
+	}
+	if !strings.HasPrefix(string(first.ID), "chat:") || !strings.HasPrefix(string(second.ID), "chat:") {
+		t.Fatalf("expected chat portal IDs, got %#v %#v", first, second)
 	}
 }
 

@@ -42,21 +42,9 @@ type UserLoginMetadata struct {
 }
 
 type PortalMetadata struct {
-	SessionID          string   `json:"session_id,omitempty"`
-	SelectedProviderID string   `json:"selected_provider_id,omitempty"`
-	SelectedModelID    string   `json:"selected_model_id,omitempty"`
-	AdditionalPrompt   string   `json:"additional_prompt,omitempty"`
-	ThinkingLevel      string   `json:"thinking_level,omitempty"`
-	DisabledTools      []string `json:"disabled_tools,omitempty"`
-	SessionTitle       string   `json:"session_title,omitempty"`
-	LastRunID          string   `json:"last_run_id,omitempty"`
-	RoomStateEventID   string   `json:"room_state_event_id,omitempty"`
-	RoomPromptEventID  string   `json:"room_prompt_event_id,omitempty"`
-}
-
-type GhostMetadata struct {
-	ProviderID string `json:"provider_id,omitempty"`
-	ModelID    string `json:"model_id,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	SessionTitle string `json:"session_title,omitempty"`
+	LastRunID    string `json:"last_run_id,omitempty"`
 }
 
 type MessageMetadata struct {

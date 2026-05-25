@@ -85,10 +85,9 @@ func (l *DefaultProviderLogin) Cancel() {
 }
 
 type CustomProviderLogin struct {
-	Main     *Connector
-	User     *bridgev2.User
-	config   providerLoginConfig
-	provider aiid.ProviderConfig
+	Main   *Connector
+	User   *bridgev2.User
+	config providerLoginConfig
 }
 
 var _ bridgev2.LoginProcessUserInput = (*CustomProviderLogin)(nil)

@@ -30,15 +30,8 @@ type RoomConfig struct {
 	promptStateEventID string
 }
 
-func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID, portalMeta *aiid.PortalMetadata) (RoomConfig, string, error) {
+func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID) (RoomConfig, string, error) {
 	config := RoomConfig{}
-	if portalMeta != nil {
-		config.ProviderID = portalMeta.SelectedProviderID
-		config.ModelID = portalMeta.SelectedModelID
-		config.AdditionalPrompt = portalMeta.AdditionalPrompt
-		config.ThinkingLevel = portalMeta.ThinkingLevel
-		config.DisabledTools = slices.Clone(portalMeta.DisabledTools)
-	}
 	reader, ok := c.Bridge.Matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
 	if !ok {
 		return config, "", nil

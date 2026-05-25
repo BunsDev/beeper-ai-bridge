@@ -10,9 +10,6 @@ func (c *Connector) GetDBMetaTypes() database.MetaTypes {
 		Portal: func() any {
 			return &aiid.PortalMetadata{}
 		},
-		Ghost: func() any {
-			return &aiid.GhostMetadata{}
-		},
 		Message: func() any {
 			return &aiid.MessageMetadata{}
 		},

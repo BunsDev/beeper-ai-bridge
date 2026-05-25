@@ -531,17 +531,3 @@ func intValue(value any) int {
 		return 0
 	}
 }
-
-func stringSliceFromAny(value any) []string {
-	raw, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	out := []string{}
-	for _, item := range raw {
-		if text, ok := item.(string); ok {
-			out = append(out, text)
-		}
-	}
-	return out
-}

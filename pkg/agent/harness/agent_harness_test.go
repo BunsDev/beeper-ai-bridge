@@ -918,15 +918,6 @@ func containsHarnessEvent(events []string, want string) bool {
 	return false
 }
 
-func containsText(value string, want string) bool {
-	for i := 0; i+len(want) <= len(value); i++ {
-		if value[i:i+len(want)] == want {
-			return true
-		}
-	}
-	return false
-}
-
 func singleToolCallStreamFn() agent.StreamFn {
 	calls := 0
 	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {

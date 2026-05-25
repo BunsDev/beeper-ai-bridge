@@ -131,15 +131,9 @@ func (cl *ProviderRemoteClient) ResolveIdentifier(ctx context.Context, identifie
 	if !createChat {
 		return resp, nil
 	}
-	portalKey := aiid.ModelPortalKey(provider.ID, model.ID, parent.UserLogin.ID)
+	portalKey := newAIChatPortalKey(parent.UserLogin.ID)
 	portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
 	if err != nil {
-		return nil, err
-	}
-	meta := portalMetadata(portal)
-	meta.SelectedProviderID = provider.ID
-	meta.SelectedModelID = model.ID
-	if err = portal.Save(ctx); err != nil {
 		return nil, err
 	}
 	name := defaultConversationTitle(provider, model)
@@ -148,6 +142,9 @@ func (cl *ProviderRemoteClient) ResolveIdentifier(ctx context.Context, identifie
 		if err = portal.CreateMatrixRoom(ctx, parent.UserLogin, &bridgev2.ChatInfo{Name: &name, Type: &roomType}); err != nil {
 			return nil, err
 		}
+	}
+	if _, err = parent.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
+		return nil, err
 	}
 	resp.Chat = &bridgev2.CreateChatResponse{
 		PortalKey: portalKey,

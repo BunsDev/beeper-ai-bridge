@@ -11,6 +11,8 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -175,6 +177,13 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	if metadata.StreamStatus != "streaming" {
 		t.Fatalf("expected streaming metadata, got %#v", metadata)
 	}
+	if assistantEvent.Sender.Sender != aiid.AssistantUserID() {
+		t.Fatalf("assistant event used sender %q", assistantEvent.Sender.Sender)
+	}
+	profile := assistantEvent.Data.Parts[0].Content.BeeperPerMessageProfile
+	if profile == nil || profile.ID != "beeper/gpt-5" || profile.Displayname != "gpt-5" || !profile.HasFallback {
+		t.Fatalf("assistant event missing model profile: %#v", profile)
+	}
 	fillAssistantMetadata(metadata, "entry", "beeper", "gpt-5", "run", ai.Message{
 		Role:       "assistant",
 		ResponseID: "resp",
@@ -187,6 +196,41 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	}
 	if partMetadata.SessionEntryID != "entry" || partMetadata.StreamStatus != "done" || partMetadata.ResponseID != "resp" {
 		t.Fatalf("metadata was not finalized through shared pointer: %#v", partMetadata)
+	}
+
+	edit := client.assistantFinalEdit(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", "run", *run, ai.Message{
+		Role:       "assistant",
+		StopReason: ai.StopReasonStop,
+	}, metadata)
+	if edit.Sender.Sender != aiid.AssistantUserID() {
+		t.Fatalf("assistant final edit used sender %q", edit.Sender.Sender)
+	}
+	converted, err := edit.ConvertEditFunc(context.Background(), nil, nil, []*database.Message{{}}, edit.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile = converted.ModifiedParts[0].Content.BeeperPerMessageProfile
+	if profile == nil || profile.ID != "beeper/gpt-5" || profile.Displayname != "gpt-5" || !profile.HasFallback {
+		t.Fatalf("assistant final edit missing model profile: %#v", profile)
+	}
+}
+
+func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
+	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		ID: "login",
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+			"beeper": {
+				ID:      "beeper",
+				Models:  []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
+				Enabled: true,
+			},
+		}},
+	}}}
+	content := &event.MessageEventContent{}
+	client.applyModelProfile(content, "beeper", "gpt-5.5")
+	profile := content.BeeperPerMessageProfile
+	if profile == nil || profile.ID != "beeper/gpt-5.5" || profile.Displayname != "GPT 5.5" || !profile.HasFallback {
+		t.Fatalf("assistant model profile lost configured display name: %#v", profile)
 	}
 }
 

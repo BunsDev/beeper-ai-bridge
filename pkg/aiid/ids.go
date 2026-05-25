@@ -42,20 +42,16 @@ func PortalKey(roomID id.RoomID, loginID networkid.UserLoginID) networkid.Portal
 	return networkid.PortalKey{ID: PortalID(roomID), Receiver: loginID}
 }
 
-func ModelPortalID(providerID string, modelID string) networkid.PortalID {
-	return networkid.PortalID("model:" + encode(providerID) + ":" + encode(modelID))
+func AssistantUserID() networkid.UserID {
+	return networkid.UserID("assistant:ai")
 }
 
-func ModelPortalKey(providerID string, modelID string, loginID networkid.UserLoginID) networkid.PortalKey {
-	return networkid.PortalKey{ID: ModelPortalID(providerID, modelID), Receiver: loginID}
+func ModelContactID(providerID string, modelID string) networkid.UserID {
+	return networkid.UserID("model:" + encode(providerID) + ":" + encode(modelID))
 }
 
-func AssistantUserID(providerID string, modelID string) networkid.UserID {
-	return networkid.UserID("assistant:" + encode(providerID) + ":" + encode(modelID))
-}
-
-func ParseAssistantUserID(userID networkid.UserID) (providerID string, modelID string, ok bool) {
-	rest, ok := strings.CutPrefix(string(userID), "assistant:")
+func ParseModelContactID(userID networkid.UserID) (providerID string, modelID string, ok bool) {
+	rest, ok := strings.CutPrefix(string(userID), "model:")
 	if !ok {
 		return "", "", false
 	}

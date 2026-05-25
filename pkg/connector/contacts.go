@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
@@ -27,19 +28,21 @@ func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, crea
 	}
 	resp := cl.modelContact(provider, model)
 	if createChat {
-		portalKey := aiid.ModelPortalKey(provider.ID, model.ID, cl.UserLogin.ID)
+		portalKey := newAIChatPortalKey(cl.UserLogin.ID)
 		portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
 		if err != nil {
 			return nil, err
 		}
-		meta := portalMetadata(portal)
-		meta.SelectedProviderID = provider.ID
-		meta.SelectedModelID = model.ID
-		if err = portal.Save(ctx); err != nil {
-			return nil, err
-		}
 		name := defaultConversationTitle(provider, model)
 		roomType := database.RoomTypeDM
+		if portal.MXID == "" {
+			if err = portal.CreateMatrixRoom(ctx, cl.UserLogin, &bridgev2.ChatInfo{Name: &name, Type: &roomType}); err != nil {
+				return nil, err
+			}
+		}
+		if _, err = cl.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
+			return nil, err
+		}
 		resp.Chat = &bridgev2.CreateChatResponse{
 			PortalKey: portalKey,
 			Portal:    portal,
@@ -50,6 +53,13 @@ func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, crea
 		}
 	}
 	return resp, nil
+}
+
+func newAIChatPortalKey(loginID networkid.UserLoginID) networkid.PortalKey {
+	return networkid.PortalKey{
+		ID:       networkid.PortalID("chat:" + session.CreateSessionID()),
+		Receiver: loginID,
+	}
 }
 
 func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.ResolveIdentifierResponse {
@@ -87,7 +97,7 @@ func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Resolv
 	name := modelDisplayName(provider, model)
 	isBot := true
 	return &bridgev2.ResolveIdentifierResponse{
-		UserID: aiid.AssistantUserID(provider.ID, model.ID),
+		UserID: aiid.ModelContactID(provider.ID, model.ID),
 		UserInfo: &bridgev2.UserInfo{
 			Name:        &name,
 			IsBot:       &isBot,
@@ -97,11 +107,11 @@ func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Resolv
 }
 
 func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (ai.Model, bool) {
-	if providerID, modelID, ok := aiid.ParseAssistantUserID(networkid.UserID(identifier)); ok {
+	if providerID, modelID, ok := aiid.ParseModelContactID(aiidNetworkID(identifier)); ok {
 		identifier = providerID + "/" + modelID
 	}
 	for _, model := range contactModels(provider) {
-		if identifier == string(aiid.AssistantUserID(provider.ID, model.ID)) || identifier == provider.ID+"/"+model.ID || identifier == model.ID {
+		if identifier == string(aiid.ModelContactID(provider.ID, model.ID)) || identifier == provider.ID+"/"+model.ID || identifier == model.ID {
 			return model, true
 		}
 	}
@@ -113,7 +123,7 @@ func (cl *Client) resolveModelIdentifier(identifier string) (aiid.ProviderConfig
 	if meta == nil {
 		return aiid.ProviderConfig{}, ai.Model{}, false
 	}
-	if providerID, modelID, ok := aiid.ParseAssistantUserID(networkid.UserID(identifier)); ok {
+	if providerID, modelID, ok := aiid.ParseModelContactID(aiidNetworkID(identifier)); ok {
 		identifier = providerID + "/" + modelID
 	}
 	for _, provider := range meta.Providers {
@@ -125,6 +135,10 @@ func (cl *Client) resolveModelIdentifier(identifier string) (aiid.ProviderConfig
 		}
 	}
 	return aiid.ProviderConfig{}, ai.Model{}, false
+}
+
+func aiidNetworkID(identifier string) networkid.UserID {
+	return networkid.UserID(identifier)
 }
 
 func (cl *Client) loginMetadata() *aiid.UserLoginMetadata {

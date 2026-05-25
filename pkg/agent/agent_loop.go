@@ -302,10 +302,6 @@ func toAITools(tools []AgentTool[any]) []ai.Tool {
 	return out
 }
 
-func errorAssistant(model ai.Model, message string) ai.Message {
-	return ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: ""}}, API: model.API, Provider: model.Provider, Model: model.ID, Usage: ai.EmptyUsage(), StopReason: ai.StopReasonError, ErrorMessage: message, Timestamp: time.Now().UnixMilli()}
-}
-
 func getMessages(ctx context.Context, fn func(context.Context) ([]AgentMessage, error)) ([]AgentMessage, error) {
 	if fn == nil {
 		return nil, nil

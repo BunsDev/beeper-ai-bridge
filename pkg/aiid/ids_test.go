@@ -21,12 +21,16 @@ func TestPortalAndAssistantIDsAreStable(t *testing.T) {
 	if portalKey.Receiver != loginID {
 		t.Fatalf("expected receiver %q, got %q", loginID, portalKey.Receiver)
 	}
-	if got := AssistantUserID("beeper/openai", "gpt-5:latest"); got != "assistant:YmVlcGVyL29wZW5haQ:Z3B0LTU6bGF0ZXN0" {
+	if got := AssistantUserID(); got != "assistant:ai" {
 		t.Fatalf("unexpected assistant ID %q", got)
 	}
-	providerID, modelID, ok := ParseAssistantUserID(AssistantUserID("beeper", "gpt-5"))
+	providerID, modelID, ok := ParseModelContactID(ModelContactID("beeper/openai", "gpt-5:latest"))
+	if !ok || providerID != "beeper/openai" || modelID != "gpt-5:latest" {
+		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID("beeper", "gpt-5"))
 	if !ok || providerID != "beeper" || modelID != "gpt-5" {
-		t.Fatalf("assistant ID did not parse: %q %q %v", providerID, modelID, ok)
+		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
 	}
 	aliceCustom := CustomLoginID(id.UserID("@alice:example.com"), "openai")
 	bobCustom := CustomLoginID(id.UserID("@bob:example.com"), "openai")
