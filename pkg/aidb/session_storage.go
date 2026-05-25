@@ -56,14 +56,13 @@ func CreateSessionStorage(ctx context.Context, db *dbutil.Database, options sess
 				ID:        options.ID,
 				CreatedAt: session.CreateTimestamp(),
 			},
-			Path:              "bridge-db",
 			ParentSessionPath: options.ParentSessionPath,
 		},
 	}
 	_, err := db.Exec(ctx, `
-		INSERT INTO ai_session (id, created_at, path, parent_session_path, leaf_id)
-		VALUES ($1, $2, $3, $4, NULL)
-	`, storage.metadata.ID, storage.metadata.CreatedAt, storage.metadata.Path, nullString(storage.metadata.ParentSessionPath))
+		INSERT INTO ai_session (id, created_at, parent_session_path, leaf_id)
+		VALUES ($1, $2, $3, NULL)
+	`, storage.metadata.ID, storage.metadata.CreatedAt, nullString(storage.metadata.ParentSessionPath))
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +72,11 @@ func CreateSessionStorage(ctx context.Context, db *dbutil.Database, options sess
 func OpenSessionStorage(ctx context.Context, db *dbutil.Database, sessionID string) (*SessionStorage, error) {
 	storage := &SessionStorage{db: db}
 	row := db.QueryRow(ctx, `
-		SELECT id, created_at, path, COALESCE(parent_session_path, '')
+		SELECT id, created_at, COALESCE(parent_session_path, '')
 		FROM ai_session
 		WHERE id=$1
 	`, sessionID)
-	if err := row.Scan(&storage.metadata.ID, &storage.metadata.CreatedAt, &storage.metadata.Path, &storage.metadata.ParentSessionPath); err != nil {
+	if err := row.Scan(&storage.metadata.ID, &storage.metadata.CreatedAt, &storage.metadata.ParentSessionPath); err != nil {
 		return nil, err
 	}
 	return storage, nil

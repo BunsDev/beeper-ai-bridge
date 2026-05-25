@@ -67,6 +67,20 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	if aiSessionCount != 1 {
 		t.Fatalf("expected one bridge session, got %d", aiSessionCount)
 	}
+	rows, err := db.Query(ctx, `select * from ai_session limit 0`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	columns, err := rows.Columns()
+	rows.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range columns {
+		if column == "cwd" || column == "path" {
+			t.Fatalf("bridge session table should not include %s column: %#v", column, columns)
+		}
+	}
 	if _, err := db.Query(ctx, `select count(*) from sessions`); err == nil {
 		t.Fatalf("generic sessions table should not exist")
 	}

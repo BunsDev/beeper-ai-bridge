@@ -33,6 +33,9 @@ type ModelOverride struct {
 
 type UserLoginMetadata struct {
 	SyntheticDefault  bool                      `json:"synthetic_default,omitempty"`
+	Kind              string                    `json:"kind,omitempty"`
+	ParentLoginID     string                    `json:"parent_login_id,omitempty"`
+	ProviderID        string                    `json:"provider_id,omitempty"`
 	Providers         map[string]ProviderConfig `json:"providers,omitempty"`
 	DefaultProviderID string                    `json:"default_provider_id,omitempty"`
 	DefaultModelID    string                    `json:"default_model_id,omitempty"`

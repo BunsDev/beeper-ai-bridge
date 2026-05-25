@@ -271,6 +271,25 @@ func TestFinalUIMessageCarriesParsedToolOutputs(t *testing.T) {
 	}
 }
 
+func TestFinalUIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolStart("tool-1", "fetch", 0, nil)
+	writer.ToolResult("tool-1", `{"ok":true}`, agui.ToolResultStateComplete)
+
+	message := run.FinalUIMessage(0, true)
+	if len(message.Parts) != 1 {
+		t.Fatalf("expected tool result to be folded into one tool-call part, got %#v", message.Parts)
+	}
+	if message.Parts[0]["type"] == "tool-result" {
+		t.Fatalf("final UI message must not persist standalone tool-result parts: %#v", message.Parts)
+	}
+	output, ok := message.Parts[0]["output"].(map[string]any)
+	if !ok || output["ok"] != true || output["state"] != agui.ToolResultStateComplete || output["status"] != "success" {
+		t.Fatalf("tool result was not folded into tool output: %#v", message.Parts[0])
+	}
+}
+
 func TestFinalUIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })

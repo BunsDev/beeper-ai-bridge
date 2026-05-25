@@ -7,6 +7,7 @@ import (
 
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -96,5 +97,15 @@ func TestFinalMetadataEditUsesCompactAnchorContent(t *testing.T) {
 	}
 	if edit.Data.Text() != "" {
 		t.Fatalf("final metadata edit must not expose full accumulated text")
+	}
+	converted, err := edit.ConvertEditFunc(nil, nil, nil, []*database.Message{{}}, edit.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.ModifiedParts[0].TopLevelExtra["com.beeper.stream"] != nil {
+		t.Fatalf("final metadata edit must clear top-level stream descriptor: %#v", converted.ModifiedParts[0].TopLevelExtra)
+	}
+	if converted.ModifiedParts[0].Extra["com.beeper.stream"] != nil {
+		t.Fatalf("final metadata edit must clear replacement stream descriptor: %#v", converted.ModifiedParts[0].Extra)
 	}
 }

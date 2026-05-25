@@ -8,6 +8,7 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 )
 
@@ -37,12 +38,14 @@ func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, crea
 		if err = portal.Save(ctx); err != nil {
 			return nil, err
 		}
-		name := modelDisplayName(provider, model)
+		name := defaultConversationTitle(provider, model)
+		roomType := database.RoomTypeDM
 		resp.Chat = &bridgev2.CreateChatResponse{
 			PortalKey: portalKey,
 			Portal:    portal,
 			PortalInfo: &bridgev2.ChatInfo{
 				Name: &name,
+				Type: &roomType,
 			},
 		}
 	}
@@ -59,18 +62,28 @@ func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.R
 		if !provider.Enabled {
 			continue
 		}
-		for _, model := range contactModels(provider) {
-			name := strings.ToLower(modelDisplayName(provider, model))
-			if query != "" && !strings.Contains(name, query) && !strings.Contains(strings.ToLower(model.ID), query) && !strings.Contains(strings.ToLower(provider.ID), query) {
-				continue
-			}
-			contacts = append(contacts, cl.modelContact(provider, model))
-		}
+		contacts = append(contacts, providerModelContacts(provider, query)...)
 	}
 	return contacts
 }
 
 func (cl *Client) modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
+	return modelContact(provider, model)
+}
+
+func providerModelContacts(provider aiid.ProviderConfig, query string) []*bridgev2.ResolveIdentifierResponse {
+	contacts := []*bridgev2.ResolveIdentifierResponse{}
+	for _, model := range contactModels(provider) {
+		name := strings.ToLower(modelDisplayName(provider, model))
+		if query != "" && !strings.Contains(name, query) && !strings.Contains(strings.ToLower(model.ID), query) && !strings.Contains(strings.ToLower(provider.ID), query) {
+			continue
+		}
+		contacts = append(contacts, modelContact(provider, model))
+	}
+	return contacts
+}
+
+func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
 	name := modelDisplayName(provider, model)
 	isBot := true
 	return &bridgev2.ResolveIdentifierResponse{
@@ -81,6 +94,18 @@ func (cl *Client) modelContact(provider aiid.ProviderConfig, model ai.Model) *br
 			Identifiers: []string{provider.ID + "/" + model.ID, model.ID},
 		},
 	}
+}
+
+func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (ai.Model, bool) {
+	if providerID, modelID, ok := aiid.ParseAssistantUserID(networkid.UserID(identifier)); ok {
+		identifier = providerID + "/" + modelID
+	}
+	for _, model := range contactModels(provider) {
+		if identifier == string(aiid.AssistantUserID(provider.ID, model.ID)) || identifier == provider.ID+"/"+model.ID || identifier == model.ID {
+			return model, true
+		}
+	}
+	return ai.Model{}, false
 }
 
 func (cl *Client) resolveModelIdentifier(identifier string) (aiid.ProviderConfig, ai.Model, bool) {
@@ -95,10 +120,8 @@ func (cl *Client) resolveModelIdentifier(identifier string) (aiid.ProviderConfig
 		if !provider.Enabled {
 			continue
 		}
-		for _, model := range contactModels(provider) {
-			if identifier == string(aiid.AssistantUserID(provider.ID, model.ID)) || identifier == provider.ID+"/"+model.ID || identifier == model.ID {
-				return provider, model, true
-			}
+		if model, ok := resolveModelForProvider(provider, identifier); ok {
+			return provider, model, true
 		}
 	}
 	return aiid.ProviderConfig{}, ai.Model{}, false
@@ -153,4 +176,8 @@ func modelDisplayName(provider aiid.ProviderConfig, model ai.Model) string {
 		return provider.DisplayName + " " + model.ID
 	}
 	return model.ID
+}
+
+func defaultConversationTitle(provider aiid.ProviderConfig, model ai.Model) string {
+	return "New AI Chat with " + modelDisplayName(provider, model)
 }

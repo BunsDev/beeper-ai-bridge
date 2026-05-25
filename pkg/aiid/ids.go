@@ -10,14 +10,16 @@ import (
 )
 
 const (
-	NetworkID        = "ai"
-	BeeperBridgeType = "ai"
-	DefaultLoginName = "beeper"
-	DefaultProvider  = "beeper"
-	RoomToolsType    = "com.beeper.ai.tools"
-	RoomModelType    = "com.beeper.ai.model"
-	RoomPromptType   = "com.beeper.ai.additional_prompt"
-	StreamType       = "com.beeper.llm.deltas"
+	NetworkID         = "ai"
+	BeeperBridgeType  = "ai"
+	DefaultLoginName  = "beeper"
+	DefaultProvider   = "beeper"
+	LoginKindMain     = "main"
+	LoginKindProvider = "provider"
+	RoomToolsType     = "com.beeper.ai.tools"
+	RoomModelType     = "com.beeper.ai.model"
+	RoomPromptType    = "com.beeper.ai.additional_prompt"
+	StreamType        = "com.beeper.llm.deltas"
 )
 
 func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {
@@ -26,6 +28,10 @@ func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {
 
 func CustomLoginID(mxid id.UserID, slug string) networkid.UserLoginID {
 	return networkid.UserLoginID("custom:" + encode(string(mxid)) + ":" + sanitizeID(slug))
+}
+
+func ProviderLoginID(parent networkid.UserLoginID, providerID string) networkid.UserLoginID {
+	return networkid.UserLoginID("provider:" + encode(string(parent)) + ":" + sanitizeID(providerID))
 }
 
 func PortalID(roomID id.RoomID) networkid.PortalID {

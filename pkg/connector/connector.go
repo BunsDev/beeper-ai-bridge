@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -38,12 +40,22 @@ func (c *Connector) GetName() bridgev2.BridgeName {
 }
 
 func (c *Connector) Init(bridge *bridgev2.Bridge) {
+	configureBridgeV2MessageStatuses()
 	c.Config.ApplyDefaults()
 	c.Bridge = bridge
 	c.Store = aidb.NewStore(bridge.DB.Database, dbutil.ZeroLogger(bridge.Log.With().Str("db_section", "ai").Logger()))
 	if processor, ok := bridge.Commands.(*commands.Processor); ok {
 		processor.AddHandler(c.commandAddProvider())
 	}
+}
+
+func configureBridgeV2MessageStatuses() {
+	bridgev2.ErrNoPortal = bridgev2.WrapErrorInStatus(errors.New("room is not an AI chat")).
+		WithStatus(event.MessageStatusFail).
+		WithErrorReason(event.MessageStatusUnsupported).
+		WithMessage("This room is not linked to an AI chat. Start a new AI chat or recreate this portal.").
+		WithIsCertain(true).
+		WithSendNotice(true)
 }
 
 func (c *Connector) Start(ctx context.Context) error {
@@ -66,6 +78,14 @@ func (c *Connector) ValidateConfig() error {
 
 func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	meta := login.Metadata.(*aiid.UserLoginMetadata)
+	if meta.Kind == aiid.LoginKindProvider {
+		login.Client = &ProviderRemoteClient{
+			Main:      c,
+			UserLogin: login,
+			loggedIn:  true,
+		}
+		return nil
+	}
 	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
 	login.Client = &Client{
 		Main:      c,
@@ -145,6 +165,9 @@ func normalizeConfiguredProvider(id string, provider aiid.ProviderConfig) aiid.P
 }
 
 func ensureMetadataDefaults(meta *aiid.UserLoginMetadata, defaultProvider aiid.ProviderConfig, configuredProviders ...map[string]aiid.ProviderConfig) {
+	if meta.Kind == "" {
+		meta.Kind = aiid.LoginKindMain
+	}
 	if meta.Providers == nil {
 		meta.Providers = map[string]aiid.ProviderConfig{}
 	}
@@ -221,6 +244,10 @@ func (c *Connector) ensureDefaultLoginsForExistingUsers(ctx context.Context) err
 func (c *Connector) EnsureDefaultLogin(ctx context.Context, user *bridgev2.User) (*bridgev2.UserLogin, error) {
 	loginID := c.defaultLoginID(user.MXID)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
+		if meta, ok := cached.Metadata.(*aiid.UserLoginMetadata); ok {
+			meta.SyntheticDefault = true
+			ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
+		}
 		return cached, nil
 	}
 	meta := &aiid.UserLoginMetadata{SyntheticDefault: true}

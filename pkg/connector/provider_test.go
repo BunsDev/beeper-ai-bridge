@@ -2,6 +2,9 @@ package connector
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -95,6 +98,25 @@ func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 	}
 }
 
+func TestConfigureBridgeV2MessageStatusesMapsNoPortal(t *testing.T) {
+	original := bridgev2.ErrNoPortal
+	t.Cleanup(func() {
+		bridgev2.ErrNoPortal = original
+	})
+	configureBridgeV2MessageStatuses()
+
+	status := bridgev2.WrapErrorInStatus(bridgev2.ErrNoPortal)
+	if status.Status != event.MessageStatusFail || status.ErrorReason != event.MessageStatusUnsupported {
+		t.Fatalf("expected permanent unsupported no-portal status, got %#v", status)
+	}
+	if status.Message == "" || status.ErrorReason == event.MessageStatusGenericError {
+		t.Fatalf("expected specific no-portal message status, got %#v", status)
+	}
+	if !errors.Is(bridgev2.ErrNoPortal, status.InternalError) {
+		t.Fatalf("expected wrapped no-portal error to remain unwrap-compatible")
+	}
+}
+
 func TestRoomFeaturesDisableReactions(t *testing.T) {
 	client := &Client{}
 	caps := client.GetCapabilities(context.Background(), nil)
@@ -159,6 +181,75 @@ func TestBuildProviderFromCommandArgsUsesCanonicalOpenRouterModels(t *testing.T)
 	}
 }
 
+func TestFetchProviderModelsVerifiesAndBuildsModels(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"},{"id":"model-a"}]}`))
+	}))
+	defer server.Close()
+
+	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL+"/v1", "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer key" {
+		t.Fatalf("unexpected auth header %q", gotAuth)
+	}
+	if len(models) != 2 || models[0].ID != "model-a" || models[1].ID != "model-b" {
+		t.Fatalf("unexpected models %#v", models)
+	}
+	if models[0].API != ai.ApiOpenAIResponses || models[0].Provider != "local" || models[0].BaseURL != server.URL+"/v1" {
+		t.Fatalf("unexpected model route %#v", models[0])
+	}
+}
+
+func TestFetchProviderModelsRejectsFailedVerification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad key", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	if _, err := fetchProviderModels(context.Background(), ai.ApiOpenAICompletions, "local", server.URL, "bad"); err == nil {
+		t.Fatalf("expected failed verification to return an error")
+	}
+}
+
+func TestCustomProviderLoginStagesAPIConfigAndDefaultModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-test"},{"id":"gpt-other"}]}`))
+	}))
+	defer server.Close()
+
+	login := &CustomProviderLogin{config: providerLoginConfig{API: ai.ApiOpenAICompletions}}
+	step := login.providerConfigStep()
+	if step.StepID != loginStepProviderConfig || len(step.UserInputParams.Fields) != 3 {
+		t.Fatalf("unexpected config step %#v", step)
+	}
+
+	step, err := login.submitProviderConfig(context.Background(), map[string]string{
+		"provider_id": "local-ai",
+		"base_url":    server.URL,
+		"api_key":     "key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.StepID != loginStepProviderDefault {
+		t.Fatalf("expected default model step, got %#v", step)
+	}
+	field := step.UserInputParams.Fields[0]
+	if field.Type != bridgev2.LoginInputFieldTypeSelect || field.DefaultValue != "gpt-test" || len(field.Options) != 2 {
+		t.Fatalf("unexpected default model field %#v", field)
+	}
+	if login.config.ProviderID != "local-ai" || login.config.API != ai.ApiOpenAICompletions || len(login.config.Models) != 2 {
+		t.Fatalf("login config was not retained: %#v", login.config)
+	}
+}
+
 func TestModelForProviderAppliesRouteBaseURLToCatalogModel(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
@@ -218,5 +309,16 @@ func TestValidateReasoningLevelRejectsUnsupportedPair(t *testing.T) {
 	}
 	if err := client.validateReasoningLevel(model, RoomConfig{ThinkingLevel: "off"}); err != nil {
 		t.Fatalf("expected off reasoning to be accepted: %v", err)
+	}
+}
+
+func TestValidateReasoningLevelAcceptsOffForReasoningModel(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model, ok := ai.GetModel(ai.ProviderOpenAI, "gpt-5.4")
+	if !ok {
+		t.Fatal("expected generated gpt-5.4 model")
+	}
+	if err := client.validateReasoningLevel(model, RoomConfig{}); err != nil {
+		t.Fatalf("expected default off reasoning to be accepted: %v", err)
 	}
 }

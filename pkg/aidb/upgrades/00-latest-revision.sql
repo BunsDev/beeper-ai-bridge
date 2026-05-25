@@ -2,7 +2,6 @@
 CREATE TABLE ai_session (
 	id TEXT PRIMARY KEY,
 	created_at TEXT NOT NULL,
-	path TEXT NOT NULL,
 	parent_session_path TEXT,
 	leaf_id TEXT
 );

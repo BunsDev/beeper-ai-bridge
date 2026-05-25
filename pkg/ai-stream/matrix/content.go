@@ -28,9 +28,7 @@ func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any)
 	extra := map[string]any{
 		aistream.BeeperAIKey:         run.FinalUIMessage(0, true),
 		aistream.BeeperAIMetadataKey: run.Metadata(),
-		"com.beeper.stream": map[string]any{
-			"type": aistream.BeeperAIStreamDeltas,
-		},
+		"com.beeper.stream":          nil,
 	}
 	return content, extra
 }

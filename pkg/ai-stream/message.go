@@ -29,7 +29,6 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 	var thinkingPart agui.MessagePart
 	var textContent, thinkingContent strings.Builder
 	toolParts := map[string]agui.MessagePart{}
-	toolResultParts := map[string]agui.MessagePart{}
 	approvalByID := map[string]any{}
 	appendPart := func(part agui.MessagePart) agui.MessagePart {
 		message.Parts = append(message.Parts, part)
@@ -123,13 +122,19 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			if toolCallID == "" {
 				continue
 			}
-			part := toolResultParts[toolCallID]
+			part := toolParts[toolCallID]
 			if part == nil {
-				part = appendPart(agui.MessagePart{"type": "tool-result", "toolCallId": toolCallID, "content": "", "state": firstString(evt["state"])})
-				toolResultParts[toolCallID] = part
+				part = appendPart(agui.MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
+				toolParts[toolCallID] = part
 			}
-			part["state"] = firstString(evt["state"])
-			part["content"] = asString(part["content"]) + asString(evt["content"])
+			part["state"] = agui.ToolStateInputComplete
+			content := asString(evt["content"])
+			if previous := asString(part["output"]); previous != "" {
+				content = previous + content
+			}
+			if content != "" {
+				part["output"] = toolResultOutput(content, firstString(evt["state"]), evt["error"])
+			}
 		case agui.EventCustom:
 			name, _ := evt["name"].(string)
 			value, _ := evt["value"].(map[string]any)
@@ -205,6 +210,44 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 		}
 	}
 	return message
+}
+
+func toolResultOutput(content string, state string, err any) any {
+	output := jsonValue(content)
+	result, ok := output.(map[string]any)
+	if !ok {
+		if state == agui.ToolResultStateError {
+			reason := asString(err)
+			if reason == "" {
+				reason = content
+			}
+			return map[string]any{
+				"state":  agui.ToolResultStateError,
+				"status": "failed",
+				"reason": reason,
+			}
+		}
+		return output
+	}
+	if state == agui.ToolResultStateError {
+		if result["state"] == nil {
+			result["state"] = agui.ToolResultStateError
+		}
+		if result["status"] == nil {
+			result["status"] = "failed"
+		}
+		if result["reason"] == nil && err != nil {
+			result["reason"] = asString(err)
+		}
+	} else if state == agui.ToolResultStateComplete {
+		if result["state"] == nil {
+			result["state"] = agui.ToolResultStateComplete
+		}
+		if result["status"] == nil {
+			result["status"] = "success"
+		}
+	}
+	return result
 }
 
 func finalizeOpenToolPart(part agui.MessagePart, runState string) {

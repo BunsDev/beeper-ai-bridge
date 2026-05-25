@@ -98,6 +98,7 @@ func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, m
 					Extra:   finalExtra,
 					TopLevelExtra: map[string]any{
 						"com.beeper.dont_render_edited": true,
+						"com.beeper.stream":             nil,
 					},
 				}},
 			}, nil

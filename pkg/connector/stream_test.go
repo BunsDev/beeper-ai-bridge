@@ -58,6 +58,73 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
+	ctx := context.Background()
+	toolAPI := ai.Api("test-stream-tool")
+	answerAPI := ai.Api("test-stream-answer")
+	ai.RegisterAPIProvider(toolAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			toolCall := &ai.ToolCall{ID: "call-session", Name: "get_session", Arguments: map[string]any{}}
+			message := ai.Message{
+				Role:       "assistant",
+				Content:    []ai.ContentBlock{{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments}},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "hello"}}, StopReason: ai.StopReasonStop}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "hello"})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(toolAPI)
+	defer ai.UnregisterAPIProvider(answerAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	cursor := &streamPublishCursor{nextSeq: 1}
+
+	toolResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: toolAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if toolResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected tool stream result %#v", toolResult)
+	}
+	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if answerResult.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected answer stream result %#v", answerResult)
+	}
+
+	runStarted := 0
+	for _, evt := range run.Events {
+		if evt["type"] == agui.EventRunStarted {
+			runStarted++
+		}
+	}
+	if runStarted != 1 {
+		t.Fatalf("expected one run start event, got %d in %#v", runStarted, run.Events)
+	}
+	message := run.FinalUIMessage(0, true)
+	if message.ID != "assistant:run" || len(message.Parts) != 2 {
+		t.Fatalf("expected one assistant UI message with text and tool parts, got %#v", message)
+	}
+	if message.Parts[0]["type"] != "text" || message.Parts[0]["content"] != "hello" {
+		t.Fatalf("expected final answer text first, got %#v", message.Parts)
+	}
+	if message.Parts[1]["type"] != "tool-call" || message.Parts[1]["toolCallId"] != "call-session" {
+		t.Fatalf("expected folded tool-call part, got %#v", message.Parts)
+	}
+}
+
 func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
 	run.MessageID = "assistant:run"

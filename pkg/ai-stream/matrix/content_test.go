@@ -114,9 +114,8 @@ func TestFinalContentIncludesFinalUIParts(t *testing.T) {
 	if extra[aistream.BeeperAIMetadataKey] == nil {
 		t.Fatalf("missing final metadata: %#v", extra)
 	}
-	stream, ok := extra["com.beeper.stream"].(map[string]any)
-	if !ok || stream["type"] != aistream.BeeperAIStreamDeltas {
-		t.Fatalf("missing final stream descriptor: %#v", extra["com.beeper.stream"])
+	if stream, ok := extra["com.beeper.stream"]; !ok || stream != nil {
+		t.Fatalf("final edit must clear stream descriptor: %#v", extra["com.beeper.stream"])
 	}
 }
 
