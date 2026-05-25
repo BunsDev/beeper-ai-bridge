@@ -128,8 +128,6 @@ func EstimateTokens(message agent.AgentMessage) int {
 				chars += len(block.Name) + len(safeJSONString(block.Arguments))
 			}
 		}
-	case "bashExecution":
-		chars = len(message.Command) + len(message.Output)
 	case "branchSummary", "compactionSummary":
 		chars = len(message.Summary)
 	}
@@ -142,7 +140,7 @@ func FindTurnStartIndex(entries []SessionEntry, entryIndex int, startIndex int) 
 		if entry.Type == "branch_summary" || entry.Type == "custom_message" {
 			return i
 		}
-		if entry.Type == "message" && (entry.Message.Role == "user" || entry.Message.Role == "bashExecution") {
+		if entry.Type == "message" && entry.Message.Role == "user" {
 			return i
 		}
 	}
@@ -387,7 +385,7 @@ func findValidCutPoints(entries []SessionEntry, startIndex int, endIndex int) []
 		entry := entries[i]
 		if entry.Type == "message" {
 			switch entry.Message.Role {
-			case "bashExecution", "custom", "branchSummary", "compactionSummary", "user", "assistant":
+			case "custom", "branchSummary", "compactionSummary", "user", "assistant":
 				cutPoints = append(cutPoints, i)
 			}
 		}

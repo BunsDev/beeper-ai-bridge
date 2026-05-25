@@ -223,34 +223,28 @@ type AssistantImages struct {
 }
 
 type Message struct {
-	Role               string     `json:"role"`
-	Content            any        `json:"content"`
-	Timestamp          int64      `json:"timestamp"`
-	API                Api        `json:"api,omitempty"`
-	Provider           Provider   `json:"provider,omitempty"`
-	Model              string     `json:"model,omitempty"`
-	ResponseModel      string     `json:"responseModel,omitempty"`
-	ResponseID         string     `json:"responseId,omitempty"`
-	Diagnostics        []any      `json:"diagnostics,omitempty"`
-	Usage              Usage      `json:"usage,omitempty"`
-	StopReason         StopReason `json:"stopReason,omitempty"`
-	ErrorMessage       string     `json:"errorMessage,omitempty"`
-	ToolCallID         string     `json:"toolCallId,omitempty"`
-	ToolName           string     `json:"toolName,omitempty"`
-	Details            any        `json:"details,omitempty"`
-	IsError            bool       `json:"isError,omitempty"`
-	CustomType         string     `json:"customType,omitempty"`
-	Display            bool       `json:"display,omitempty"`
-	Summary            string     `json:"summary,omitempty"`
-	FromID             string     `json:"fromId,omitempty"`
-	TokensBefore       int        `json:"tokensBefore,omitempty"`
-	Command            string     `json:"command,omitempty"`
-	Output             string     `json:"output,omitempty"`
-	ExitCode           *int       `json:"exitCode,omitempty"`
-	Cancelled          bool       `json:"cancelled,omitempty"`
-	Truncated          bool       `json:"truncated,omitempty"`
-	FullOutputPath     string     `json:"fullOutputPath,omitempty"`
-	ExcludeFromContext bool       `json:"excludeFromContext,omitempty"`
+	Role          string     `json:"role"`
+	Content       any        `json:"content"`
+	Timestamp     int64      `json:"timestamp"`
+	API           Api        `json:"api,omitempty"`
+	Provider      Provider   `json:"provider,omitempty"`
+	Model         string     `json:"model,omitempty"`
+	ResponseModel string     `json:"responseModel,omitempty"`
+	ResponseID    string     `json:"responseId,omitempty"`
+	Diagnostics   []any      `json:"diagnostics,omitempty"`
+	Usage         Usage      `json:"usage,omitempty"`
+	StopReason    StopReason `json:"stopReason,omitempty"`
+	ErrorMessage  string     `json:"errorMessage,omitempty"`
+	ToolCallID    string     `json:"toolCallId,omitempty"`
+	ToolName      string     `json:"toolName,omitempty"`
+	Details       any        `json:"details,omitempty"`
+	IsError       bool       `json:"isError,omitempty"`
+	CustomType    string     `json:"customType,omitempty"`
+	Display       bool       `json:"display,omitempty"`
+	Summary       string     `json:"summary,omitempty"`
+	FromID        string     `json:"fromId,omitempty"`
+	TokensBefore  int        `json:"tokensBefore,omitempty"`
+	Truncated     bool       `json:"truncated,omitempty"`
 }
 
 type Tool struct {

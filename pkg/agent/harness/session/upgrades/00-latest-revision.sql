@@ -2,7 +2,6 @@
 CREATE TABLE sessions (
 	id text primary key,
 	created_at text not null,
-	cwd text not null,
 	path text not null,
 	parent_session_path text,
 	leaf_id text

@@ -172,7 +172,7 @@ func TestApprovalContentIncludesContextAndChoices(t *testing.T) {
 		RunID:       "run-1",
 		MessageID:   "msg-run-1",
 		ToolCallID:  "tool-1",
-		ToolName:    "shell",
+		ToolName:    "fetch",
 		TargetEvent: "$anchor",
 	}
 	choices := aistream.DefaultApprovalChoices()

@@ -10,13 +10,10 @@ import (
 
 type SQLiteSessionCreateOptions struct {
 	ID                string
-	Cwd               string
 	ParentSessionPath string
 }
 
-type SQLiteSessionListOptions struct {
-	Cwd string
-}
+type SQLiteSessionListOptions struct{}
 
 type SQLiteSessionForkOptions struct {
 	SQLiteSessionCreateOptions
@@ -43,7 +40,7 @@ func NewSQLiteSessionRepo(path string) *SQLiteSessionRepo {
 }
 
 func (r *SQLiteSessionRepo) Create(ctx context.Context, options SQLiteSessionCreateOptions) (*Session, error) {
-	storage, err := CreateSQLiteSessionStorage(ctx, r.Path, options.Cwd, options.ID, options.ParentSessionPath)
+	storage, err := CreateSQLiteSessionStorage(ctx, r.Path, options.ID, options.ParentSessionPath)
 	if err != nil {
 		return nil, err
 	}
@@ -72,14 +69,7 @@ func (r *SQLiteSessionRepo) List(ctx context.Context, options SQLiteSessionListO
 	}
 	defer storage.Close()
 
-	query := `select id, created_at, cwd, path, coalesce(parent_session_path, '') from sessions`
-	args := []any{}
-	if options.Cwd != "" {
-		query += ` where cwd = ?`
-		args = append(args, options.Cwd)
-	}
-	query += ` order by created_at desc`
-	rows, err := storage.db.Query(ctx, query, args...)
+	rows, err := storage.db.Query(ctx, `select id, created_at, path, coalesce(parent_session_path, '') from sessions order by created_at desc`)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +78,7 @@ func (r *SQLiteSessionRepo) List(ctx context.Context, options SQLiteSessionListO
 	var sessions []SQLiteSessionMetadata
 	for rows.Next() {
 		var metadata SQLiteSessionMetadata
-		if err := rows.Scan(&metadata.ID, &metadata.CreatedAt, &metadata.Cwd, &metadata.Path, &metadata.ParentSessionPath); err != nil {
+		if err := rows.Scan(&metadata.ID, &metadata.CreatedAt, &metadata.Path, &metadata.ParentSessionPath); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, metadata)
@@ -142,7 +132,7 @@ func (r *SQLiteSessionRepo) Fork(ctx context.Context, sourceMetadata SQLiteSessi
 	if parentSessionPath == "" {
 		parentSessionPath = sourceMetadata.Path
 	}
-	targetStorage, err := CreateSQLiteSessionStorage(ctx, r.Path, options.Cwd, options.ID, parentSessionPath)
+	targetStorage, err := CreateSQLiteSessionStorage(ctx, r.Path, options.ID, parentSessionPath)
 	if err != nil {
 		return nil, err
 	}

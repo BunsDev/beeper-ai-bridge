@@ -17,7 +17,7 @@ import (
 func TestSQLiteSessionStorageAppendsEntriesAndBuildsPath(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
-	storage, err := CreateSQLiteSessionStorage(ctx, dbPath, "/repo", "session-1", "")
+	storage, err := CreateSQLiteSessionStorage(ctx, dbPath, "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestSQLiteSessionStorageAppendsEntriesAndBuildsPath(t *testing.T) {
 
 func TestSQLiteSessionStoragePreservesRawEntryObjects(t *testing.T) {
 	ctx := context.Background()
-	storage, err := CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestSQLiteSessionStoragePreservesRawEntryObjects(t *testing.T) {
 func TestSQLiteSessionStorageUsesDBUtilVersionTable(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
-	storage, err := CreateSQLiteSessionStorage(ctx, dbPath, "/repo", "session-1", "")
+	storage, err := CreateSQLiteSessionStorage(ctx, dbPath, "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestSQLiteSessionStorageUsesDBUtilVersionTable(t *testing.T) {
 
 func TestSQLiteSessionErrors(t *testing.T) {
 	ctx := context.Background()
-	storage, err := CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "", "")
+	storage, err := CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestUUIDv7ShapeAndSQLiteGeneratedIDs(t *testing.T) {
 		t.Fatalf("expected dashed UUID, got %q", id)
 	}
 	ctx := context.Background()
-	storage, err := CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "", "")
+	storage, err := CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestUUIDv7ShapeAndSQLiteGeneratedIDs(t *testing.T) {
 func TestSessionLabelsNamesMoveAndContext(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
-	storage, err := CreateSQLiteSessionStorage(ctx, dbPath, "/repo", "session-1", "")
+	storage, err := CreateSQLiteSessionStorage(ctx, dbPath, "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestSQLiteSessionRepoCreateListOpenDelete(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	var repo SessionRepo = NewSQLiteSessionRepo(dbPath)
 
-	first, err := repo.Create(ctx, SQLiteSessionCreateOptions{ID: "session-1", Cwd: "/repo"})
+	first, err := repo.Create(ctx, SQLiteSessionCreateOptions{ID: "session-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestSQLiteSessionRepoCreateListOpenDelete(t *testing.T) {
 	if _, err := first.AppendMessage(ctx, agentMessage("user", "hi", 1)); err != nil {
 		t.Fatal(err)
 	}
-	second, err := repo.Create(ctx, SQLiteSessionCreateOptions{ID: "session-2", Cwd: "/other"})
+	second, err := repo.Create(ctx, SQLiteSessionCreateOptions{ID: "session-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,14 +355,17 @@ func TestSQLiteSessionRepoCreateListOpenDelete(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("expected two sessions, got %#v", all)
 	}
-	filtered, err := repo.List(ctx, SQLiteSessionListOptions{Cwd: "/repo"})
-	if err != nil {
-		t.Fatal(err)
+	var firstMetadata *SQLiteSessionMetadata
+	for i := range all {
+		if all[i].ID == "session-1" {
+			firstMetadata = &all[i]
+			break
+		}
 	}
-	if len(filtered) != 1 || filtered[0].ID != "session-1" {
-		t.Fatalf("expected filtered session-1, got %#v", filtered)
+	if firstMetadata == nil {
+		t.Fatalf("expected session-1 in list, got %#v", all)
 	}
-	opened, err := repo.Open(ctx, filtered[0])
+	opened, err := repo.Open(ctx, *firstMetadata)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,15 +377,15 @@ func TestSQLiteSessionRepoCreateListOpenDelete(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected opened session entry, got %#v", entries)
 	}
-	if err := repo.Delete(ctx, filtered[0]); err != nil {
+	if err := repo.Delete(ctx, *firstMetadata); err != nil {
 		t.Fatal(err)
 	}
-	filtered, err = repo.List(ctx, SQLiteSessionListOptions{Cwd: "/repo"})
+	remaining, err := repo.List(ctx, SQLiteSessionListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filtered) != 0 {
-		t.Fatalf("expected deleted session to be absent, got %#v", filtered)
+	if len(remaining) != 1 || remaining[0].ID != "session-2" {
+		t.Fatalf("expected only session-2 to remain, got %#v", remaining)
 	}
 }
 
@@ -390,7 +393,7 @@ func TestSQLiteSessionRepoForkAtAndBefore(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	repo := NewSQLiteSessionRepo(dbPath)
-	source, err := repo.Create(ctx, SQLiteSessionCreateOptions{ID: "source", Cwd: "/repo"})
+	source, err := repo.Create(ctx, SQLiteSessionCreateOptions{ID: "source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +416,7 @@ func TestSQLiteSessionRepoForkAtAndBefore(t *testing.T) {
 	}
 
 	atFork, err := repo.Fork(ctx, sourceMetadata, SQLiteSessionForkOptions{
-		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-at", Cwd: "/repo"},
+		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-at"},
 		EntryID:                    assistantID,
 		Position:                   "at",
 	})
@@ -430,7 +433,7 @@ func TestSQLiteSessionRepoForkAtAndBefore(t *testing.T) {
 	}
 
 	beforeFork, err := repo.Fork(ctx, sourceMetadata, SQLiteSessionForkOptions{
-		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-before", Cwd: "/repo"},
+		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-before"},
 		EntryID:                    nextID,
 		Position:                   "before",
 	})
@@ -453,7 +456,7 @@ func TestSQLiteSessionRepoForkAtAndBefore(t *testing.T) {
 		t.Fatalf("expected root entry %q, got %#v", rootID, first)
 	}
 	if _, err := repo.Fork(ctx, sourceMetadata, SQLiteSessionForkOptions{
-		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-invalid", Cwd: "/repo"},
+		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-invalid"},
 		EntryID:                    assistantID,
 		Position:                   "before",
 	}); err == nil {
@@ -466,7 +469,7 @@ func TestSQLiteSessionRepoForkAtAndBefore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repo.Fork(ctx, sourceMetadata, SQLiteSessionForkOptions{
-		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-label", Cwd: "/repo"},
+		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-label"},
 		EntryID:                    label,
 		Position:                   "before",
 	}); err == nil {
@@ -475,7 +478,7 @@ func TestSQLiteSessionRepoForkAtAndBefore(t *testing.T) {
 		t.Fatalf("unexpected fork error %v", err)
 	}
 	if _, err := repo.Fork(ctx, sourceMetadata, SQLiteSessionForkOptions{
-		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-missing", Cwd: "/repo"},
+		SQLiteSessionCreateOptions: SQLiteSessionCreateOptions{ID: "fork-missing"},
 		EntryID:                    "missing",
 		Position:                   "at",
 	}); err == nil {

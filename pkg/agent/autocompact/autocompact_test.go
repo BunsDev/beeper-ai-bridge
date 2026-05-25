@@ -52,7 +52,7 @@ func TestShouldCompactOnOverflow(t *testing.T) {
 
 func testSession(t *testing.T, ctx context.Context) *session.Session {
 	t.Helper()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}

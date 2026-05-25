@@ -13,7 +13,7 @@ import (
 
 func TestCollectEntriesForBranchSummaryUsesCommonAncestor(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}

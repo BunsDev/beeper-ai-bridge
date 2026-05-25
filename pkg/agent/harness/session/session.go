@@ -16,7 +16,6 @@ type SessionMetadata struct {
 
 type SQLiteSessionMetadata struct {
 	SessionMetadata
-	Cwd               string `json:"cwd"`
 	Path              string `json:"path"`
 	ParentSessionPath string `json:"parentSessionPath,omitempty"`
 }

@@ -26,15 +26,15 @@ func OpenSQLiteSessionStorage(ctx context.Context, path string, sessionID string
 		_ = db.Close()
 		return nil, err
 	}
-	row := db.QueryRow(ctx, `select id, created_at, cwd, path, coalesce(parent_session_path, '') from sessions where id = ?`, sessionID)
-	if err := row.Scan(&storage.metadata.ID, &storage.metadata.CreatedAt, &storage.metadata.Cwd, &storage.metadata.Path, &storage.metadata.ParentSessionPath); err != nil {
+	row := db.QueryRow(ctx, `select id, created_at, path, coalesce(parent_session_path, '') from sessions where id = ?`, sessionID)
+	if err := row.Scan(&storage.metadata.ID, &storage.metadata.CreatedAt, &storage.metadata.Path, &storage.metadata.ParentSessionPath); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return storage, nil
 }
 
-func CreateSQLiteSessionStorage(ctx context.Context, path string, cwd string, sessionID string, parentSessionPath string) (*SQLiteSessionStorage, error) {
+func CreateSQLiteSessionStorage(ctx context.Context, path string, sessionID string, parentSessionPath string) (*SQLiteSessionStorage, error) {
 	if sessionID == "" {
 		sessionID = CreateSessionID()
 	}
@@ -42,12 +42,12 @@ func CreateSQLiteSessionStorage(ctx context.Context, path string, cwd string, se
 	if err != nil {
 		return nil, err
 	}
-	storage := &SQLiteSessionStorage{db: db, metadata: SQLiteSessionMetadata{SessionMetadata: SessionMetadata{ID: sessionID, CreatedAt: CreateTimestamp()}, Cwd: cwd, Path: path, ParentSessionPath: parentSessionPath}}
+	storage := &SQLiteSessionStorage{db: db, metadata: SQLiteSessionMetadata{SessionMetadata: SessionMetadata{ID: sessionID, CreatedAt: CreateTimestamp()}, Path: path, ParentSessionPath: parentSessionPath}}
 	if err := migrateSQLiteSessionDB(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	_, err = db.Exec(ctx, `insert into sessions (id, created_at, cwd, path, parent_session_path, leaf_id) values (?, ?, ?, ?, ?, null)`, storage.metadata.ID, storage.metadata.CreatedAt, cwd, path, nullString(parentSessionPath))
+	_, err = db.Exec(ctx, `insert into sessions (id, created_at, path, parent_session_path, leaf_id) values (?, ?, ?, ?, null)`, storage.metadata.ID, storage.metadata.CreatedAt, path, nullString(parentSessionPath))
 	if err != nil {
 		_ = db.Close()
 		return nil, err

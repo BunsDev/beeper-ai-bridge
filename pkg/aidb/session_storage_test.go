@@ -31,7 +31,7 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	if err := store.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
-	agentSession, err := store.CreateSession(ctx, session.SQLiteSessionCreateOptions{ID: "session-1", Cwd: "/repo"})
+	agentSession, err := store.CreateSession(ctx, session.SQLiteSessionCreateOptions{ID: "session-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

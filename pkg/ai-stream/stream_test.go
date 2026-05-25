@@ -59,9 +59,9 @@ func TestFinalSnapshotSplitsIntoBaseAndContinuationParts(t *testing.T) {
 	writer.Start()
 	writer.Thinking(strings.Repeat("t", 12*1024))
 	writer.Text(strings.Repeat("a", 70*1024))
-	writer.ToolStart("tool-1", "shell", 0, nil)
-	writer.ToolArgs("tool-1", `{"cmd":"pwd"}`, `{"cmd":"pwd"}`)
-	writer.ToolEnd("tool-1", "shell", `{"cmd":"pwd"}`, map[string]any{"ok": true})
+	writer.ToolStart("tool-1", "fetch", 0, nil)
+	writer.ToolArgs("tool-1", `{"url":"https://example.com"}`, `{"url":"https://example.com"}`)
+	writer.ToolEnd("tool-1", "fetch", `{"url":"https://example.com"}`, map[string]any{"ok": true})
 	writer.Finish(agui.FinishReasonStop)
 
 	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
@@ -222,8 +222,8 @@ func TestValidateRejectsLegacyOrInvalidToolResultShape(t *testing.T) {
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events,
 		builder.RunStarted("thread-1", "run-1"),
-		builder.ToolCallStart("msg-run-1", "tool-1", "shell", nil, nil),
-		builder.ToolCallEnd("tool-1", "shell", nil, map[string]any{"ok": true}, agui.ToolStateInputComplete),
+		builder.ToolCallStart("msg-run-1", "tool-1", "fetch", nil, nil),
+		builder.ToolCallEnd("tool-1", "fetch", nil, map[string]any{"ok": true}, agui.ToolStateInputComplete),
 	)
 	if err := run.Validate(); err == nil {
 		t.Fatal("expected validation error for non-string TOOL_CALL_END.result")
@@ -251,9 +251,9 @@ func TestFinalUIMessageCarriesToolCallMetadata(t *testing.T) {
 func TestFinalUIMessageCarriesParsedToolOutputs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
-	writer.ToolStart("tool-1", "shell", 0, nil)
-	writer.ToolArgs("tool-1", `{"cmd":"pwd"}`, `{"cmd":"pwd"}`)
-	writer.ToolEnd("tool-1", "shell", map[string]any{"cmd": "pwd"}, nil)
+	writer.ToolStart("tool-1", "fetch", 0, nil)
+	writer.ToolArgs("tool-1", `{"url":"https://example.com"}`, `{"url":"https://example.com"}`)
+	writer.ToolEnd("tool-1", "fetch", map[string]any{"url": "https://example.com"}, nil)
 	writer.ToolStart("tool-2", "files", 1, nil)
 	writer.ToolError("tool-2", "files", map[string]any{"path": "/tmp/nope"}, "missing")
 
@@ -358,12 +358,12 @@ func TestApprovalRequestedValueOwnsStreamPayloadShape(t *testing.T) {
 	run.MessageID = "msg-run-1"
 	approval := agui.ToolApproval{ID: "approval-1", NeedsApproval: true}
 
-	value := NewApprovalRequestedValue(*run, "tool-1", "shell", map[string]any{"command": "ls"}, approval).Map()
+	value := NewApprovalRequestedValue(*run, "tool-1", "fetch", map[string]any{"url": "https://example.com"}, approval).Map()
 
 	if value["threadId"] != "thread-1" || value["runId"] != "run-1" || value["messageId"] != "msg-run-1" {
 		t.Fatalf("bad run identifiers: %#v", value)
 	}
-	if value["toolCallId"] != "tool-1" || value["toolName"] != "shell" {
+	if value["toolCallId"] != "tool-1" || value["toolName"] != "fetch" {
 		t.Fatalf("bad tool identifiers: %#v", value)
 	}
 	if value["approvalMessageId"] != "approval-1" {
@@ -443,13 +443,13 @@ func TestApprovalNoticeOwnsHiddenMessagePayloadShape(t *testing.T) {
 		ID:         "approval-1",
 		MessageID:  "msg-run-1",
 		ToolCallID: "tool-1",
-		ToolName:   "shell",
+		ToolName:   "fetch",
 	}, DefaultApprovalChoices()).Map()
 
 	if notice["schema"] != "com.beeper.ai.approval.v1" || notice["state"] != "requested" {
 		t.Fatalf("bad approval notice metadata: %#v", notice)
 	}
-	if notice["id"] != "approval-1" || notice["messageId"] != "msg-run-1" || notice["toolCallId"] != "tool-1" || notice["toolName"] != "shell" {
+	if notice["id"] != "approval-1" || notice["messageId"] != "msg-run-1" || notice["toolCallId"] != "tool-1" || notice["toolName"] != "fetch" {
 		t.Fatalf("bad approval notice identifiers: %#v", notice)
 	}
 	choices, ok := notice["choices"].([]any)

@@ -14,7 +14,7 @@ import (
 
 func TestAgentHarnessPromptPersistsMessagesToSQLiteSession(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestAgentHarnessPromptPersistsMessagesToSQLiteSession(t *testing.T) {
 
 func TestAgentHarnessNextTurnAndSetters(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestAgentHarnessNextTurnAndSetters(t *testing.T) {
 
 func TestAgentHarnessUnsubscribeRemovesOnlyTargetHandlers(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestAgentHarnessUnsubscribeRemovesOnlyTargetHandlers(t *testing.T) {
 
 func TestAgentHarnessSetActiveToolsControlsTurnContext(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestAgentHarnessSetActiveToolsControlsTurnContext(t *testing.T) {
 
 func TestAgentHarnessHookResultsPatchTurnContextAndTools(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestAgentHarnessHookResultsPatchTurnContextAndTools(t *testing.T) {
 
 func TestAgentHarnessPendingSessionWritesRefreshNextToolTurn(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestAgentHarnessPendingSessionWritesRefreshNextToolTurn(t *testing.T) {
 
 func TestAgentHarnessSystemPromptCallbackRefreshesAtSavePoint(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestAgentHarnessSystemPromptCallbackRefreshesAtSavePoint(t *testing.T) {
 
 func TestAgentHarnessToolCallHookCanBlockTool(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +505,7 @@ func TestAgentHarnessToolCallHookCanBlockTool(t *testing.T) {
 
 func TestAgentHarnessProviderHooksPatchOptionsPayloadAndObserveResponse(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestAgentHarnessProviderHooksPatchOptionsPayloadAndObserveResponse(t *testi
 
 func TestAgentHarnessAbortCancelsActiveRunAndClearsQueues(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestAgentHarnessAbortCancelsActiveRunAndClearsQueues(t *testing.T) {
 
 func TestAgentHarnessCompactPersistsCompaction(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +718,7 @@ func TestAgentHarnessCompactPersistsCompaction(t *testing.T) {
 
 func TestAgentHarnessCompactHookCanCancelOrProvideCompaction(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +772,7 @@ func TestAgentHarnessCompactHookCanCancelOrProvideCompaction(t *testing.T) {
 
 func TestAgentHarnessNavigateTreeMovesLeafAndCreatesSummary(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,7 +844,7 @@ func TestAgentHarnessNavigateTreeMovesLeafAndCreatesSummary(t *testing.T) {
 
 func TestAgentHarnessNavigateTreeHookCanCancelOrProvideSummary(t *testing.T) {
 	ctx := context.Background()
-	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "/repo", "session-1", "")
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
