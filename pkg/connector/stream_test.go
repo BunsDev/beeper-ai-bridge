@@ -34,10 +34,16 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	client := &Client{}
 	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
 	run.MessageID = "assistant:run"
-	streamFn := client.streamPublisher(publisher, "!room:example.com", "$event", run)
+	secondVisibleChunks := 0
+	streamFn := client.streamPublisher(publisher, "!room:example.com", "$event", run, func() {
+		secondVisibleChunks++
+	})
 	result := streamFn(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
 	if result.StopReason != ai.StopReasonStop {
 		t.Fatalf("unexpected stream result %#v", result)
+	}
+	if secondVisibleChunks != 1 {
+		t.Fatalf("expected one second-visible-chunk callback, got %d", secondVisibleChunks)
 	}
 	if len(publisher.updates) != 4 {
 		t.Fatalf("expected stream updates, got %#v", publisher.updates)

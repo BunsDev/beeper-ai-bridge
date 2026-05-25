@@ -34,6 +34,40 @@ type Client struct {
 
 	activeMu        sync.Mutex
 	activeHarnesses map[networkid.PortalKey]*harness.AgentHarness
+	activeRuns      map[networkid.PortalKey]*activeAIRun
+}
+
+type pendingAIMessage struct {
+	msg      *bridgev2.MatrixMessage
+	txnID    networkid.TransactionID
+	metadata *aiid.MessageMetadata
+	replyTo  *networkid.MessageOptionalPartID
+	text     string
+	images   []ai.ContentBlock
+}
+
+type activeAIRun struct {
+	portalKey networkid.PortalKey
+	harness   *harness.AgentHarness
+	provider  aiid.ProviderConfig
+	model     ai.Model
+	runID     string
+
+	mu       sync.Mutex
+	pending  []*pendingAIMessage
+	consumed []*pendingAIMessage
+	streams  []*assistantStreamState
+	last     *assistantStreamState
+}
+
+type assistantStreamState struct {
+	messageID networkid.MessageID
+	eventID   id.EventID
+	runID     string
+	run       *aistream.Run
+	metadata  *aiid.MessageMetadata
+	entryID   string
+	tools     []toolOutputEvent
 }
 
 var _ bridgev2.NetworkAPI = (*Client)(nil)
@@ -153,29 +187,27 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if err != nil {
 		return nil, err
 	}
+	if active := cl.getActiveRun(msg.Portal.PortalKey); active != nil && active.harness != nil {
+		pending := cl.preparePendingAIMessage(ctx, msg, prompt, provider.ID, model.ID, "", active.replyTarget())
+		active.addPending(pending)
+		if err := active.harness.Steer(context.WithoutCancel(ctx), prompt.Text, prompt.Images...); err == nil {
+			return &bridgev2.MatrixMessageResponse{DB: pending.dbMessage(), Pending: true}, nil
+		}
+		active.removePending(pending)
+		pending.msg.RemovePending(pending.txnID)
+		cl.clearActiveRun(msg.Portal.PortalKey, active)
+	}
+	pending := cl.preparePendingAIMessage(ctx, msg, prompt, provider.ID, model.ID, "", nil)
+	cl.startAsyncPrompt(context.WithoutCancel(ctx), msg, portalMeta, roomConfig, provider, model, agentSession, prompt, pending)
+	return &bridgev2.MatrixMessageResponse{DB: pending.dbMessage(), Pending: true}, nil
+}
+
+func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, portalMeta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, agentSession *session.Session, prompt msgconv.MatrixPrompt, pending *pendingAIMessage) {
 	streamPublisher := cl.Main.Bridge.GetBeeperStreamPublisher()
 	runID := session.CreateSessionID()
-	assistantMessageID := aiid.AssistantMessageID(runID)
-	run := aistream.NewRun(runID, portalMeta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID(provider.ID, model.ID)), provider.DisplayName, time.Now())
-	run.MessageID = string(assistantMessageID)
-	assistantEventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(
-		msg.Portal.MXID,
-		msg.Portal.PortalKey,
-		assistantMessageID,
-		aiid.PartID("text"),
-	)
-	descriptor, err := streamPublisher.NewDescriptor(ctx, msg.Portal.MXID, cl.Main.Config.StreamType)
-	if err != nil {
-		return nil, err
-	}
-	assistantEvent, assistantMetadata := cl.assistantEvent(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, descriptor, *run)
-	cl.UserLogin.QueueRemoteEvent(assistantEvent)
-	if err := streamPublisher.Register(ctx, msg.Portal.MXID, assistantEventID, descriptor); err != nil {
-		return nil, err
-	}
-	defer streamPublisher.Unregister(msg.Portal.MXID, assistantEventID)
-
-	streamFn := cl.streamPublisher(streamPublisher, msg.Portal.MXID, assistantEventID, run)
+	streamFn := cl.assistantStreamPublisher(streamPublisher, msg.Portal, portalMeta, provider, model, func() {
+		cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 0)
+	})
 	options := harness.AgentHarnessOptions{
 		Session:             agentSession,
 		Model:               model,
@@ -187,70 +219,14 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	}
 	agentHarness, err := harness.NewAgentHarness(options)
 	if err != nil {
-		return nil, err
+		cl.markPendingFailed(ctx, pending, err)
+		return
 	}
+	active := &activeAIRun{portalKey: msg.Portal.PortalKey, harness: agentHarness, provider: provider, model: model, runID: runID}
+	active.addPending(pending)
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)
-	defer cl.clearActiveHarness(msg.Portal.PortalKey, agentHarness)
-	cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 30*time.Second)
-	defer cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 0)
-	var toolOutputs []toolOutputEvent
-	unsubscribeToolOutputs := agentHarness.Subscribe(func(ctx context.Context, event harness.AgentHarnessEvent) error {
-		if event.Type != "tool_execution_end" || event.AgentEvent == nil || event.AgentEvent.ToolCallID == "" {
-			return nil
-		}
-		result, ok := event.AgentEvent.Result.(agent.AgentToolResult[any])
-		if !ok {
-			return nil
-		}
-		toolOutputs = append(toolOutputs, toolOutputEvent{
-			ID:      event.AgentEvent.ToolCallID,
-			Name:    event.AgentEvent.ToolName,
-			Input:   event.AgentEvent.Args,
-			Result:  result,
-			IsError: event.AgentEvent.IsError,
-		})
-		return nil
-	})
-	defer unsubscribeToolOutputs()
-
-	promptResult, err := agentHarness.PromptWithResult(ctx, prompt.Text, prompt.Images...)
-	if err != nil {
-		cl.logMatrixMessageError(msg, err, "AI harness prompt failed")
-		_ = streamPublisher.Publish(ctx, msg.Portal.MXID, assistantEventID, map[string]any{
-			"op":      "error",
-			"message": err.Error(),
-		})
-		return nil, err
-	}
-	assistantMessage := promptResult.Message
-	if promptResult.UserEntryID == "" || promptResult.AssistantEntryID == "" {
-		return nil, fmt.Errorf("prompt did not create expected user and assistant session entries")
-	}
-	fillAssistantMetadata(assistantMetadata, promptResult.AssistantEntryID, provider.ID, model.ID, runID, assistantMessage)
-	appendToolOutputs(run, toolOutputs)
-	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), msg.Portal.PortalKey, assistantMessageID, assistantMetadata)
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(msg.Portal.PortalKey, assistantMessageID, provider.ID, model.ID, runID, *run, assistantMessage, assistantMetadata))
-	cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
-	cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, assistantEventID, agentHarness, agentSession, model, assistantMessage)
-	portalMeta.LastRunID = runID
-	_ = msg.Portal.Save(ctx)
-	return &bridgev2.MatrixMessageResponse{
-		DB: &database.Message{
-			ID:        aiid.UserMessageID(promptResult.UserEntryID),
-			PartID:    aiid.PartID("text"),
-			Room:      msg.Portal.PortalKey,
-			SenderID:  cl.GetUserID(),
-			Timestamp: matrixEventTime(msg.Event),
-			Metadata: &aiid.MessageMetadata{
-				SessionEntryID: promptResult.UserEntryID,
-				Role:           "user",
-				ProviderID:     provider.ID,
-				ModelID:        model.ID,
-				RunID:          runID,
-				StreamStatus:   "done",
-			},
-		},
-	}, nil
+	cl.setActiveRun(msg.Portal.PortalKey, active)
+	go cl.runAsyncPrompt(ctx, msg, portalMeta, provider, model, agentSession, streamPublisher, agentHarness, active, prompt)
 }
 
 func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, agentSession *session.Session, provider aiid.ProviderConfig, model ai.Model) {
@@ -361,15 +337,226 @@ func (cl *Client) queueMatrixError(portal *bridgev2.Portal, err error) {
 	})
 }
 
+func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, portalMeta *aiid.PortalMetadata, provider aiid.ProviderConfig, model ai.Model, agentSession *session.Session, streamPublisher bridgev2.BeeperStreamPublisher, agentHarness *harness.AgentHarness, active *activeAIRun, prompt msgconv.MatrixPrompt) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err := fmt.Errorf("AI run panicked: %v", recovered)
+			active.failConsumed(ctx, cl, err)
+			active.failAll(ctx, cl, err)
+			active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
+		}
+	}()
+	defer cl.clearActiveHarness(msg.Portal.PortalKey, agentHarness)
+	defer cl.clearActiveRun(msg.Portal.PortalKey, active)
+	defer cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 0)
+	defer active.failAll(ctx, cl, fmt.Errorf("AI run ended before queued message was consumed"))
+
+	cl.queueAssistantTyping(msg.Portal.PortalKey, provider.ID, model.ID, 30*time.Second)
+	unsubscribeToolOutputs := agentHarness.Subscribe(func(ctx context.Context, event harness.AgentHarnessEvent) error {
+		if event.Type == "message_end" && event.Message != nil && event.Message.Role == "user" && event.SessionEntryID != "" {
+			active.markConsumed(ctx, cl, event.SessionEntryID, time.Now())
+			return nil
+		}
+		if event.Type == "message_end" && event.Message != nil && event.Message.Role == "assistant" && event.SessionEntryID != "" {
+			active.setAssistantEntryID(event.SessionEntryID)
+			return nil
+		}
+		if event.Type != "tool_execution_end" || event.AgentEvent == nil || event.AgentEvent.ToolCallID == "" {
+			if event.Type == "turn_end" && event.Message != nil && event.Message.Role == "assistant" {
+				active.finalizeAssistant(ctx, cl, provider.ID, model.ID, *event.Message)
+			}
+			return nil
+		}
+		result, ok := event.AgentEvent.Result.(agent.AgentToolResult[any])
+		if !ok {
+			return nil
+		}
+		output := toolOutputEvent{
+			ID:      event.AgentEvent.ToolCallID,
+			Name:    event.AgentEvent.ToolName,
+			Input:   event.AgentEvent.Args,
+			Result:  result,
+			IsError: event.AgentEvent.IsError,
+		}
+		active.addToolOutput(output)
+		return nil
+	})
+	defer unsubscribeToolOutputs()
+
+	promptResult, err := agentHarness.PromptWithResult(ctx, prompt.Text, prompt.Images...)
+	if err != nil {
+		cl.logMatrixMessageError(msg, err, "AI harness prompt failed")
+		active.failConsumed(ctx, cl, err)
+		active.failAll(ctx, cl, err)
+		active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
+		return
+	}
+	assistantMessage := promptResult.Message
+	if promptResult.AssistantEntryID == "" {
+		err := fmt.Errorf("prompt did not create expected assistant session entry")
+		active.failAll(ctx, cl, err)
+		active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
+		return
+	}
+	if assistantMessage.StopReason == ai.StopReasonError {
+		err := errors.New(assistantMessage.ErrorMessage)
+		if assistantMessage.ErrorMessage == "" {
+			err = errors.New("AI failed to respond")
+		}
+		active.failConsumed(ctx, cl, err)
+	}
+	if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted {
+		cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
+		if last := active.lastAssistant(); last != nil {
+			cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
+		}
+	}
+	portalMeta.LastRunID = active.lastRunID()
+	_ = msg.Portal.Save(ctx)
+}
+
+func (cl *Client) preparePendingAIMessage(ctx context.Context, msg *bridgev2.MatrixMessage, prompt msgconv.MatrixPrompt, providerID string, modelID string, runID string, replyTo *networkid.MessageOptionalPartID) *pendingAIMessage {
+	txnID := aiPendingTransactionID(msg)
+	metadata := &aiid.MessageMetadata{
+		Role:         "user",
+		ProviderID:   providerID,
+		ModelID:      modelID,
+		RunID:        runID,
+		StreamStatus: "pending",
+	}
+	pending := &pendingAIMessage{
+		msg:      msg,
+		txnID:    txnID,
+		metadata: metadata,
+		replyTo:  replyTo,
+		text:     prompt.Text,
+		images:   append([]ai.ContentBlock(nil), prompt.Images...),
+	}
+	msg.AddPendingToSave(pending.dbMessage(), txnID, nil)
+	cl.sendPendingStatus(ctx, msg, "Queued for AI")
+	return pending
+}
+
+func aiPendingTransactionID(msg *bridgev2.MatrixMessage) networkid.TransactionID {
+	if msg != nil && msg.Event != nil && msg.Event.ID != "" {
+		return networkid.TransactionID("ai:" + string(msg.Event.ID))
+	}
+	return networkid.TransactionID("ai:" + session.CreateSessionID())
+}
+
+func (p *pendingAIMessage) dbMessage() *database.Message {
+	dbMessage := &database.Message{
+		ID:        networkid.MessageID("pending:" + string(p.txnID)),
+		PartID:    aiid.PartID("text"),
+		Room:      p.msg.Portal.PortalKey,
+		SenderID:  networkid.UserID(""),
+		Timestamp: matrixEventTime(p.msg.Event),
+		Metadata:  p.metadata,
+	}
+	if p.replyTo != nil {
+		dbMessage.ReplyTo = *p.replyTo
+	}
+	return dbMessage
+}
+
+func (cl *Client) sendPendingStatus(ctx context.Context, msg *bridgev2.MatrixMessage, text string) {
+	cl.Main.Bridge.Matrix.SendMessageStatus(ctx, &bridgev2.MessageStatus{
+		Status:  event.MessageStatusPending,
+		Message: text,
+	}, bridgev2.StatusEventInfoFromEvent(msg.Event))
+}
+
+func (cl *Client) markPendingFailed(ctx context.Context, pending *pendingAIMessage, err error) {
+	if pending == nil || pending.msg == nil {
+		return
+	}
+	pending.msg.RemovePending(pending.txnID)
+	cl.markConsumedFailed(ctx, pending, err)
+}
+
+func (cl *Client) markConsumedFailed(ctx context.Context, pending *pendingAIMessage, err error) {
+	if pending == nil || pending.msg == nil {
+		return
+	}
+	cl.Main.Bridge.Matrix.SendMessageStatus(ctx, &bridgev2.MessageStatus{
+		Status:        event.MessageStatusRetriable,
+		ErrorReason:   event.MessageStatusGenericError,
+		InternalError: err,
+		Message:       "AI failed to respond",
+	}, bridgev2.StatusEventInfoFromEvent(pending.msg.Event))
+}
+
+func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIMessage, userEntryID string, consumedAt time.Time) {
+	if pending == nil || pending.msg == nil {
+		return
+	}
+	pending.metadata.SessionEntryID = userEntryID
+	pending.metadata.Role = "user"
+	pending.metadata.StreamStatus = "done"
+	messageID := aiid.UserMessageID(userEntryID)
+	cl.UserLogin.QueueRemoteEvent(&simplevent.PreConvertedMessage{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventMessage,
+			PortalKey: pending.msg.Portal.PortalKey,
+			Sender: bridgev2.EventSender{
+				Sender: cl.GetUserID(),
+			},
+			Timestamp: consumedAt,
+		},
+		ID:            messageID,
+		TransactionID: pending.txnID,
+		Data: &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
+			ID:         aiid.PartID("text"),
+			Type:       event.EventMessage,
+			Content:    msgconv.TextContent(pending.text),
+			DBMetadata: pending.metadata,
+		}}},
+	})
+}
+
+func (cl *Client) queueAssistantRunError(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, metadata *aiid.MessageMetadata, err error) {
+	message := ai.Message{
+		Role:         "assistant",
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: err.Error(),
+	}
+	if metadata != nil {
+		metadata.ErrorMessage = err.Error()
+		metadata.StopReason = string(ai.StopReasonError)
+		metadata.StreamStatus = "error"
+	}
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, runID, run, message, metadata))
+}
+
+func hookStreamError(err error) *ai.AssistantMessageEventStream {
+	stream := ai.NewAssistantMessageEventStream()
+	go func() {
+		defer stream.End()
+		stream.Push(ai.AssistantMessageEvent{
+			Type: "error",
+			Error: &ai.Message{
+				Role:         "assistant",
+				ErrorMessage: err.Error(),
+				StopReason:   ai.StopReasonError,
+			},
+		})
+	}()
+	return stream
+}
+
 func (cl *Client) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
 	if msg == nil || msg.Portal == nil {
 		return nil
 	}
+	active := cl.getActiveRun(msg.Portal.PortalKey)
 	h := cl.getActiveHarness(msg.Portal.PortalKey)
 	if h == nil {
 		return nil
 	}
 	_, err := h.Abort(ctx)
+	if active != nil {
+		active.failAll(ctx, cl, fmt.Errorf("AI run aborted"))
+	}
 	return err
 }
 
@@ -504,7 +691,48 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 	return edit
 }
 
-func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run) agent.StreamFn {
+func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublisher, portal *bridgev2.Portal, meta *aiid.PortalMetadata, provider aiid.ProviderConfig, model ai.Model, onSecondVisibleChunk ...func()) agent.StreamFn {
+	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		runID := session.CreateSessionID()
+		messageID := aiid.AssistantMessageID(runID)
+		run := aistream.NewRun(runID, meta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID(provider.ID, model.ID)), provider.DisplayName, time.Now())
+		run.MessageID = string(messageID)
+		eventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(
+			portal.MXID,
+			portal.PortalKey,
+			messageID,
+			aiid.PartID("text"),
+		)
+		descriptor, err := publisher.NewDescriptor(ctx, portal.MXID, cl.Main.Config.StreamType)
+		if err != nil {
+			return hookStreamError(err)
+		}
+		assistantEvent, metadata := cl.assistantEvent(portal.PortalKey, messageID, provider.ID, model.ID, runID, descriptor, *run)
+		cl.UserLogin.QueueRemoteEvent(assistantEvent)
+		if err := publisher.Register(ctx, portal.MXID, eventID, descriptor); err != nil {
+			cl.queueAssistantRunError(portal.PortalKey, messageID, provider.ID, model.ID, runID, *run, metadata, err)
+			return hookStreamError(err)
+		}
+		if active := cl.getActiveRun(portal.PortalKey); active != nil {
+			active.addAssistantStream(&assistantStreamState{
+				messageID: messageID,
+				eventID:   eventID,
+				runID:     runID,
+				run:       run,
+				metadata:  metadata,
+			})
+		}
+		return cl.streamPublisherWithEnd(publisher, portal.MXID, eventID, run, func() {
+			publisher.Unregister(portal.MXID, eventID)
+		}, onSecondVisibleChunk...)(ctx, model, llmContext, options)
+	}
+}
+
+func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, onSecondVisibleChunk ...func()) agent.StreamFn {
+	return cl.streamPublisherWithEnd(publisher, roomID, eventID, run, nil, onSecondVisibleChunk...)
+}
+
+func (cl *Client) streamPublisherWithEnd(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, onEnd func(), onSecondVisibleChunk ...func()) agent.StreamFn {
 	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
 		upstream := ai.StreamSimple(ctx, model, llmContext, options)
 		downstream := ai.NewAssistantMessageEventStream()
@@ -512,6 +740,23 @@ func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, room
 		writer.Start()
 		published := 0
 		nextSeq := 1
+		visibleChunks := 0
+		secondVisibleSent := false
+		maybeSecondVisibleChunk := func(evt ai.AssistantMessageEvent) {
+			if evt.Type != "text_delta" || evt.Delta == "" || secondVisibleSent {
+				return
+			}
+			visibleChunks++
+			if visibleChunks < 2 {
+				return
+			}
+			secondVisibleSent = true
+			for _, cb := range onSecondVisibleChunk {
+				if cb != nil {
+					cb()
+				}
+			}
+		}
 		publishNew := func() error {
 			if published >= len(run.Events) {
 				return nil
@@ -533,9 +778,13 @@ func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, room
 		}
 		_ = publishNew()
 		go func() {
+			if onEnd != nil {
+				defer onEnd()
+			}
 			defer downstream.End()
 			for evt := range upstream.Events() {
 				applyAIStreamEvent(writer, evt)
+				maybeSecondVisibleChunk(evt)
 				if err := publishNew(); err != nil {
 					downstream.Push(ai.AssistantMessageEvent{
 						Type: "error",
@@ -831,4 +1080,170 @@ func (cl *Client) clearActiveHarness(key networkid.PortalKey, h *harness.AgentHa
 	if cl.activeHarnesses != nil && cl.activeHarnesses[key] == h {
 		delete(cl.activeHarnesses, key)
 	}
+}
+
+func (cl *Client) setActiveRun(key networkid.PortalKey, run *activeAIRun) {
+	cl.activeMu.Lock()
+	defer cl.activeMu.Unlock()
+	if cl.activeRuns == nil {
+		cl.activeRuns = map[networkid.PortalKey]*activeAIRun{}
+	}
+	cl.activeRuns[key] = run
+}
+
+func (cl *Client) getActiveRun(key networkid.PortalKey) *activeAIRun {
+	cl.activeMu.Lock()
+	defer cl.activeMu.Unlock()
+	if cl.activeRuns == nil {
+		return nil
+	}
+	return cl.activeRuns[key]
+}
+
+func (cl *Client) clearActiveRun(key networkid.PortalKey, run *activeAIRun) {
+	cl.activeMu.Lock()
+	defer cl.activeMu.Unlock()
+	if cl.activeRuns != nil && cl.activeRuns[key] == run {
+		delete(cl.activeRuns, key)
+	}
+}
+
+func (r *activeAIRun) addPending(pending *pendingAIMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending.metadata.ProviderID = r.provider.ID
+	pending.metadata.ModelID = r.model.ID
+	pending.metadata.RunID = r.runID
+	r.pending = append(r.pending, pending)
+}
+
+func (r *activeAIRun) removePending(pending *pendingAIMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, candidate := range r.pending {
+		if candidate == pending {
+			r.pending = append(r.pending[:i], r.pending[i+1:]...)
+			return
+		}
+	}
+}
+
+func (r *activeAIRun) replyTarget() *networkid.MessageOptionalPartID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var messageID networkid.MessageID
+	if r.last != nil {
+		messageID = r.last.messageID
+	} else if len(r.streams) > 0 {
+		messageID = r.streams[len(r.streams)-1].messageID
+	}
+	if messageID == "" {
+		return nil
+	}
+	partID := aiid.PartID("text")
+	return &networkid.MessageOptionalPartID{
+		MessageID: messageID,
+		PartID:    &partID,
+	}
+}
+
+func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID string, consumedAt time.Time) {
+	r.mu.Lock()
+	if len(r.pending) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	pending := r.pending[0]
+	r.pending = r.pending[1:]
+	r.consumed = append(r.consumed, pending)
+	r.mu.Unlock()
+	cl.queueConsumedUserEcho(ctx, pending, entryID, consumedAt)
+}
+
+func (r *activeAIRun) failAll(ctx context.Context, cl *Client, err error) {
+	r.mu.Lock()
+	pending := append([]*pendingAIMessage(nil), r.pending...)
+	r.pending = nil
+	r.mu.Unlock()
+	for _, msg := range pending {
+		cl.markPendingFailed(ctx, msg, err)
+	}
+}
+
+func (r *activeAIRun) failConsumed(ctx context.Context, cl *Client, err error) {
+	r.mu.Lock()
+	consumed := append([]*pendingAIMessage(nil), r.consumed...)
+	r.consumed = nil
+	r.mu.Unlock()
+	for _, msg := range consumed {
+		cl.markConsumedFailed(ctx, msg, err)
+	}
+}
+
+func (r *activeAIRun) addAssistantStream(stream *assistantStreamState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.streams = append(r.streams, stream)
+}
+
+func (r *activeAIRun) setAssistantEntryID(entryID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, stream := range r.streams {
+		if stream.entryID == "" {
+			stream.entryID = entryID
+			return
+		}
+	}
+}
+
+func (r *activeAIRun) addToolOutput(output toolOutputEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.streams) == 0 {
+		return
+	}
+	r.streams[0].tools = append(r.streams[0].tools, output)
+}
+
+func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, providerID string, modelID string, message ai.Message) {
+	r.mu.Lock()
+	if len(r.streams) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	stream := r.streams[0]
+	r.streams = r.streams[1:]
+	r.last = stream
+	r.mu.Unlock()
+
+	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
+	appendToolOutputs(stream.run, stream.tools)
+	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), r.portalKey, stream.messageID, stream.metadata)
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(r.portalKey, stream.messageID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata))
+}
+
+func (r *activeAIRun) failOpenAssistant(ctx context.Context, cl *Client, providerID string, modelID string, err error) {
+	r.mu.Lock()
+	streams := append([]*assistantStreamState(nil), r.streams...)
+	r.streams = nil
+	r.mu.Unlock()
+	for _, stream := range streams {
+		cl.queueAssistantRunError(r.portalKey, stream.messageID, providerID, modelID, stream.runID, *stream.run, stream.metadata, err)
+	}
+}
+
+func (r *activeAIRun) lastAssistant() *assistantStreamState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last
+}
+
+func (r *activeAIRun) lastRunID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.last != nil {
+		return r.last.runID
+	}
+	return r.runID
 }

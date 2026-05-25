@@ -105,6 +105,7 @@ type AgentHarnessEvent struct {
 	NextTurn              []agent.AgentMessage
 	Message               *agent.AgentMessage
 	Messages              []agent.AgentMessage
+	SessionEntryID        string
 	Model                 *ai.Model
 	PreviousModel         *ai.Model
 	ThinkingLevel         agent.ThinkingLevel
@@ -867,11 +868,13 @@ func (h *AgentHarness) afterToolCallHook(ctx context.Context, callContext agent.
 }
 
 func (h *AgentHarness) handleAgentEvent(ctx context.Context, event agent.AgentEvent) error {
+	var sessionEntryID string
 	if event.Type == "message_end" && event.Message != nil {
 		entryID, err := h.session.AppendMessage(ctx, *event.Message)
 		if err != nil {
 			return err
 		}
+		sessionEntryID = entryID
 		h.promptEntryIDs = append(h.promptEntryIDs, PromptEntryID{ID: entryID, Role: event.Message.Role})
 	}
 	if event.Type == "turn_end" {
@@ -903,7 +906,7 @@ func (h *AgentHarness) handleAgentEvent(ctx context.Context, event agent.AgentEv
 		}
 		return nil
 	}
-	if err := h.emit(ctx, AgentHarnessEvent{Type: event.Type, AgentEvent: &event, Message: event.Message, Messages: event.Messages}); err != nil {
+	if err := h.emit(ctx, AgentHarnessEvent{Type: event.Type, AgentEvent: &event, Message: event.Message, Messages: event.Messages, SessionEntryID: sessionEntryID}); err != nil {
 		return err
 	}
 	return nil
