@@ -2,6 +2,8 @@ package connector
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -39,6 +41,38 @@ func TestModelContactsExposeConfiguredModels(t *testing.T) {
 	providerID, modelID, ok := aiid.ParseModelContactID(contacts[0].UserID)
 	if !ok || providerID != "local" || modelID != "model-a" {
 		t.Fatalf("unexpected model contact ID %q parsed as %q %q", contacts[0].UserID, providerID, modelID)
+	}
+}
+
+func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.5","name":"GPT-5.5","context_length":1050000,"architecture":{"input_modalities":["text","image"]},"top_provider":{"max_completion_tokens":128000}},{"id":"beeper/fast","name":"Beeper Fast"}]}`))
+	}))
+	defer server.Close()
+
+	client := &Client{Main: &Connector{AppServiceToken: "as-token"}}
+	models, err := client.aiServicesCatalogModels(context.Background(), aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  server.URL + "/proxy/_/v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer as-token" {
+		t.Fatalf("unexpected auth header %q", gotAuth)
+	}
+	if len(models) != 2 || models[0].ID != "gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/_/v1" {
+		t.Fatalf("unexpected models %#v", models)
+	}
+	if models[0].ContextWindow != 1050000 || models[0].MaxTokens != 128000 {
+		t.Fatalf("expected AI Services metadata, got %#v", models[0])
 	}
 }
 
@@ -92,7 +126,7 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 func TestContactListIncludesEnabledConfiguredProviders(t *testing.T) {
 	conn := &Connector{Config: Config{
 		DefaultProvider: DefaultProviderConfig{
-			BaseURL:       "https://ai-proxy.beeper.com/v1/responses",
+			BaseURL:       defaultAIServicesProxyBaseURL("beeper.com"),
 			Provider:      ai.ProviderOpenAI,
 			API:           ai.ApiOpenAIResponses,
 			DefaultModel:  "gpt-5.5",

@@ -277,6 +277,10 @@ type AssistantMessageEvent struct {
 	Reason       StopReason `json:"reason,omitempty"`
 	Message      *Message   `json:"message,omitempty"`
 	Error        *Message   `json:"error,omitempty"`
+	RawEvent     any        `json:"rawEvent,omitempty"`
+	RawSource    string     `json:"rawSource,omitempty"`
+	CustomName   string     `json:"customName,omitempty"`
+	CustomValue  any        `json:"customValue,omitempty"`
 }
 
 type APIStreamFunction func(context.Context, Model, Context, StreamOptions) *AssistantMessageEventStream

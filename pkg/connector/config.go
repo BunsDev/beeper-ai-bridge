@@ -13,8 +13,9 @@ import (
 //go:embed example-config.yaml
 var ExampleConfig string
 
+const defaultAIServicesProxyPrefix = "https://ai-services."
+
 type Config struct {
-	BeeperEnvTLD          string                         `yaml:"beeper_env_tld"`
 	DefaultProvider       DefaultProviderConfig          `yaml:"default_provider"`
 	Providers             map[string]aiid.ProviderConfig `yaml:"providers"`
 	DefaultSystemPrompt   string                         `yaml:"default_system_prompt"`
@@ -56,12 +57,6 @@ func (c *Config) UnmarshalYAML(node *yaml.Node) error {
 }
 
 func (c *Config) ApplyDefaults() {
-	if c.BeeperEnvTLD == "" {
-		c.BeeperEnvTLD = "beeper.com"
-	}
-	if c.DefaultProvider.BaseURL == "" {
-		c.DefaultProvider.BaseURL = "https://ai-proxy." + c.BeeperEnvTLD + "/v1/responses"
-	}
 	if c.StreamType == "" {
 		c.StreamType = aiid.StreamType
 	}
@@ -88,9 +83,6 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.DefaultProvider.DefaultModel == "" {
 		c.DefaultProvider.DefaultModel = "gpt-5.5"
-	}
-	if len(c.DefaultProvider.AllowedModels) == 0 && len(c.DefaultProvider.Models) == 0 {
-		c.DefaultProvider.AllowedModels = []string{c.DefaultProvider.DefaultModel, "gpt-5.4", "gpt-5"}
 	}
 	for i := range c.DefaultProvider.Models {
 		c.DefaultProvider.Models[i] = normalizeDefaultModel(c.DefaultProvider.Models[i], c.DefaultProvider.BaseURL)
@@ -120,8 +112,23 @@ func normalizeResponsesBaseURL(baseURL string) string {
 	return strings.TrimSuffix(baseURL, "/responses")
 }
 
+func defaultAIServicesProxyBaseURL(homeserverDomain string) string {
+	return defaultAIServicesProxyPrefix + normalizeHomeserverDomain(homeserverDomain) + "/proxy/_/v1"
+}
+
+func normalizeHomeserverDomain(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "https://")
+	value = strings.TrimPrefix(value, "http://")
+	value = strings.Trim(value, "/")
+	value = strings.TrimPrefix(value, "matrix.")
+	if value == "" {
+		return "beeper.com"
+	}
+	return value
+}
+
 func upgradeConfig(helper up.Helper) {
-	helper.Copy(up.Str, "beeper_env_tld")
 	helper.Copy(up.Map, "default_provider")
 	helper.Copy(up.Map, "providers")
 	helper.Copy(up.Str, "default_system_prompt")

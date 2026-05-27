@@ -307,22 +307,29 @@ func cloneMessagePart(part agui.MessagePart) agui.MessagePart {
 
 func sanitizeRawEvent(evt agui.Event, budget int) agui.Event {
 	cp := agui.CloneEvent(evt)
-	if _, ok := cp["rawEvent"]; !ok {
+	rawKey := ""
+	switch {
+	case cp["rawEvent"] != nil:
+		rawKey = "rawEvent"
+	case cp["type"] == agui.EventRaw && cp["event"] != nil:
+		rawKey = "event"
+	}
+	if rawKey == "" {
 		return cp
 	}
 	if JSONSize(cp) <= budget {
 		return cp
 	}
-	raw, err := json.Marshal(cp["rawEvent"])
+	raw, err := json.Marshal(cp[rawKey])
 	if err != nil {
-		delete(cp, "rawEvent")
+		delete(cp, rawKey)
 		cp["rawEventTruncated"] = true
 	} else if len(raw) > 2048 {
-		cp["rawEvent"] = truncateUTF8(string(raw), 2048)
+		cp[rawKey] = truncateUTF8(string(raw), 2048)
 		cp["rawEventTruncated"] = true
 	}
 	if JSONSize(cp) > budget {
-		delete(cp, "rawEvent")
+		delete(cp, rawKey)
 		cp["rawEventTruncated"] = true
 	}
 	return cp

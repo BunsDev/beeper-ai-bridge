@@ -25,6 +25,7 @@ var m = mxmain.BridgeMain{
 func main() {
 	m.PostInit = func() {
 		aiConnector.AppServiceToken = m.Config.AppService.ASToken
+		aiConnector.HomeserverDomain = m.Config.Homeserver.Domain
 	}
 	m.InitVersion(Tag, Commit, BuildTime)
 	m.Run()

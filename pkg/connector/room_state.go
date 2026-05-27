@@ -90,7 +90,7 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	if !providerAllowsModel(provider, modelID) {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
 	}
-	if len(provider.Models) == 0 && len(provider.AllowedModels) == 0 {
+	if provider.ID != aiid.DefaultProvider && len(provider.Models) == 0 && len(provider.AllowedModels) == 0 {
 		if _, ok := ai.GetModel(provider.Provider, modelID); !ok {
 			return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
 		}

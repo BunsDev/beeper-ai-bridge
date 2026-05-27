@@ -1,26 +1,9 @@
-beeper_env_tld: beeper.com
 default_provider:
-  base_url: https://ai-proxy.beeper.com/v1/responses
   provider: openai
   api: openai-responses
   default_model: gpt-5.5
-  allowed_models:
-  - gpt-5.5
-  - gpt-5.4
-  - gpt-5
+  allowed_models: []
 providers:
-  openai:
-    display_name: OpenAI
-    provider: openai
-    api: openai-responses
-    base_url: https://api.openai.com/v1
-    api_key: env:OPENAI_API_KEY
-    default_model: gpt-5.5
-    allowed_models:
-    - gpt-5.5
-    - gpt-5.4
-    - gpt-5
-    enabled: true
   openrouter:
     display_name: OpenRouter
     provider: openrouter

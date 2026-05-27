@@ -738,6 +738,12 @@ func newResponsesStreamState() *responsesStreamState {
 
 func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, output *ai.Message, model ai.Model, options OpenAIResponsesOptions, event map[string]any) {
 	eventType, _ := event["type"].(string)
+	push := func(evt ai.AssistantMessageEvent) {
+		evt.RawEvent = event
+		evt.RawSource = string(model.Provider)
+		stream.Push(evt)
+	}
+	push(ai.AssistantMessageEvent{Type: "raw", Partial: output})
 	switch eventType {
 	case "response.created":
 		if response, ok := event["response"].(map[string]any); ok {
@@ -757,12 +763,12 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.blocks = append(s.blocks, ai.ContentBlock{Type: "thinking"})
 			s.currentIndex = len(s.blocks) - 1
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: s.currentIndex, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: s.currentIndex, Partial: output})
 		case "message":
 			s.blocks = append(s.blocks, ai.ContentBlock{Type: "text"})
 			s.currentIndex = len(s.blocks) - 1
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "text_start", ContentIndex: s.currentIndex, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "text_start", ContentIndex: s.currentIndex, Partial: output})
 		case "function_call":
 			id := fmt.Sprintf("%v|%v", item["call_id"], item["id"])
 			arguments := fmt.Sprint(item["arguments"])
@@ -770,7 +776,8 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.currentIndex = len(s.blocks) - 1
 			s.toolArgsByIndex[s.currentIndex] = arguments
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: s.currentIndex, Partial: output})
+			toolCall := ai.ToolCall{Type: "toolCall", ID: id, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
+			push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
 		}
 	case "response.reasoning_summary_part.added":
 		if s.currentItemType == "reasoning" {
@@ -781,20 +788,20 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			delta, _ := event["delta"].(string)
 			s.blocks[s.currentIndex].Thinking += delta
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
 		}
 	case "response.reasoning_text.delta":
 		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "thinking" {
 			delta, _ := event["delta"].(string)
 			s.blocks[s.currentIndex].Thinking += delta
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
 		}
 	case "response.reasoning_summary_part.done":
 		if s.hasReasoningSummaryPart && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "thinking" {
 			s.blocks[s.currentIndex].Thinking += "\n\n"
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: "\n\n", Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: "\n\n", Partial: output})
 		}
 	case "response.content_part.added":
 		if s.currentItemType == "message" {
@@ -810,14 +817,14 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			delta, _ := event["delta"].(string)
 			s.blocks[s.currentIndex].Text += delta
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
 		}
 	case "response.refusal.delta":
 		if s.currentMessagePartType == "refusal" && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "text" {
 			delta, _ := event["delta"].(string)
 			s.blocks[s.currentIndex].Text += delta
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
 		}
 	case "response.function_call_arguments.delta":
 		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "toolCall" {
@@ -825,7 +832,8 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.toolArgsByIndex[s.currentIndex] += delta
 			s.blocks[s.currentIndex].Arguments = parseJSONMap(s.toolArgsByIndex[s.currentIndex])
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
+			push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: delta, ToolCall: &toolCall, Partial: output})
 		}
 	case "response.function_call_arguments.done":
 		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "toolCall" {
@@ -835,7 +843,8 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.blocks[s.currentIndex].Arguments = parseJSONMap(args)
 			output.Content = s.blocks
 			if strings.HasPrefix(args, previous) && len(args) > len(previous) {
-				stream.Push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: args[len(previous):], Partial: output})
+				toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
+				push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: args[len(previous):], ToolCall: &toolCall, Partial: output})
 			}
 		}
 	case "response.output_item.done":
@@ -849,7 +858,7 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.blocks[s.currentIndex].Thinking = reasoningTextFromItem(item, s.blocks[s.currentIndex].Thinking)
 			s.blocks[s.currentIndex].ThinkingSignature = mustJSON(item)
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: s.currentIndex, Content: s.blocks[s.currentIndex].Thinking, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: s.currentIndex, Content: s.blocks[s.currentIndex].Thinking, Partial: output})
 			s.currentIndex = -1
 		case "message":
 			if text := messageTextFromItem(item); text != "" {
@@ -863,7 +872,7 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 				s.blocks[s.currentIndex].TextSignature = mustJSON(payload)
 			}
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "text_end", ContentIndex: s.currentIndex, Content: s.blocks[s.currentIndex].Text, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "text_end", ContentIndex: s.currentIndex, Content: s.blocks[s.currentIndex].Text, Partial: output})
 			s.currentIndex = -1
 		case "function_call":
 			if s.blocks[s.currentIndex].Name == "" {
@@ -874,7 +883,7 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			}
 			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			output.Content = s.blocks
-			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
 			s.currentIndex = -1
 		}
 	case "response.completed":

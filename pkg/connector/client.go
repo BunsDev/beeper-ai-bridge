@@ -446,7 +446,9 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 			Result:  result,
 			IsError: event.AgentEvent.IsError,
 		}
-		active.addToolOutput(output)
+		if err := active.publishToolOutput(ctx, streamPublisher, msg.Portal.MXID, output); err != nil {
+			cl.logStreamError(err, msg.Portal.MXID, "", nil, "Failed to publish AI tool output stream carrier")
+		}
 		return nil
 	})
 	defer unsubscribeToolOutputs()
@@ -846,34 +848,12 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 				}
 			}
 		}
-		publishNew := func() error {
-			if cursor.published >= len(run.Events) {
-				return nil
-			}
-			if cursor.nextSeq <= 0 {
-				cursor.nextSeq = 1
-			}
-			partial := *run
-			partial.Events = append([]agui.Event(nil), run.Events[cursor.published:]...)
-			carriers, err := aistream.PackRunFromSeq(partial, string(eventID), aistream.CarrierBudgetBytes, cursor.nextSeq)
-			if err != nil {
-				return err
-			}
-			for _, carrier := range carriers {
-				if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(carrier.Envelopes)); err != nil {
-					return err
-				}
-			}
-			cursor.nextSeq = aistream.NextSeq(carriers)
-			cursor.published = len(run.Events)
-			return nil
-		}
 		cursor.mu.Lock()
 		if !cursor.started {
 			writer.Start()
 			cursor.started = true
 		}
-		startErr := publishNew()
+		startErr := publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor)
 		cursor.mu.Unlock()
 		if startErr != nil {
 			stream := hookStreamError(startErr)
@@ -889,7 +869,7 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 				cursor.mu.Lock()
 				applyAIStreamEvent(writer, evt)
 				maybeSecondVisibleChunk(evt)
-				if err := publishNew(); err != nil {
+				if err := publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); err != nil {
 					cursor.mu.Unlock()
 					downstream.Push(ai.AssistantMessageEvent{
 						Type: "error",
@@ -908,6 +888,29 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 		}()
 		return downstream
 	}
+}
+
+func publishNewStreamEvents(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, cursor *streamPublishCursor) error {
+	if run == nil || cursor == nil || cursor.published >= len(run.Events) {
+		return nil
+	}
+	if cursor.nextSeq <= 0 {
+		cursor.nextSeq = 1
+	}
+	partial := *run
+	partial.Events = append([]agui.Event(nil), run.Events[cursor.published:]...)
+	carriers, err := aistream.PackRunFromSeq(partial, string(eventID), aistream.CarrierBudgetBytes, cursor.nextSeq)
+	if err != nil {
+		return err
+	}
+	for _, carrier := range carriers {
+		if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(carrier.Envelopes)); err != nil {
+			return err
+		}
+	}
+	cursor.nextSeq = aistream.NextSeq(carriers)
+	cursor.published = len(run.Events)
+	return nil
 }
 
 func (cl *Client) logMatrixMessageError(msg *bridgev2.MatrixMessage, err error, message string) {
@@ -1071,22 +1074,63 @@ func (cl *Client) logStreamError(err error, roomID id.RoomID, eventID id.EventID
 }
 
 func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
+	if writer == nil {
+		return
+	}
+	annotateLast := func() {
+		if evt.RawEvent == nil || writer.Run == nil || len(writer.Run.Events) == 0 {
+			return
+		}
+		writer.Run.Events[len(writer.Run.Events)-1]["rawEvent"] = evt.RawEvent
+		if evt.RawSource != "" {
+			writer.Run.Events[len(writer.Run.Events)-1]["rawSource"] = evt.RawSource
+		}
+	}
+	toolCallFromEvent := func() *ai.ToolCall {
+		if evt.ToolCall != nil {
+			return evt.ToolCall
+		}
+		if evt.Partial == nil || evt.ContentIndex < 0 {
+			return nil
+		}
+		blocks := aiContentBlocks(evt.Partial.Content)
+		if evt.ContentIndex >= len(blocks) {
+			return nil
+		}
+		block := blocks[evt.ContentIndex]
+		if block.Type != "toolCall" || block.ID == "" {
+			return nil
+		}
+		return &ai.ToolCall{Type: "toolCall", ID: block.ID, Name: block.Name, Arguments: block.Arguments}
+	}
 	switch evt.Type {
 	case "text_delta":
 		writer.Text(evt.Delta)
+		annotateLast()
 	case "thinking_delta":
 		writer.Thinking(evt.Delta)
+		annotateLast()
 	case "toolcall_start":
-		if evt.ToolCall != nil {
-			writer.ToolStart(evt.ToolCall.ID, evt.ToolCall.Name, evt.ContentIndex, nil)
+		if toolCall := toolCallFromEvent(); toolCall != nil {
+			writer.ToolStart(toolCall.ID, toolCall.Name, evt.ContentIndex, nil)
+			annotateLast()
 		}
 	case "toolcall_delta":
-		if evt.ToolCall != nil {
-			writer.ToolArgs(evt.ToolCall.ID, evt.Delta, evt.ToolCall.Arguments)
+		if toolCall := toolCallFromEvent(); toolCall != nil {
+			writer.ToolArgs(toolCall.ID, evt.Delta, toolCall.Arguments)
+			annotateLast()
 		}
 	case "toolcall_end":
-		if evt.ToolCall != nil {
-			writer.ToolEnd(evt.ToolCall.ID, evt.ToolCall.Name, evt.ToolCall.Arguments, nil)
+		if toolCall := toolCallFromEvent(); toolCall != nil {
+			writer.ToolEnd(toolCall.ID, toolCall.Name, toolCall.Arguments, nil)
+			annotateLast()
+		}
+	case "raw":
+		writer.Raw(evt.RawEvent, evt.RawSource)
+	case "custom":
+		if evt.CustomName != "" {
+			writer.Custom(evt.CustomName, evt.CustomValue)
+			annotateLast()
 		}
 	case "done":
 		if evt.Message != nil {
@@ -1095,12 +1139,14 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 		} else {
 			writer.Finish(string(evt.Reason))
 		}
+		annotateLast()
 	case "error":
 		message := "stream error"
 		if evt.Error != nil && evt.Error.ErrorMessage != "" {
 			message = evt.Error.ErrorMessage
 		}
 		writer.Error(message)
+		annotateLast()
 	}
 }
 
@@ -1430,6 +1476,22 @@ func (r *activeAIRun) addToolOutput(output toolOutputEvent) {
 		return
 	}
 	r.streams[0].tools = append(r.streams[0].tools, output)
+}
+
+func (r *activeAIRun) publishToolOutput(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, output toolOutputEvent) error {
+	r.mu.Lock()
+	if len(r.streams) == 0 {
+		r.mu.Unlock()
+		return fmt.Errorf("no active assistant stream for tool output")
+	}
+	stream := r.streams[0]
+	r.mu.Unlock()
+
+	stream.publish.mu.Lock()
+	defer stream.publish.mu.Unlock()
+	writer := aistream.NewWriter(stream.run, time.Now)
+	writer.ToolEnd(output.ID, output.Name, output.Input, toolOutput(output.Result, output.IsError))
+	return publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 
 func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, providerID string, modelID string, message ai.Message) {

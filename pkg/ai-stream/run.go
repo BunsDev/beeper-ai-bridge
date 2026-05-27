@@ -380,6 +380,10 @@ func (w *Writer) Custom(name string, value any) {
 	w.Add(w.builder.Custom(name, value))
 }
 
+func (w *Writer) Raw(event any, source string) {
+	w.Add(w.builder.Raw(event, source))
+}
+
 func (w *Writer) Finish(reason string) {
 	w.FinishWithUsage(reason, nil)
 }

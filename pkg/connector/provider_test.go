@@ -63,23 +63,40 @@ func TestCustomProviderAuthUsesProviderKeyAndHeaders(t *testing.T) {
 func TestConfigDefaults(t *testing.T) {
 	config := Config{}
 	config.ApplyDefaults()
-	if config.BeeperEnvTLD != "beeper.com" {
-		t.Fatalf("unexpected env tld %q", config.BeeperEnvTLD)
-	}
 	if config.StreamType != aiid.StreamType {
 		t.Fatalf("unexpected stream type %#v", config)
 	}
-	if config.DefaultProvider.BaseURL == "" || len(config.DefaultProvider.AllowedModels) == 0 {
-		t.Fatalf("expected default provider config, got %#v", config.DefaultProvider)
+	if config.DefaultProvider.BaseURL != "" {
+		t.Fatalf("expected default provider base URL to come from homeserver domain, got %q", config.DefaultProvider.BaseURL)
+	}
+	if len(config.DefaultProvider.AllowedModels) != 0 {
+		t.Fatalf("expected AI Services catalog instead of static default allowlist, got %#v", config.DefaultProvider.AllowedModels)
 	}
 	if config.DefaultProvider.Provider != ai.ProviderOpenAI || config.DefaultProvider.DefaultModel != "gpt-5.5" {
-		t.Fatalf("expected default provider to route canonical OpenAI models, got %#v", config.DefaultProvider)
+		t.Fatalf("expected default provider to route through AI Services, got %#v", config.DefaultProvider)
 	}
 	if config.DefaultSystemPrompt == "" || config.DefaultReasoningLevel != "off" {
 		t.Fatalf("expected chat defaults, got %#v", config)
 	}
 	if config.Fetch.TimeoutMS == 0 || config.Fetch.MaxBytes == 0 || config.Fetch.MaxChars == 0 {
 		t.Fatalf("expected fetch defaults, got %#v", config.Fetch)
+	}
+}
+
+func TestDefaultAIServicesProxyBaseURLFollowsHomeserverDomain(t *testing.T) {
+	if got := defaultAIServicesProxyBaseURL("matrix.beeper.com"); got != "https://ai-services.beeper.com/proxy/_/v1" {
+		t.Fatalf("unexpected production AI Services URL %q", got)
+	}
+	if got := defaultAIServicesProxyBaseURL("beeper-staging.com"); got != "https://ai-services.beeper-staging.com/proxy/_/v1" {
+		t.Fatalf("unexpected staging AI Services URL %q", got)
+	}
+}
+
+func TestDefaultProviderBaseURLUsesConnectorHomeserverDomain(t *testing.T) {
+	conn := &Connector{HomeserverDomain: "matrix.beeper.com"}
+	provider := conn.defaultProviderConfig()
+	if provider.BaseURL != "https://ai-services.beeper.com/proxy/_/v1" {
+		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
 
@@ -301,20 +318,20 @@ func TestCustomProviderLoginStagesAPIConfigAndDefaultModel(t *testing.T) {
 	}
 }
 
-func TestModelForProviderAppliesRouteBaseURLToCatalogModel(t *testing.T) {
+func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
 		ID:            aiid.DefaultProvider,
 		API:           ai.ApiOpenAIResponses,
 		Provider:      ai.ProviderOpenAI,
-		BaseURL:       "https://ai-proxy.beeper.com/v1/responses",
+		BaseURL:       "https://ai-services.beeper.com/proxy/_/v1/responses",
 		AllowedModels: []string{"gpt-5.5"},
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
 	if model.Provider != ai.ProviderOpenAI || model.ID != "gpt-5.5" {
-		t.Fatalf("expected canonical OpenAI model, got %#v", model)
+		t.Fatalf("expected AI Services model, got %#v", model)
 	}
-	if model.BaseURL != "https://ai-proxy.beeper.com/v1" {
+	if model.BaseURL != "https://ai-services.beeper.com/proxy/_/v1" {
 		t.Fatalf("expected route base URL override, got %q", model.BaseURL)
 	}
 	if model.ContextWindow == 0 || model.MaxTokens == 0 {

@@ -204,6 +204,27 @@ func TestRawEventIsTruncatedBeforePacking(t *testing.T) {
 	}
 }
 
+func TestRawAGUIEventIsTruncatedBeforePacking(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Events = append(run.Events, builder.Raw(map[string]any{
+		"type": "response.large",
+		"data": strings.Repeat("x", CarrierBudgetBytes),
+	}, "openai"))
+
+	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := carriers[0].Envelopes[0].Part
+	if part["rawEventTruncated"] != true {
+		t.Fatalf("expected raw event truncation marker, got %#v", part)
+	}
+	if size := JSONSize(CarrierContent(carriers[0].Envelopes)); size > CarrierBudgetBytes {
+		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
+	}
+}
+
 func TestPackRunRejectsOversizedNonTextEvent(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })

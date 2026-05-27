@@ -263,6 +263,100 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 	}
 }
 
+func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:      "toolCall",
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: map[string]any{"path": "README.md"},
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: 0, Delta: `{"path":"README.md"}`, Partial: partial})
+
+	var sawStart, sawArgs bool
+	for _, evt := range run.Events {
+		switch evt["type"] {
+		case agui.EventToolCallStart:
+			sawStart = evt["toolCallId"] == "call-1" && evt["toolName"] == "read_file"
+		case agui.EventToolCallArgs:
+			sawArgs = evt["toolCallId"] == "call-1" && evt["delta"] == `{"path":"README.md"}`
+			if args, ok := evt["args"].(map[string]any); !ok || args["path"] != "README.md" {
+				t.Fatalf("expected streamed tool args, got %#v", evt["args"])
+			}
+		}
+	}
+	if !sawStart || !sawArgs {
+		t.Fatalf("missing streamed tool lifecycle events: %#v", run.Events)
+	}
+}
+
+func TestApplyAIStreamEventPublishesRawProviderEvent(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	raw := map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-1"}}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "raw", RawEvent: raw, RawSource: "openai"})
+
+	if len(run.Events) != 1 || run.Events[0]["type"] != agui.EventRaw || run.Events[0]["source"] != "openai" {
+		t.Fatalf("expected AG-UI RAW event, got %#v", run.Events)
+	}
+	if event, ok := run.Events[0]["event"].(map[string]any); !ok || event["type"] != "response.created" {
+		t.Fatalf("raw provider event was not preserved: %#v", run.Events[0])
+	}
+}
+
+func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
+	ctx := context.Background()
+	publisher := &recordingStreamPublisher{}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolStart("call-1", "get_session", 0, nil)
+	cursor := streamPublishCursor{nextSeq: 1, published: len(run.Events)}
+	active := &activeAIRun{streams: []*assistantStreamState{{
+		eventID: "$event",
+		run:     run,
+		publish: cursor,
+	}}}
+
+	err := active.publishToolOutput(ctx, publisher, "!room:example.com", toolOutputEvent{
+		ID:    "call-1",
+		Name:  "get_session",
+		Input: map[string]any{},
+		Result: agent.AgentToolResult[any]{
+			Content: []ai.ContentBlock{{Type: "text", Text: `{"session_id":"session-1"}`}},
+			Details: map[string]any{
+				"session_id": "session-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.updates) != 1 {
+		t.Fatalf("expected one live stream update, got %#v", publisher.updates)
+	}
+	deltas, ok := publisher.updates[0][aistream.BeeperAIStreamDeltas].([]aistream.Envelope)
+	if !ok || len(deltas) != 1 {
+		t.Fatalf("unexpected live stream carrier %#v", publisher.updates[0])
+	}
+	part := deltas[0].Part
+	if part["type"] != agui.EventToolCallEnd || part["toolCallId"] != "call-1" {
+		t.Fatalf("expected live tool result event, got %#v", part)
+	}
+	result, ok := part["result"].(string)
+	if !ok || result == "" {
+		t.Fatalf("expected encoded tool result, got %#v", part["result"])
+	}
+}
+
 type recordingStreamPublisher struct {
 	updates []map[string]any
 }

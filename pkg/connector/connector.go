@@ -19,10 +19,11 @@ import (
 )
 
 type Connector struct {
-	Bridge          *bridgev2.Bridge
-	Config          Config
-	Store           *aidb.Store
-	AppServiceToken string
+	Bridge           *bridgev2.Bridge
+	Config           Config
+	Store            *aidb.Store
+	AppServiceToken  string
+	HomeserverDomain string
 }
 
 var _ bridgev2.NetworkConnector = (*Connector)(nil)
@@ -70,9 +71,6 @@ func (c *Connector) Start(ctx context.Context) error {
 
 func (c *Connector) ValidateConfig() error {
 	c.Config.ApplyDefaults()
-	if c.Config.DefaultProvider.BaseURL == "" {
-		return fmt.Errorf("network.default_provider.base_url is required")
-	}
 	return nil
 }
 
@@ -102,21 +100,33 @@ func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
 func (c *Connector) defaultProviderConfig() aiid.ProviderConfig {
 	config := c.Config
 	config.ApplyDefaults()
+	baseURL := config.DefaultProvider.BaseURL
+	if baseURL == "" {
+		baseURL = c.defaultAIServicesProxyBaseURL()
+	}
 	models := make([]ai.Model, 0, len(config.DefaultProvider.Models))
 	for _, model := range config.DefaultProvider.Models {
-		models = append(models, normalizeDefaultModel(model, config.DefaultProvider.BaseURL))
+		models = append(models, normalizeDefaultModel(model, baseURL))
 	}
 	return aiid.ProviderConfig{
 		ID:            aiid.DefaultProvider,
 		DisplayName:   "Beeper AI",
 		API:           config.DefaultProvider.API,
 		Provider:      config.DefaultProvider.Provider,
-		BaseURL:       normalizeResponsesBaseURL(config.DefaultProvider.BaseURL),
+		BaseURL:       normalizeResponsesBaseURL(baseURL),
 		DefaultModel:  defaultDefaultModelID(config.DefaultProvider.DefaultModel, config.DefaultProvider.AllowedModels, models),
 		AllowedModels: append([]string{}, config.DefaultProvider.AllowedModels...),
 		Models:        models,
 		Enabled:       true,
 	}
+}
+
+func (c *Connector) defaultAIServicesProxyBaseURL() string {
+	domain := "beeper.com"
+	if c != nil && c.HomeserverDomain != "" {
+		domain = c.HomeserverDomain
+	}
+	return defaultAIServicesProxyBaseURL(domain)
 }
 
 func (c *Connector) configuredProviders() map[string]aiid.ProviderConfig {

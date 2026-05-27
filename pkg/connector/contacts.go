@@ -2,8 +2,12 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -101,6 +105,9 @@ func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.R
 		if !provider.Enabled {
 			continue
 		}
+		if models, err := cl.aiServicesCatalogModels(ctx, provider); err == nil && len(models) > 0 {
+			provider.Models = models
+		}
 		contacts = append(contacts, providerModelContacts(provider, query)...)
 	}
 	return contacts
@@ -120,6 +127,86 @@ func providerModelContacts(provider aiid.ProviderConfig, query string) []*bridge
 		contacts = append(contacts, modelContact(provider, model))
 	}
 	return contacts
+}
+
+func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.ProviderConfig) ([]ai.Model, error) {
+	if cl == nil || cl.Main == nil || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" || cl.Main.AppServiceToken == "" {
+		return nil, nil
+	}
+	modelsURL, err := aiServicesModelsURL(provider.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cl.Main.AppServiceToken)
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("AI Services models returned HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Data []struct {
+			ID            string `json:"id"`
+			Name          string `json:"name"`
+			ContextLength int    `json:"context_length"`
+			Architecture  *struct {
+				InputModalities []string `json:"input_modalities"`
+			} `json:"architecture"`
+			TopProvider *struct {
+				MaxCompletionTokens int `json:"max_completion_tokens"`
+			} `json:"top_provider"`
+		} `json:"data"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	models := make([]ai.Model, 0, len(body.Data))
+	for _, item := range body.Data {
+		modelID := strings.TrimSpace(item.ID)
+		if modelID == "" {
+			continue
+		}
+		input := []string{"text", "image"}
+		if item.Architecture != nil && len(item.Architecture.InputModalities) > 0 {
+			input = append([]string{}, item.Architecture.InputModalities...)
+		}
+		maxTokens := 0
+		if item.TopProvider != nil {
+			maxTokens = item.TopProvider.MaxCompletionTokens
+		}
+		model := ai.Model{
+			ID:            modelID,
+			Name:          item.Name,
+			API:           provider.API,
+			Provider:      provider.Provider,
+			BaseURL:       provider.BaseURL,
+			Input:         input,
+			ContextWindow: item.ContextLength,
+			MaxTokens:     maxTokens,
+		}
+		models = append(models, normalizeProviderModel(model, provider))
+	}
+	return models, nil
+}
+
+func aiServicesModelsURL(proxyBaseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/proxy/_/v1")
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/proxy/_")
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {

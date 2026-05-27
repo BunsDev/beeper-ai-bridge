@@ -40,11 +40,11 @@ func TestParseAISlashCommand(t *testing.T) {
 
 func TestResolveCanonicalRoomModelUsesDefaultProviderForBareModel(t *testing.T) {
 	client := canonicalTestClient()
-	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ModelID: "gpt-5"})
+	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ModelID: "gpt-5.5"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model.ID != "gpt-5" || canonical != "beeper/gpt-5" {
+	if model.ID != "gpt-5.5" || canonical != "beeper/gpt-5.5" {
 		t.Fatalf("unexpected canonical model %q %#v", canonical, model)
 	}
 }
@@ -82,12 +82,11 @@ func canonicalTestClient() *Client {
 			DefaultProviderID: "beeper",
 			Providers: map[string]aiid.ProviderConfig{
 				"beeper": {
-					ID:            "beeper",
-					Provider:      ai.ProviderOpenAI,
-					API:           ai.ApiOpenAIResponses,
-					DefaultModel:  "gpt-5",
-					AllowedModels: []string{"gpt-5"},
-					Enabled:       true,
+					ID:           "beeper",
+					Provider:     ai.ProviderOpenAI,
+					API:          ai.ApiOpenAIResponses,
+					DefaultModel: "gpt-5.5",
+					Enabled:      true,
 				},
 				"openrouter": {
 					ID:            "openrouter",
