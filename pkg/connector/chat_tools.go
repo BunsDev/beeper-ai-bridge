@@ -15,11 +15,15 @@ import (
 
 func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt) []agent.AgentTool[any] {
 	roomID := ""
+	roomTitle := ""
 	if msg != nil && msg.Portal != nil {
 		roomID = string(msg.Portal.MXID)
+		if msg.Portal.NameSet {
+			roomTitle = msg.Portal.Name
+		}
 	}
 	info := chattools.SessionInfo{
-		RoomTitle:       meta.SessionTitle,
+		RoomTitle:       roomTitle,
 		RoomID:          roomID,
 		SessionID:       meta.SessionID,
 		ThreadID:        meta.SessionID,

@@ -19,7 +19,7 @@ func TestParseAISlashCommand(t *testing.T) {
 	}{
 		{body: "/model gpt-5", name: "model", arg: "gpt-5", ok: true},
 		{body: " /reasoning high ", name: "reasoning", arg: "high", ok: true},
-		{body: "/reasoniing low", name: "reasoniing", arg: "low", ok: true},
+		{body: "/reasoniing low", ok: false},
 		{body: "/system-prompt be terse", name: "system-prompt", arg: "be terse", ok: true},
 		{body: "/unknown nope", ok: false},
 		{body: "hello /model gpt-5", ok: false},

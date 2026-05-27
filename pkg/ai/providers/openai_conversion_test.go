@@ -155,6 +155,48 @@ func TestConvertResponsesMessagesDropsDifferentModelFunctionItemID(t *testing.T)
 	}
 }
 
+func TestConvertResponsesMessagesDropsReasoningIDWithoutEncryptedContent(t *testing.T) {
+	model := ai.Model{ID: "gpt-test", API: ai.ApiOpenAIResponses, Provider: "openai", Input: []string{"text"}}
+	messages := ConvertResponsesMessages(model, ai.Context{
+		Messages: []ai.Message{
+			{
+				Role:     "assistant",
+				API:      ai.ApiOpenAIResponses,
+				Provider: "openai",
+				Model:    "gpt-test",
+				Content: []ai.ContentBlock{
+					{Type: "thinking", ThinkingSignature: `{"type":"reasoning","id":"rs_123","summary":[]}`},
+					{Type: "text", Text: "ok", TextSignature: `{"v":1,"id":"msg_1"}`},
+				},
+			},
+		},
+	})
+	if len(messages) != 1 || messages[0]["type"] != "message" {
+		t.Fatalf("expected non-replayable reasoning item to be omitted, got %#v", messages)
+	}
+}
+
+func TestConvertResponsesMessagesPreservesReasoningWithEncryptedContent(t *testing.T) {
+	model := ai.Model{ID: "gpt-test", API: ai.ApiOpenAIResponses, Provider: "openai", Input: []string{"text"}}
+	messages := ConvertResponsesMessages(model, ai.Context{
+		Messages: []ai.Message{
+			{
+				Role:     "assistant",
+				API:      ai.ApiOpenAIResponses,
+				Provider: "openai",
+				Model:    "gpt-test",
+				Content: []ai.ContentBlock{
+					{Type: "thinking", ThinkingSignature: `{"type":"reasoning","id":"rs_123","encrypted_content":"ciphertext"}`},
+					{Type: "text", Text: "ok", TextSignature: `{"v":1,"id":"msg_1"}`},
+				},
+			},
+		},
+	})
+	if len(messages) != 2 || messages[0]["type"] != "reasoning" {
+		t.Fatalf("expected replayable reasoning item to be preserved, got %#v", messages)
+	}
+}
+
 func TestConvertResponsesMessagesPreservesTextPhase(t *testing.T) {
 	model := ai.Model{ID: "gpt-test", API: ai.ApiOpenAIResponses, Provider: "openai", Input: []string{"text"}}
 	messages := ConvertResponsesMessages(model, ai.Context{

@@ -53,7 +53,9 @@ func ConvertResponsesMessages(model ai.Model, llmContext ai.Context, options ...
 					if block.ThinkingSignature != "" {
 						var reasoning map[string]any
 						if json.Unmarshal([]byte(block.ThinkingSignature), &reasoning) == nil {
-							input = append(input, reasoning)
+							if isReplayableResponsesReasoningItem(reasoning) {
+								input = append(input, reasoning)
+							}
 						}
 					}
 				case "text":
@@ -225,6 +227,17 @@ func parseResponsesTextSignature(signature string) responsesTextSignature {
 
 func shouldDropResponsesToolItemID(msg ai.Message, model ai.Model, itemID string) bool {
 	return msg.Model != model.ID && msg.Provider == model.Provider && msg.API == model.API && strings.HasPrefix(itemID, "fc_")
+}
+
+func isReplayableResponsesReasoningItem(item map[string]any) bool {
+	if itemType, _ := item["type"].(string); itemType != "reasoning" {
+		return true
+	}
+	if encryptedContent, ok := item["encrypted_content"].(string); ok && encryptedContent != "" {
+		return true
+	}
+	id, _ := item["id"].(string)
+	return !strings.HasPrefix(id, "rs_")
 }
 
 func splitResponsesToolCallID(id string) (string, string) {

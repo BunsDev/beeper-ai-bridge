@@ -13,7 +13,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -31,7 +30,7 @@ func parseAISlashCommand(body string) (aiSlashCommand, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	arg = strings.TrimSpace(arg)
 	switch name {
-	case "model", "reasoning", "reasoniing", "system-prompt":
+	case "model", "reasoning", "system-prompt":
 		return aiSlashCommand{name: name, arg: arg}, true
 	default:
 		return aiSlashCommand{}, false
@@ -56,25 +55,35 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	switch cmd.name {
 	case "model":
 		if cmd.arg == "" {
-			cl.queueCommandNotice(msg.Portal, "Usage: /model <model>")
+			if err = cl.sendCommandNotice(ctx, msg.Portal, "Usage: /model <model>"); err != nil {
+				return nil, true, err
+			}
 			return cl.commandHandledResponse(msg, "usage"), true, nil
 		}
 		if err = cl.applyModelCommand(ctx, msg.Portal, roomConfig, cmd.arg); err != nil {
-			cl.queueCommandNotice(msg.Portal, err.Error())
+			if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, err.Error()); noticeErr != nil {
+				return nil, true, noticeErr
+			}
 			return cl.commandHandledResponse(msg, "rejected"), true, nil
 		}
-	case "reasoning", "reasoniing":
+	case "reasoning":
 		if cmd.arg == "" {
-			cl.queueCommandNotice(msg.Portal, "Usage: /reasoning <off|low|medium|high>")
+			if err = cl.sendCommandNotice(ctx, msg.Portal, "Usage: /reasoning <off|low|medium|high>"); err != nil {
+				return nil, true, err
+			}
 			return cl.commandHandledResponse(msg, "usage"), true, nil
 		}
 		if err = cl.applyReasoningCommand(ctx, msg.Portal, roomConfig, cmd.arg); err != nil {
-			cl.queueCommandNotice(msg.Portal, err.Error())
+			if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, err.Error()); noticeErr != nil {
+				return nil, true, noticeErr
+			}
 			return cl.commandHandledResponse(msg, "rejected"), true, nil
 		}
 	case "system-prompt":
 		if cmd.arg == "" {
-			cl.queueCommandNotice(msg.Portal, "Usage: /system-prompt <prompt|clear>")
+			if err = cl.sendCommandNotice(ctx, msg.Portal, "Usage: /system-prompt <prompt|clear>"); err != nil {
+				return nil, true, err
+			}
 			return cl.commandHandledResponse(msg, "usage"), true, nil
 		}
 		prompt := cmd.arg
@@ -85,9 +94,12 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 			return nil, true, err
 		}
 		if prompt == "" {
-			cl.queueCommandNotice(msg.Portal, "System prompt cleared.")
+			err = cl.sendCommandNotice(ctx, msg.Portal, "System prompt cleared.")
 		} else {
-			cl.queueCommandNotice(msg.Portal, "System prompt updated.")
+			err = cl.sendCommandNotice(ctx, msg.Portal, "System prompt updated.")
+		}
+		if err != nil {
+			return nil, true, err
 		}
 	}
 	return cl.commandHandledResponse(msg, cmd.name), true, nil
@@ -111,8 +123,7 @@ func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal
 	if _, err = cl.writeRoomModelState(ctx, portal, canonical, target.ThinkingLevel); err != nil {
 		return err
 	}
-	cl.queueCommandNotice(portal, fmt.Sprintf("Model set to `%s`.", canonical))
-	return nil
+	return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Model set to `%s`.", canonical))
 }
 
 func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string) error {
@@ -132,8 +143,7 @@ func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Po
 	if _, err = cl.writeRoomModelState(ctx, portal, canonical, reasoning); err != nil {
 		return err
 	}
-	cl.queueCommandNotice(portal, fmt.Sprintf("Reasoning set to `%s` for `%s`.", reasoning, canonical))
-	return nil
+	return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Reasoning set to `%s` for `%s`.", reasoning, canonical))
 }
 
 func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, config RoomConfig) (RoomConfig, *bridgev2.MatrixMessageResponse, bool, error) {
@@ -145,21 +155,27 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 		if !config.modelStatePresent {
 			return config, nil, false, err
 		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err))
+		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err)); noticeErr != nil {
+			return config, nil, false, noticeErr
+		}
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
 	if config.ThinkingLevel != "" && !validRoomReasoningLevel(config.ThinkingLevel) {
 		if !config.modelStatePresent {
 			return config, nil, false, fmt.Errorf("reasoning level %q is invalid", config.ThinkingLevel)
 		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: reasoning level %q is invalid.", config.ThinkingLevel))
+		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: reasoning level %q is invalid.", config.ThinkingLevel)); noticeErr != nil {
+			return config, nil, false, noticeErr
+		}
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
 	if err = cl.validateReasoningLevel(model, config); err != nil {
 		if !config.modelStatePresent {
 			return config, nil, false, err
 		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err))
+		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err)); noticeErr != nil {
+			return config, nil, false, noticeErr
+		}
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
 	normalized := config.modelStatePresent && (config.modelStateModel != canonical || config.modelStateReason != config.ThinkingLevel)
@@ -167,7 +183,9 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 		if _, err = cl.writeRoomModelState(ctx, msg.Portal, canonical, config.ThinkingLevel); err != nil {
 			return config, nil, false, err
 		}
-		cl.queueCommandNotice(msg.Portal, fmt.Sprintf("AI room settings normalized to `%s`.", canonical))
+		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings normalized to `%s`.", canonical)); noticeErr != nil {
+			return config, nil, false, noticeErr
+		}
 	}
 	config.ProviderID = provider.ID
 	config.ModelID = model.ID
@@ -218,30 +236,12 @@ func (cl *Client) writeAIRoomState(ctx context.Context, portal *bridgev2.Portal,
 	return string(resp.EventID), nil
 }
 
-func (cl *Client) queueCommandNotice(portal *bridgev2.Portal, text string) {
-	if cl == nil || cl.UserLogin == nil || portal == nil {
-		return
+func (cl *Client) sendCommandNotice(ctx context.Context, portal *bridgev2.Portal, text string) error {
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || cl.Main.Bridge.Bot == nil || portal == nil || portal.MXID == "" {
+		return fmt.Errorf("portal room is not available to send command notice")
 	}
-	cl.UserLogin.QueueRemoteEvent(&simplevent.PreConvertedMessage{
-		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventMessage,
-			PortalKey: portal.PortalKey,
-			Sender: bridgev2.EventSender{
-				Sender: aiid.AssistantUserID(),
-			},
-			Timestamp: time.Now(),
-		},
-		ID: networkid.MessageID("settings:" + session.CreateSessionID()),
-		Data: &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
-			ID:      aiid.PartID("notice"),
-			Type:    event.EventMessage,
-			Content: msgconv.NoticeContent(text),
-			DBMetadata: &aiid.MessageMetadata{
-				Role:         "assistant",
-				StreamStatus: "done",
-			},
-		}}},
-	})
+	_, err := cl.Main.Bridge.Bot.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{Parsed: msgconv.NoticeContent(text)}, nil)
+	return err
 }
 
 func (cl *Client) commandHandledResponse(msg *bridgev2.MatrixMessage, status string) *bridgev2.MatrixMessageResponse {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,7 @@ type streamPublishCursor struct {
 var _ bridgev2.NetworkAPI = (*Client)(nil)
 var _ bridgev2.NetworkAPIWithUserID = (*Client)(nil)
 var _ bridgev2.RedactionHandlingNetworkAPI = (*Client)(nil)
+var _ bridgev2.RoomNameHandlingNetworkAPI = (*Client)(nil)
 var _ bridgev2.RoomTopicHandlingNetworkAPI = (*Client)(nil)
 var _ bridgev2.DisappearTimerChangingNetworkAPI = (*Client)(nil)
 var _ bridgev2.GroupCreatingNetworkAPI = (*Client)(nil)
@@ -123,11 +125,20 @@ func (cl *Client) IsThisUser(ctx context.Context, userID networkid.UserID) bool 
 
 func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	name := cl.defaultConversationTitle(ctx, portal)
-	if meta := portalMetadata(portal); meta.SessionTitle != "" {
-		name = meta.SessionTitle
+	if portal != nil && portal.NameSet {
+		name = portal.Name
+	}
+	var topic *string
+	if portal != nil && portal.TopicSet {
+		topic = &portal.Topic
+	}
+	var disappear *database.DisappearingSetting
+	if portal != nil && portal.Disappear.Type != "" {
+		disappearSetting := portal.Disappear
+		disappear = &disappearSetting
 	}
 	roomType := database.RoomTypeDM
-	return &bridgev2.ChatInfo{Name: &name, Type: &roomType}, nil
+	return &bridgev2.ChatInfo{Name: &name, Topic: topic, Type: &roomType, Disappear: disappear}, nil
 }
 
 func (cl *Client) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
@@ -150,12 +161,17 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 	if params.Name != nil && params.Name.Name != "" {
 		name = params.Name.Name
 	}
+	var topic *string
+	if params.Topic != nil {
+		topic = &params.Topic.Topic
+	}
 	roomType := database.RoomTypeDM
 	return &bridgev2.CreateChatResponse{
 		PortalKey: aiid.PortalKey(params.RoomID, cl.UserLogin.ID),
 		PortalInfo: &bridgev2.ChatInfo{
-			Name: &name,
-			Type: &roomType,
+			Name:  &name,
+			Topic: topic,
+			Type:  &roomType,
 		},
 	}, nil
 }
@@ -251,15 +267,19 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 	go cl.runAsyncPrompt(ctx, msg, portalMeta, provider, model, agentSession, streamPublisher, agentHarness, active, prompt)
 }
 
-func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, agentSession *session.Session, provider aiid.ProviderConfig, model ai.Model) {
-	if meta.SessionTitle != "" {
-		return
+func (cl *Client) shouldGenerateSessionTitle(portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model) bool {
+	if portal == nil {
+		return false
 	}
-	existingName, err := agentSession.GetSessionName(ctx)
-	if err != nil || existingName != nil {
-		if existingName != nil {
-			meta.SessionTitle = *existingName
-		}
+	name := strings.TrimSpace(portal.Name)
+	if name == "" || name == "AI" || name == "New AI Chat" {
+		return true
+	}
+	return name == defaultConversationTitle(provider, model)
+}
+
+func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Portal, agentSession *session.Session, provider aiid.ProviderConfig, model ai.Model) {
+	if !cl.shouldGenerateSessionTitle(portal, provider, model) {
 		return
 	}
 	contextView, err := agentSession.BuildContext(ctx)
@@ -278,11 +298,26 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	if err != nil || title == "" {
 		return
 	}
-	if _, err = agentSession.AppendSessionName(ctx, title); err != nil {
+	cl.queueRoomTitleUpdate(portal.PortalKey, title)
+}
+
+func (cl *Client) queueRoomTitleUpdate(portalKey networkid.PortalKey, title string) {
+	if cl == nil || cl.UserLogin == nil || title == "" {
 		return
 	}
-	meta.SessionTitle = title
-	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &title}, cl.UserLogin, nil, time.Now())
+	cl.UserLogin.QueueRemoteEvent(&simplevent.ChatInfoChange{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatInfoChange,
+			PortalKey: portalKey,
+			Sender: bridgev2.EventSender{
+				Sender: aiid.AssistantUserID(),
+			},
+			Timestamp: time.Now(),
+		},
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: &bridgev2.ChatInfo{Name: &title},
+		},
+	})
 }
 
 func (cl *Client) queueAssistantTyping(portalKey networkid.PortalKey, timeout time.Duration) {
@@ -362,7 +397,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 			if event.Type == "turn_end" && event.Message != nil && event.Message.Role == "assistant" {
 				active.finalizeAssistant(ctx, cl, provider.ID, model.ID, *event.Message)
 				if event.Message.StopReason != ai.StopReasonError && event.Message.StopReason != ai.StopReasonAborted && !assistantMessageHasToolCalls(*event.Message) {
-					cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
+					cl.generateSessionTitle(ctx, msg.Portal, agentSession, provider, model)
 				}
 			}
 			return nil
@@ -569,6 +604,27 @@ func (cl *Client) HandleMatrixRoomTopic(ctx context.Context, msg *bridgev2.Matri
 		})
 		if err == nil {
 			_, _ = agentSession.AppendCustomMessageEntry(ctx, "room_topic", map[string]any{"topic": topic}, false, nil)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func (cl *Client) HandleMatrixRoomName(ctx context.Context, msg *bridgev2.MatrixRoomName) (bool, error) {
+	if msg == nil || msg.Portal == nil || msg.Content == nil {
+		return false, nil
+	}
+	name := msg.Content.Name
+	msg.Portal.Name = name
+	msg.Portal.NameSet = name != ""
+	meta := portalMetadata(msg.Portal)
+	if meta.SessionID != "" {
+		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
+			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
+		})
+		if err == nil {
+			_, _ = agentSession.AppendSessionName(ctx, name)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return false, err
 		}

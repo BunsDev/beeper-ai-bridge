@@ -2,9 +2,17 @@ package connector
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog"
+	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -18,6 +26,7 @@ func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
 		Type:   "ai",
 		RoomID: id.RoomID("!room:example.com"),
 		Name:   &event.RoomNameEventContent{Name: "Work AI"},
+		Topic:  &event.TopicEventContent{Topic: "Project notes"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -28,6 +37,9 @@ func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
 	}
 	if response.PortalInfo == nil || response.PortalInfo.Name == nil || *response.PortalInfo.Name != "Work AI" {
 		t.Fatalf("unexpected portal info %#v", response.PortalInfo)
+	}
+	if response.PortalInfo.Topic == nil || *response.PortalInfo.Topic != "Project notes" {
+		t.Fatalf("unexpected portal topic %#v", response.PortalInfo.Topic)
 	}
 	if response.PortalInfo.Type == nil || *response.PortalInfo.Type != database.RoomTypeDM {
 		t.Fatalf("expected AI rooms to be DMs, got %#v", response.PortalInfo.Type)
@@ -57,5 +69,87 @@ func TestGetChatInfoUsesDefaultTitleAndDMType(t *testing.T) {
 	}
 	if info.Type == nil || *info.Type != database.RoomTypeDM {
 		t.Fatalf("expected AI chat info to be DM, got %#v", info.Type)
+	}
+}
+
+func TestGetChatInfoIncludesStoredRoomInfo(t *testing.T) {
+	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		ID:       networkid.UserLoginID("login"),
+		Metadata: &aiid.UserLoginMetadata{},
+	}}}
+	portal := &bridgev2.Portal{Portal: &database.Portal{
+		Name:     "Stored AI Title",
+		NameSet:  true,
+		Topic:    "Stored topic",
+		TopicSet: true,
+		Disappear: database.DisappearingSetting{
+			Type:  event.DisappearingTypeAfterSend,
+			Timer: time.Hour,
+		},
+		Metadata: &aiid.PortalMetadata{},
+	}}
+
+	info, err := client.GetChatInfo(context.Background(), portal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name == nil || *info.Name != "Stored AI Title" {
+		t.Fatalf("unexpected stored name %#v", info.Name)
+	}
+	if info.Topic == nil || *info.Topic != "Stored topic" {
+		t.Fatalf("unexpected stored topic %#v", info.Topic)
+	}
+	if info.Disappear == nil || info.Disappear.Type != event.DisappearingTypeAfterSend || info.Disappear.Timer != time.Hour {
+		t.Fatalf("unexpected disappearing setting %#v", info.Disappear)
+	}
+}
+
+func TestHandleMatrixRoomNameUpdatesPortalName(t *testing.T) {
+	ctx := context.Background()
+	rawDB, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := dbutil.NewWithDB(rawDB, "sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	store := aidb.NewStore(db, dbutil.ZeroLogger(zerolog.Nop()))
+	if err := store.Upgrade(ctx); err != nil {
+		t.Fatal(err)
+	}
+	agentSession, err := store.CreateSession(ctx, session.SQLiteSessionCreateOptions{ID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{
+		Main:      &Connector{Store: store},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: networkid.UserLoginID("login")}},
+	}
+	portal := &bridgev2.Portal{Portal: &database.Portal{Metadata: &aiid.PortalMetadata{SessionID: "session-1"}}}
+
+	ok, err := client.HandleMatrixRoomName(ctx, &bridgev2.MatrixRoomName{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.RoomNameEventContent]{
+			Portal:  portal,
+			Content: &event.RoomNameEventContent{Name: "Manual AI Title"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected room name change to be handled")
+	}
+	if portal.Name != "Manual AI Title" || !portal.NameSet {
+		t.Fatalf("portal name not updated: name=%q set=%v", portal.Name, portal.NameSet)
+	}
+	sessionName, err := agentSession.GetSessionName(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionName == nil || *sessionName != "Manual AI Title" {
+		t.Fatalf("session name not appended: %#v", sessionName)
 	}
 }

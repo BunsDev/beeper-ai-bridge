@@ -42,9 +42,8 @@ type UserLoginMetadata struct {
 }
 
 type PortalMetadata struct {
-	SessionID    string `json:"session_id,omitempty"`
-	SessionTitle string `json:"session_title,omitempty"`
-	LastRunID    string `json:"last_run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	LastRunID string `json:"last_run_id,omitempty"`
 }
 
 type MessageMetadata struct {

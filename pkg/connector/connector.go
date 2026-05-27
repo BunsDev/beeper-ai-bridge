@@ -79,7 +79,7 @@ func (c *Connector) ValidateConfig() error {
 func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	meta := login.Metadata.(*aiid.UserLoginMetadata)
 	if meta.Kind == aiid.LoginKindProvider {
-		login.Client = &ProviderRemoteClient{
+		login.Client = &ProviderLoginClient{
 			Main:      c,
 			UserLogin: login,
 			loggedIn:  true,

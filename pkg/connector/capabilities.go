@@ -37,6 +37,7 @@ var roomCaps = &event.RoomFeatures{
 		aiid.RoomToolsType:                      {Level: event.CapLevelFullySupported},
 		aiid.RoomModelType:                      {Level: event.CapLevelFullySupported},
 		aiid.RoomPromptType:                     {Level: event.CapLevelFullySupported},
+		event.StateRoomName.Type:                {Level: event.CapLevelFullySupported},
 		event.StateTopic.Type:                   {Level: event.CapLevelFullySupported},
 		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
 	},

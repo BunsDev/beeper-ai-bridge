@@ -13,18 +13,18 @@ import (
 	"maunium.net/go/mautrix/event"
 )
 
-type ProviderRemoteClient struct {
+type ProviderLoginClient struct {
 	Main      *Connector
 	UserLogin *bridgev2.UserLogin
 	loggedIn  bool
 }
 
-var _ bridgev2.NetworkAPI = (*ProviderRemoteClient)(nil)
-var _ bridgev2.IdentifierResolvingNetworkAPI = (*ProviderRemoteClient)(nil)
-var _ bridgev2.ContactListingNetworkAPI = (*ProviderRemoteClient)(nil)
-var _ bridgev2.UserSearchingNetworkAPI = (*ProviderRemoteClient)(nil)
+var _ bridgev2.NetworkAPI = (*ProviderLoginClient)(nil)
+var _ bridgev2.IdentifierResolvingNetworkAPI = (*ProviderLoginClient)(nil)
+var _ bridgev2.ContactListingNetworkAPI = (*ProviderLoginClient)(nil)
+var _ bridgev2.UserSearchingNetworkAPI = (*ProviderLoginClient)(nil)
 
-func (cl *ProviderRemoteClient) Connect(ctx context.Context) {
+func (cl *ProviderLoginClient) Connect(ctx context.Context) {
 	cl.loggedIn = cl.providerAvailable(ctx)
 	if cl.loggedIn {
 		cl.sendBridgeState(status.StateConnected)
@@ -33,15 +33,15 @@ func (cl *ProviderRemoteClient) Connect(ctx context.Context) {
 	}
 }
 
-func (cl *ProviderRemoteClient) Disconnect() {
+func (cl *ProviderLoginClient) Disconnect() {
 	cl.loggedIn = false
 }
 
-func (cl *ProviderRemoteClient) IsLoggedIn() bool {
+func (cl *ProviderLoginClient) IsLoggedIn() bool {
 	return cl.loggedIn
 }
 
-func (cl *ProviderRemoteClient) LogoutRemote(ctx context.Context) {
+func (cl *ProviderLoginClient) LogoutRemote(ctx context.Context) {
 	parent, providerID, err := cl.parentLogin(ctx)
 	if err == nil {
 		if meta, ok := parent.Metadata.(*aiid.UserLoginMetadata); ok && meta.Providers != nil {
@@ -58,47 +58,40 @@ func (cl *ProviderRemoteClient) LogoutRemote(ctx context.Context) {
 	cl.sendBridgeState(status.StateLoggedOut)
 }
 
-func (cl *ProviderRemoteClient) GetUserID() networkid.UserID {
+func (cl *ProviderLoginClient) GetUserID() networkid.UserID {
 	return networkid.UserID("login:" + string(cl.UserLogin.ID))
 }
 
-func (cl *ProviderRemoteClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
+func (cl *ProviderLoginClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
 	return userID == cl.GetUserID()
 }
 
-func (cl *ProviderRemoteClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	parent, _, err := cl.parentClient(ctx)
+func (cl *ProviderLoginClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	return nil, fmt.Errorf("provider logins do not own AI rooms")
+}
+
+func (cl *ProviderLoginClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
+	provider, ok, err := cl.provider(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return parent.GetChatInfo(ctx, portal)
-}
-
-func (cl *ProviderRemoteClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	parent, _, err := cl.parentClient(ctx)
-	if err != nil {
-		return nil, err
+	name := "AI provider"
+	if ok && provider.DisplayName != "" {
+		name = provider.DisplayName
 	}
-	return parent.GetUserInfo(ctx, ghost)
+	isBot := true
+	return &bridgev2.UserInfo{Name: &name, IsBot: &isBot}, nil
 }
 
-func (cl *ProviderRemoteClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	parent, _, err := cl.parentClient(ctx)
-	if err != nil {
-		return (&Client{}).GetCapabilities(ctx, portal)
-	}
-	return parent.GetCapabilities(ctx, portal)
+func (cl *ProviderLoginClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
+	return roomCaps
 }
 
-func (cl *ProviderRemoteClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	parent, _, err := cl.parentClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return parent.HandleMatrixMessage(ctx, msg)
+func (cl *ProviderLoginClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+	return nil, fmt.Errorf("provider logins do not handle AI room messages")
 }
 
-func (cl *ProviderRemoteClient) GetContactList(ctx context.Context) ([]*bridgev2.ResolveIdentifierResponse, error) {
+func (cl *ProviderLoginClient) GetContactList(ctx context.Context) ([]*bridgev2.ResolveIdentifierResponse, error) {
 	provider, ok, err := cl.provider(ctx)
 	if err != nil || !ok {
 		return nil, err
@@ -106,7 +99,7 @@ func (cl *ProviderRemoteClient) GetContactList(ctx context.Context) ([]*bridgev2
 	return providerModelContacts(provider, ""), nil
 }
 
-func (cl *ProviderRemoteClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
+func (cl *ProviderLoginClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
 	provider, ok, err := cl.provider(ctx)
 	if err != nil || !ok {
 		return nil, err
@@ -114,7 +107,7 @@ func (cl *ProviderRemoteClient) SearchUsers(ctx context.Context, query string) (
 	return providerModelContacts(provider, strings.ToLower(strings.TrimSpace(query))), nil
 }
 
-func (cl *ProviderRemoteClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
+func (cl *ProviderLoginClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
 	parent, providerID, err := cl.parentClient(ctx)
 	if err != nil {
 		return nil, err
@@ -131,33 +124,15 @@ func (cl *ProviderRemoteClient) ResolveIdentifier(ctx context.Context, identifie
 	if !createChat {
 		return resp, nil
 	}
-	portalKey := newAIChatPortalKey(parent.UserLogin.ID)
-	portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
+	chat, err := parent.createModelChat(ctx, provider, model)
 	if err != nil {
 		return nil, err
 	}
-	name := defaultConversationTitle(provider, model)
-	roomType := database.RoomTypeDM
-	if portal.MXID == "" {
-		if err = portal.CreateMatrixRoom(ctx, parent.UserLogin, &bridgev2.ChatInfo{Name: &name, Type: &roomType}); err != nil {
-			return nil, err
-		}
-	}
-	if _, err = parent.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
-		return nil, err
-	}
-	resp.Chat = &bridgev2.CreateChatResponse{
-		PortalKey: portalKey,
-		Portal:    portal,
-		PortalInfo: &bridgev2.ChatInfo{
-			Name: &name,
-			Type: &roomType,
-		},
-	}
+	resp.Chat = chat
 	return resp, nil
 }
 
-func (cl *ProviderRemoteClient) parentClient(ctx context.Context) (*Client, string, error) {
+func (cl *ProviderLoginClient) parentClient(ctx context.Context) (*Client, string, error) {
 	parent, providerID, err := cl.parentLogin(ctx)
 	if err != nil {
 		return nil, "", err
@@ -174,10 +149,10 @@ func (cl *ProviderRemoteClient) parentClient(ctx context.Context) (*Client, stri
 	return client, providerID, nil
 }
 
-func (cl *ProviderRemoteClient) parentLogin(ctx context.Context) (*bridgev2.UserLogin, string, error) {
+func (cl *ProviderLoginClient) parentLogin(ctx context.Context) (*bridgev2.UserLogin, string, error) {
 	meta, ok := cl.UserLogin.Metadata.(*aiid.UserLoginMetadata)
 	if !ok || meta.Kind != aiid.LoginKindProvider || meta.ParentLoginID == "" || meta.ProviderID == "" {
-		return nil, "", fmt.Errorf("login %s is not a provider remote", cl.UserLogin.ID)
+		return nil, "", fmt.Errorf("login %s is not a provider login", cl.UserLogin.ID)
 	}
 	parentID := networkid.UserLoginID(meta.ParentLoginID)
 	if cl.Main == nil || cl.Main.Bridge == nil {
@@ -199,7 +174,7 @@ func (cl *ProviderRemoteClient) parentLogin(ctx context.Context) (*bridgev2.User
 	return parent, meta.ProviderID, nil
 }
 
-func (cl *ProviderRemoteClient) provider(ctx context.Context) (aiid.ProviderConfig, bool, error) {
+func (cl *ProviderLoginClient) provider(ctx context.Context) (aiid.ProviderConfig, bool, error) {
 	parent, providerID, err := cl.parentClient(ctx)
 	if err != nil {
 		return aiid.ProviderConfig{}, false, err
@@ -211,12 +186,12 @@ func (cl *ProviderRemoteClient) provider(ctx context.Context) (aiid.ProviderConf
 	return provider, true, nil
 }
 
-func (cl *ProviderRemoteClient) providerAvailable(ctx context.Context) bool {
+func (cl *ProviderLoginClient) providerAvailable(ctx context.Context) bool {
 	_, ok, err := cl.provider(ctx)
 	return err == nil && ok
 }
 
-func (cl *ProviderRemoteClient) sendBridgeState(state status.BridgeStateEvent) {
+func (cl *ProviderLoginClient) sendBridgeState(state status.BridgeStateEvent) {
 	if cl != nil && cl.UserLogin != nil && cl.UserLogin.BridgeState != nil {
 		cl.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: state})
 	}

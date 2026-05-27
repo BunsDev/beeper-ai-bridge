@@ -28,31 +28,39 @@ func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, crea
 	}
 	resp := cl.modelContact(provider, model)
 	if createChat {
-		portalKey := newAIChatPortalKey(cl.UserLogin.ID)
-		portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
+		chat, err := cl.createModelChat(ctx, provider, model)
 		if err != nil {
 			return nil, err
 		}
-		name := defaultConversationTitle(provider, model)
-		roomType := database.RoomTypeDM
-		if portal.MXID == "" {
-			if err = portal.CreateMatrixRoom(ctx, cl.UserLogin, &bridgev2.ChatInfo{Name: &name, Type: &roomType}); err != nil {
-				return nil, err
-			}
-		}
-		if _, err = cl.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
-			return nil, err
-		}
-		resp.Chat = &bridgev2.CreateChatResponse{
-			PortalKey: portalKey,
-			Portal:    portal,
-			PortalInfo: &bridgev2.ChatInfo{
-				Name: &name,
-				Type: &roomType,
-			},
-		}
+		resp.Chat = chat
 	}
 	return resp, nil
+}
+
+func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderConfig, model ai.Model) (*bridgev2.CreateChatResponse, error) {
+	portalKey := newAIChatPortalKey(cl.UserLogin.ID)
+	portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
+	if err != nil {
+		return nil, err
+	}
+	name := defaultConversationTitle(provider, model)
+	roomType := database.RoomTypeDM
+	if portal.MXID == "" {
+		if err = portal.CreateMatrixRoom(ctx, cl.UserLogin, &bridgev2.ChatInfo{Name: &name, Type: &roomType}); err != nil {
+			return nil, err
+		}
+	}
+	if _, err = cl.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
+		return nil, err
+	}
+	return &bridgev2.CreateChatResponse{
+		PortalKey: portalKey,
+		Portal:    portal,
+		PortalInfo: &bridgev2.ChatInfo{
+			Name: &name,
+			Type: &roomType,
+		},
+	}, nil
 }
 
 func newAIChatPortalKey(loginID networkid.UserLoginID) networkid.PortalKey {
