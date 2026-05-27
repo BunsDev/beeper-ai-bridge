@@ -77,6 +77,46 @@ func TestAudioBlockFromMatrixUsesVoiceMetadata(t *testing.T) {
 	}
 }
 
+func TestAudioBlockFromMatrixInfersMimeTypeFromFileName(t *testing.T) {
+	block, err := audioBlockFromMatrix(context.Background(), fakeMediaDownloader{data: []byte("audio-data")}, &event.MessageEventContent{
+		MsgType:  event.MsgAudio,
+		Body:     "clip.mp3",
+		URL:      id.ContentURIString("mxc://example/clip"),
+		FileName: "clip.mp3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block.MimeType != "audio/mpeg" {
+		t.Fatalf("expected inferred mp3 MIME type, got %q", block.MimeType)
+	}
+}
+
+func TestFromMatrixUsesMediaCaptionInsteadOfFileName(t *testing.T) {
+	prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte("image-data")}, &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Content: &event.MessageEventContent{
+				MsgType:  event.MsgImage,
+				Body:     "please inspect this",
+				FileName: "photo.png",
+				URL:      id.ContentURIString("mxc://example/photo"),
+				Info: &event.FileInfo{
+					MimeType: "image/png",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Text != "please inspect this" {
+		t.Fatalf("expected image caption, got %q", prompt.Text)
+	}
+	if len(prompt.Attachments) != 1 || prompt.Attachments[0].Name != "photo.png" {
+		t.Fatalf("expected image attachment, got %#v", prompt.Attachments)
+	}
+}
+
 func TestFromMatrixInlinesTextFile(t *testing.T) {
 	prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte("hello from file")}, &bridgev2.MatrixMessage{
 		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
@@ -97,8 +137,8 @@ func TestFromMatrixInlinesTextFile(t *testing.T) {
 	if !strings.Contains(prompt.Text, "please read this") || !strings.Contains(prompt.Text, "notes.md") || !strings.Contains(prompt.Text, "hello from file") {
 		t.Fatalf("expected file content in prompt, got %q", prompt.Text)
 	}
-	if len(prompt.Images) != 0 {
-		t.Fatalf("expected text file to be inlined, got media blocks %#v", prompt.Images)
+	if len(prompt.Attachments) != 0 {
+		t.Fatalf("expected text file to be inlined, got media blocks %#v", prompt.Attachments)
 	}
 }
 

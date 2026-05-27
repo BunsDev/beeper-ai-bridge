@@ -132,11 +132,11 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	if !caps.TypingNotifications {
 		t.Fatalf("expected assistant typing notifications")
 	}
-	if caps.File[event.MsgAudio] == nil {
-		t.Fatalf("expected audio message support")
+	if caps.File[event.MsgImage] != nil {
+		t.Fatalf("did not expect image support without a vision model")
 	}
-	if caps.File[event.CapMsgVoice] == nil {
-		t.Fatalf("expected voice message support")
+	if caps.File[event.MsgAudio] != nil || caps.File[event.CapMsgVoice] != nil {
+		t.Fatalf("did not expect audio support without a native audio model")
 	}
 	if caps.File[event.MsgFile] == nil || caps.File[event.MsgFile].MimeTypes["text/*"] != event.CapLevelFullySupported {
 		t.Fatalf("expected text file support, got %#v", caps.File[event.MsgFile])
@@ -145,6 +145,48 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 		if caps.State[stateType] == nil || caps.State[stateType].Level != event.CapLevelFullySupported {
 			t.Fatalf("expected %s state support, got %#v", stateType, caps.State[stateType])
 		}
+	}
+}
+
+func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
+	textCaps := roomFeaturesForModel(ai.Model{Input: []string{"text"}})
+	if textCaps.File[event.MsgImage] != nil || textCaps.File[event.MsgAudio] != nil || textCaps.File[event.CapMsgVoice] != nil {
+		t.Fatalf("text-only model should not advertise media input, got %#v", textCaps.File)
+	}
+	if textCaps.File[event.MsgFile] == nil {
+		t.Fatalf("text-like files should be available through prompt text conversion")
+	}
+
+	visionCaps := roomFeaturesForModel(ai.Model{Input: []string{"text", "image"}})
+	if visionCaps.File[event.MsgImage] == nil {
+		t.Fatalf("vision model should advertise image input")
+	}
+	if visionCaps.File[event.MsgAudio] != nil {
+		t.Fatalf("vision-only model should not advertise audio input")
+	}
+
+	audioCaps := roomFeaturesForModel(ai.Model{Input: []string{"text", "audio"}})
+	if audioCaps.File[event.MsgAudio] == nil || audioCaps.File[event.CapMsgVoice] == nil {
+		t.Fatalf("audio model should advertise audio and voice input")
+	}
+	if audioCaps.File[event.MsgAudio].MimeTypes["audio/wav"] != event.CapLevelFullySupported ||
+		audioCaps.File[event.MsgAudio].MimeTypes["audio/mpeg"] != event.CapLevelFullySupported {
+		t.Fatalf("audio model should advertise native wav/mp3 support, got %#v", audioCaps.File[event.MsgAudio])
+	}
+	if audioCaps.File[event.MsgAudio].Caption != event.CapLevelFullySupported {
+		t.Fatalf("audio model should advertise caption support, got %#v", audioCaps.File[event.MsgAudio])
+	}
+}
+
+func TestUnsupportedPromptAudioAttachment(t *testing.T) {
+	if unsupported := unsupportedPromptAudioAttachment([]ai.ContentBlock{{Type: "audio", MimeType: "audio/mpeg"}}); unsupported != "" {
+		t.Fatalf("expected mp3 audio to be accepted, got %q", unsupported)
+	}
+	if unsupported := unsupportedPromptAudioAttachment([]ai.ContentBlock{{Type: "audio", MimeType: "audio/ogg"}}); unsupported != "audio/ogg" {
+		t.Fatalf("expected ogg audio to be rejected for native pass-through, got %q", unsupported)
+	}
+	if unsupported := unsupportedPromptAudioAttachment([]ai.ContentBlock{{Type: "image", MimeType: "audio/ogg"}}); unsupported != "" {
+		t.Fatalf("expected non-audio block to be ignored, got %q", unsupported)
 	}
 }
 

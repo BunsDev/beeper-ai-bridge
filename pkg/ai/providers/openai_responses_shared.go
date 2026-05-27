@@ -154,6 +154,9 @@ func responsesUserContent(content any) any {
 			parts = append(parts, map[string]any{"type": "input_text", "text": aiutils.SanitizeSurrogates(block.Text)})
 		case "image":
 			parts = append(parts, map[string]any{"type": "input_image", "detail": "auto", "image_url": "data:" + block.MimeType + ";base64," + block.Data})
+		case "audio":
+			part, _ := inputAudioPart(block)
+			parts = append(parts, part)
 		}
 	}
 	return parts

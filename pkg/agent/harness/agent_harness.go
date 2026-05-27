@@ -120,7 +120,7 @@ type AgentHarnessEvent struct {
 	ClearedSteer          []agent.AgentMessage
 	ClearedFollowUp       []agent.AgentMessage
 	Prompt                string
-	Images                []ai.ContentBlock
+	Attachments           []ai.ContentBlock
 	SystemPrompt          string
 	ToolCallID            string
 	ToolName              string
@@ -286,12 +286,12 @@ func NewAgentHarness(options AgentHarnessOptions) (*AgentHarness, error) {
 	return harness, nil
 }
 
-func (h *AgentHarness) Prompt(ctx context.Context, text string, images ...ai.ContentBlock) (agent.AgentMessage, error) {
-	result, err := h.PromptWithResult(ctx, text, images...)
+func (h *AgentHarness) Prompt(ctx context.Context, text string, attachments ...ai.ContentBlock) (agent.AgentMessage, error) {
+	result, err := h.PromptWithResult(ctx, text, attachments...)
 	return result.Message, err
 }
 
-func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, images ...ai.ContentBlock) (PromptResult, error) {
+func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, attachments ...ai.ContentBlock) (PromptResult, error) {
 	if h.phase != "idle" {
 		return PromptResult{}, errors.New("AgentHarness is busy")
 	}
@@ -307,7 +307,7 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, images
 	if err != nil {
 		return PromptResult{}, err
 	}
-	messages := []agent.AgentMessage{createUserMessage(text, images)}
+	messages := []agent.AgentMessage{createUserMessage(text, attachments)}
 	if len(h.nextTurnQueue) > 0 {
 		messages = append(append([]agent.AgentMessage{}, h.nextTurnQueue...), messages...)
 		h.nextTurnQueue = nil
@@ -315,7 +315,7 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, images
 			return PromptResult{}, err
 		}
 	}
-	if before, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "before_agent_start", Prompt: text, Images: images, SystemPrompt: turnContext.SystemPrompt}); err != nil {
+	if before, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "before_agent_start", Prompt: text, Attachments: attachments, SystemPrompt: turnContext.SystemPrompt}); err != nil {
 		return PromptResult{}, err
 	} else if result, ok := before.(BeforeAgentStartResult); ok {
 		if len(result.Messages) > 0 {
@@ -582,24 +582,24 @@ func (h *AgentHarness) SetFollowUpMode(mode agent.QueueMode) {
 	h.followUpMode = mode
 }
 
-func (h *AgentHarness) NextTurn(ctx context.Context, text string, images ...ai.ContentBlock) error {
-	h.nextTurnQueue = append(h.nextTurnQueue, createUserMessage(text, images))
+func (h *AgentHarness) NextTurn(ctx context.Context, text string, attachments ...ai.ContentBlock) error {
+	h.nextTurnQueue = append(h.nextTurnQueue, createUserMessage(text, attachments))
 	return h.emit(ctx, AgentHarnessEvent{Type: "queue_update", Steer: h.steerQueue, FollowUp: h.followUpQueue, NextTurn: h.nextTurnQueue})
 }
 
-func (h *AgentHarness) Steer(ctx context.Context, text string, images ...ai.ContentBlock) error {
+func (h *AgentHarness) Steer(ctx context.Context, text string, attachments ...ai.ContentBlock) error {
 	if h.phase == "idle" {
 		return errors.New("Cannot steer while idle")
 	}
-	h.steerQueue = append(h.steerQueue, createUserMessage(text, images))
+	h.steerQueue = append(h.steerQueue, createUserMessage(text, attachments))
 	return h.emit(ctx, AgentHarnessEvent{Type: "queue_update", Steer: h.steerQueue, FollowUp: h.followUpQueue, NextTurn: h.nextTurnQueue})
 }
 
-func (h *AgentHarness) FollowUp(ctx context.Context, text string, images ...ai.ContentBlock) error {
+func (h *AgentHarness) FollowUp(ctx context.Context, text string, attachments ...ai.ContentBlock) error {
 	if h.phase == "idle" {
 		return errors.New("Cannot follow up while idle")
 	}
-	h.followUpQueue = append(h.followUpQueue, createUserMessage(text, images))
+	h.followUpQueue = append(h.followUpQueue, createUserMessage(text, attachments))
 	return h.emit(ctx, AgentHarnessEvent{Type: "queue_update", Steer: h.steerQueue, FollowUp: h.followUpQueue, NextTurn: h.nextTurnQueue})
 }
 
@@ -1072,9 +1072,9 @@ func (h *AgentHarness) emitHook(ctx context.Context, event AgentHarnessEvent) (a
 	return last, nil
 }
 
-func createUserMessage(text string, images []ai.ContentBlock) agent.AgentMessage {
+func createUserMessage(text string, attachments []ai.ContentBlock) agent.AgentMessage {
 	content := []ai.ContentBlock{{Type: "text", Text: text}}
-	content = append(content, images...)
+	content = append(content, attachments...)
 	return agent.AgentMessage{Role: "user", Content: content, Timestamp: time.Now().UnixMilli()}
 }
 

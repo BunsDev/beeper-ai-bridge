@@ -123,6 +123,7 @@ func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal
 	if _, err = cl.writeRoomModelState(ctx, portal, canonical, target.ThinkingLevel); err != nil {
 		return err
 	}
+	cl.refreshRoomCapabilities(ctx, portal)
 	return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Model set to `%s`.", canonical))
 }
 
@@ -143,6 +144,7 @@ func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Po
 	if _, err = cl.writeRoomModelState(ctx, portal, canonical, reasoning); err != nil {
 		return err
 	}
+	cl.refreshRoomCapabilities(ctx, portal)
 	return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Reasoning set to `%s` for `%s`.", reasoning, canonical))
 }
 
@@ -183,6 +185,7 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 		if _, err = cl.writeRoomModelState(ctx, msg.Portal, canonical, config.ThinkingLevel); err != nil {
 			return config, nil, false, err
 		}
+		cl.refreshRoomCapabilities(ctx, msg.Portal)
 		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings normalized to `%s`.", canonical)); noticeErr != nil {
 			return config, nil, false, noticeErr
 		}
@@ -190,6 +193,13 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 	config.ProviderID = provider.ID
 	config.ModelID = model.ID
 	return config, nil, false, nil
+}
+
+func (cl *Client) refreshRoomCapabilities(ctx context.Context, portal *bridgev2.Portal) {
+	if cl == nil || cl.UserLogin == nil || portal == nil {
+		return
+	}
+	portal.UpdateCapabilities(ctx, cl.UserLogin, true)
 }
 
 func (cl *Client) resolveCanonicalRoomModel(ctx context.Context, config RoomConfig) (aiid.ProviderConfig, ai.Model, string, error) {

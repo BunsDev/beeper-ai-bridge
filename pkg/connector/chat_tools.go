@@ -32,10 +32,10 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		ModelID:         model.ID,
 		ReasoningLevel:  cl.reasoningLevel(roomConfig),
 		DisabledTools:   roomConfig.DisabledTools,
-		AttachmentCount: len(prompt.Images),
+		AttachmentCount: len(prompt.Attachments),
 	}
-	for _, image := range prompt.Images {
-		info.Attachments = append(info.Attachments, chattools.Attachment{Type: image.Type, MimeType: image.MimeType})
+	for _, attachment := range prompt.Attachments {
+		info.Attachments = append(info.Attachments, chattools.Attachment{Type: attachment.Type, MimeType: attachment.MimeType})
 	}
 	return chattools.Tools(info, chattools.FetchOptions{
 		Timeout:  time.Duration(cl.Main.Config.Fetch.TimeoutMS) * time.Millisecond,

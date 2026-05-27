@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"mime"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -16,8 +17,8 @@ import (
 )
 
 type MatrixPrompt struct {
-	Text   string
-	Images []ai.ContentBlock
+	Text        string
+	Attachments []ai.ContentBlock
 }
 
 const maxTextFileChars = 20000
@@ -40,13 +41,13 @@ func FromMatrix(ctx context.Context, intent matrixMediaDownloader, msg *bridgev2
 		if err != nil {
 			return MatrixPrompt{}, err
 		}
-		return MatrixPrompt{Text: withReplyContext(matrixPromptText(content), msg), Images: []ai.ContentBlock{block}}, nil
+		return MatrixPrompt{Text: withReplyContext(content.GetCaption(), msg), Attachments: []ai.ContentBlock{block}}, nil
 	case event.MsgAudio:
 		block, err := audioBlockFromMatrix(ctx, intent, content)
 		if err != nil {
 			return MatrixPrompt{}, err
 		}
-		return MatrixPrompt{Text: text, Images: []ai.ContentBlock{block}}, nil
+		return MatrixPrompt{Text: withReplyContext(content.GetCaption(), msg), Attachments: []ai.ContentBlock{block}}, nil
 	case event.MsgFile:
 		fileText, err := textFileFromMatrix(ctx, intent, content)
 		if err != nil {
@@ -97,6 +98,8 @@ func imageBlockFromMatrix(ctx context.Context, intent matrixMediaDownloader, con
 	mimeType := "application/octet-stream"
 	if content.Info != nil && content.Info.MimeType != "" {
 		mimeType = content.Info.MimeType
+	} else if extMime := mime.TypeByExtension(filepath.Ext(content.GetFileName())); extMime != "" {
+		mimeType = extMime
 	}
 	return ai.ContentBlock{
 		Type:     "image",
@@ -117,6 +120,8 @@ func audioBlockFromMatrix(ctx context.Context, intent matrixMediaDownloader, con
 	mimeType := "application/octet-stream"
 	if content.Info != nil && content.Info.MimeType != "" {
 		mimeType = content.Info.MimeType
+	} else if extMime := mime.TypeByExtension(filepath.Ext(content.GetFileName())); extMime != "" {
+		mimeType = extMime
 	}
 	return ai.ContentBlock{
 		Type:     "audio",

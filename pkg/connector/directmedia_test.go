@@ -15,8 +15,27 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
+	"maunium.net/go/mautrix/bridgev2"
+	bridgedb "maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/mediaproxy"
 )
+
+type fakeMediaUploader struct {
+	roomID   id.RoomID
+	data     []byte
+	fileName string
+	mimeType string
+}
+
+func (f *fakeMediaUploader) UploadMedia(_ context.Context, roomID id.RoomID, data []byte, fileName, mimeType string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+	f.roomID = roomID
+	f.data = append([]byte(nil), data...)
+	f.fileName = fileName
+	f.mimeType = mimeType
+	return id.ContentURIString("mxc://example/image"), nil, nil
+}
 
 func TestDirectMediaDownloadsInlineSessionBlock(t *testing.T) {
 	ctx := context.Background()
@@ -97,5 +116,35 @@ func TestDirectMediaReturnsRetrievalURL(t *testing.T) {
 	}
 	if urlResponse.URL != "https://media.example/test.png" {
 		t.Fatalf("unexpected URL response %#v", urlResponse)
+	}
+}
+
+func TestAssistantImageConvertedMessageUploadsMatrixImage(t *testing.T) {
+	const oneByOnePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+	uploader := &fakeMediaUploader{}
+	converted, err := assistantImageConvertedMessage(
+		context.Background(),
+		&bridgev2.Portal{Portal: &bridgedb.Portal{MXID: id.RoomID("!room:example")}},
+		uploader,
+		ai.ContentBlock{Type: "image", MimeType: "image/png", Data: "data:image/png;base64," + oneByOnePNG, Name: "result.png"},
+		aiid.PartID("image-0"),
+		&aiid.MessageMetadata{Role: "assistant"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploader.roomID != "!room:example" || uploader.fileName != "result.png" || uploader.mimeType != "image/png" || len(uploader.data) == 0 {
+		t.Fatalf("unexpected upload %#v", uploader)
+	}
+	part := converted.Parts[0]
+	content := part.Content
+	if content.MsgType != event.MsgImage || content.URL != "mxc://example/image" || content.Body != "result.png" {
+		t.Fatalf("unexpected converted image content %#v", content)
+	}
+	if content.Info == nil || content.Info.MimeType != "image/png" || content.Info.Width != 1 || content.Info.Height != 1 {
+		t.Fatalf("expected image metadata, got %#v", content.Info)
+	}
+	if part.DBMetadata.(*aiid.MessageMetadata).Role != "assistant" {
+		t.Fatalf("expected assistant metadata, got %#v", part.DBMetadata)
 	}
 }

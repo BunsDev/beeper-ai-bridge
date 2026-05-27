@@ -39,6 +39,44 @@ func TestConvertMessagesAliasesCompletionsConverter(t *testing.T) {
 	}
 }
 
+func TestConvertCompletionsMessagesIncludesNativeAudio(t *testing.T) {
+	model := ai.Model{ID: "gpt-audio", API: ai.ApiOpenAICompletions, Provider: "openai", Input: []string{"text", "audio"}}
+	messages := ConvertCompletionsMessages(model, ai.Context{
+		Messages: []ai.Message{{Role: "user", Content: []ai.ContentBlock{
+			{Type: "text", Text: "listen to this"},
+			{Type: "audio", MimeType: "audio/mpeg", Data: "abc123"},
+		}}},
+	})
+	content := messages[0]["content"].([]map[string]any)
+	audioPart := content[1]
+	if audioPart["type"] != "input_audio" {
+		t.Fatalf("expected native audio part, got %#v", audioPart)
+	}
+	audio := audioPart["input_audio"].(map[string]any)
+	if audio["data"] != "abc123" || audio["format"] != "mp3" {
+		t.Fatalf("unexpected audio payload %#v", audio)
+	}
+}
+
+func TestConvertResponsesMessagesIncludesNativeAudio(t *testing.T) {
+	model := ai.Model{ID: "gpt-audio", API: ai.ApiOpenAIResponses, Provider: "openai", Input: []string{"text", "audio"}}
+	messages := ConvertResponsesMessages(model, ai.Context{
+		Messages: []ai.Message{{Role: "user", Content: []ai.ContentBlock{
+			{Type: "text", Text: "listen to this"},
+			{Type: "audio", MimeType: "audio/wav", Data: "abc123"},
+		}}},
+	})
+	content := messages[0]["content"].([]map[string]any)
+	audioPart := content[1]
+	if audioPart["type"] != "input_audio" {
+		t.Fatalf("expected native audio part, got %#v", audioPart)
+	}
+	audio := audioPart["input_audio"].(map[string]any)
+	if audio["data"] != "abc123" || audio["format"] != "wav" {
+		t.Fatalf("unexpected audio payload %#v", audio)
+	}
+}
+
 func TestConvertCompletionsMessagesSkipsErroredAssistant(t *testing.T) {
 	model := ai.Model{ID: "gpt-test", API: ai.ApiOpenAICompletions, Provider: "openai", Input: []string{"text"}}
 	messages := ConvertCompletionsMessages(model, ai.Context{

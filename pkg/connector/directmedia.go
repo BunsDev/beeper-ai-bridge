@@ -110,16 +110,25 @@ func contentBlockFromEntry(raw json.RawMessage, contentIndex int) (ai.ContentBlo
 }
 
 func decodeContentBlockData(block ai.ContentBlock) ([]byte, error) {
+	data, _, err := decodeContentBlockDataWithMIME(block)
+	return data, err
+}
+
+func decodeContentBlockDataWithMIME(block ai.ContentBlock) ([]byte, string, error) {
 	if block.Data == "" {
-		return nil, fmt.Errorf("AI content block has no inline data")
+		return nil, "", fmt.Errorf("AI content block has no inline data")
 	}
 	data := block.Data
+	mimeType := block.MimeType
 	if prefix, value, ok := strings.Cut(data, ","); ok && strings.Contains(prefix, ";base64") {
 		data = value
+		if parsedMime := strings.TrimPrefix(strings.Split(prefix, ";")[0], "data:"); parsedMime != "" && mimeType == "" {
+			mimeType = parsedMime
+		}
 	}
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return decoded, nil
+	return decoded, mimeType, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -84,7 +85,7 @@ func (cl *ProviderLoginClient) GetUserInfo(ctx context.Context, ghost *bridgev2.
 }
 
 func (cl *ProviderLoginClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	return roomCaps
+	return roomFeaturesForModel(ai.Model{})
 }
 
 func (cl *ProviderLoginClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {

@@ -146,8 +146,16 @@ func resolveConfiguredAPIKey(apiKey string) string {
 }
 
 func isImageModel(model ai.Model) bool {
+	return modelHasInput(model, "image")
+}
+
+func isAudioModel(model ai.Model) bool {
+	return modelHasInput(model, "audio")
+}
+
+func modelHasInput(model ai.Model, inputType string) bool {
 	for _, input := range model.Input {
-		if input == "image" {
+		if input == inputType {
 			return true
 		}
 	}

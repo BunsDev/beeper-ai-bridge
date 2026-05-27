@@ -282,6 +282,9 @@ func completionsUserContent(content any) any {
 			parts = append(parts, map[string]any{"type": "text", "text": aiutils.SanitizeSurrogates(block.Text)})
 		case "image":
 			parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:" + block.MimeType + ";base64," + block.Data}})
+		case "audio":
+			part, _ := inputAudioPart(block)
+			parts = append(parts, part)
 		}
 	}
 	return parts
@@ -331,6 +334,31 @@ func modelSupportsAudio(model ai.Model) bool {
 		}
 	}
 	return false
+}
+
+func inputAudioPart(block ai.ContentBlock) (map[string]any, bool) {
+	format, ok := inputAudioFormat(block.MimeType)
+	if !ok {
+		return map[string]any{"type": "text", "text": "(audio omitted: unsupported audio format " + block.MimeType + ")"}, false
+	}
+	return map[string]any{
+		"type": "input_audio",
+		"input_audio": map[string]any{
+			"data":   block.Data,
+			"format": format,
+		},
+	}, true
+}
+
+func inputAudioFormat(mimeType string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "audio/wav", "audio/x-wav":
+		return "wav", true
+	case "audio/mpeg", "audio/mp3":
+		return "mp3", true
+	default:
+		return "", false
+	}
 }
 
 func normalizeCompletionsToolCallID(id string, model ai.Model, _ ai.Message) string {

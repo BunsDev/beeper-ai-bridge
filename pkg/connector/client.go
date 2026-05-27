@@ -1,11 +1,18 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,12 +46,12 @@ type Client struct {
 }
 
 type pendingAIMessage struct {
-	msg      *bridgev2.MatrixMessage
-	txnID    networkid.TransactionID
-	metadata *aiid.MessageMetadata
-	replyTo  *networkid.MessageOptionalPartID
-	text     string
-	images   []ai.ContentBlock
+	msg         *bridgev2.MatrixMessage
+	txnID       networkid.TransactionID
+	metadata    *aiid.MessageMetadata
+	replyTo     *networkid.MessageOptionalPartID
+	text        string
+	attachments []ai.ContentBlock
 }
 
 type activeAIRun struct {
@@ -218,8 +225,14 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if err != nil {
 		return nil, err
 	}
-	if hasPromptAttachmentType(prompt.Images, "image") && !isImageModel(model) {
+	if hasPromptAttachmentType(prompt.Attachments, "image") && !isImageModel(model) {
 		return nil, fmt.Errorf("model %s does not support image input", model.ID)
+	}
+	if hasPromptAttachmentType(prompt.Attachments, "audio") && !isAudioModel(model) {
+		return nil, fmt.Errorf("model %s does not support audio input", model.ID)
+	}
+	if unsupported := unsupportedPromptAudioAttachment(prompt.Attachments); unsupported != "" {
+		return nil, fmt.Errorf("unsupported audio MIME type %s", unsupported)
 	}
 	agentSession, err := cl.sessionForPortal(ctx, msg.Portal, portalMeta)
 	if err != nil {
@@ -228,7 +241,7 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if active := cl.getActiveRun(msg.Portal.PortalKey); active != nil && active.harness != nil {
 		pending := cl.preparePendingAIMessage(ctx, msg, prompt, provider.ID, model.ID, "", active.replyTarget())
 		active.addPending(pending)
-		if err := active.harness.Steer(context.WithoutCancel(ctx), prompt.Text, prompt.Images...); err == nil {
+		if err := active.harness.Steer(context.WithoutCancel(ctx), prompt.Text, prompt.Attachments...); err == nil {
 			return &bridgev2.MatrixMessageResponse{DB: pending.dbMessage(), Pending: true}, nil
 		}
 		active.removePending(pending)
@@ -247,6 +260,24 @@ func hasPromptAttachmentType(blocks []ai.ContentBlock, blockType string) bool {
 		}
 	}
 	return false
+}
+
+func unsupportedPromptAudioAttachment(blocks []ai.ContentBlock) string {
+	for _, block := range blocks {
+		if block.Type == "audio" && !nativeAudioMimeSupported(block.MimeType) {
+			return block.MimeType
+		}
+	}
+	return ""
+}
+
+func nativeAudioMimeSupported(mimeType string) bool {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3":
+		return true
+	default:
+		return false
+	}
 }
 
 func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, portalMeta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, agentSession *session.Session, prompt msgconv.MatrixPrompt, pending *pendingAIMessage) {
@@ -420,7 +451,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 	})
 	defer unsubscribeToolOutputs()
 
-	promptResult, err := agentHarness.PromptWithResult(ctx, prompt.Text, prompt.Images...)
+	promptResult, err := agentHarness.PromptWithResult(ctx, prompt.Text, prompt.Attachments...)
 	if err != nil {
 		cl.logMatrixMessageError(msg, err, "AI harness prompt failed")
 		active.failConsumed(ctx, cl, err)
@@ -461,12 +492,12 @@ func (cl *Client) preparePendingAIMessage(ctx context.Context, msg *bridgev2.Mat
 		StreamStatus: "pending",
 	}
 	pending := &pendingAIMessage{
-		msg:      msg,
-		txnID:    txnID,
-		metadata: metadata,
-		replyTo:  replyTo,
-		text:     prompt.Text,
-		images:   append([]ai.ContentBlock(nil), prompt.Images...),
+		msg:         msg,
+		txnID:       txnID,
+		metadata:    metadata,
+		replyTo:     replyTo,
+		text:        prompt.Text,
+		attachments: append([]ai.ContentBlock(nil), prompt.Attachments...),
 	}
 	msg.AddPendingToSave(pending.dbMessage(), txnID, nil)
 	cl.sendPendingStatus(ctx, msg, "Queued for AI")
@@ -904,6 +935,120 @@ func (cl *Client) logMatrixMessageError(msg *bridgev2.MatrixMessage, err error, 
 	event.Msg(message)
 }
 
+func (cl *Client) queueAssistantMediaMessages(portalKey networkid.PortalKey, providerID string, modelID string, runID string, message ai.Message) {
+	if cl == nil || cl.UserLogin == nil {
+		return
+	}
+	mediaIndex := 0
+	for _, block := range aiContentBlocks(message.Content) {
+		if block.Type != "image" || block.Data == "" {
+			continue
+		}
+		if runID == "" {
+			runID = session.CreateSessionID()
+		}
+		messageID := networkid.MessageID(fmt.Sprintf("assistant:%s:image:%d", runID, mediaIndex))
+		partID := aiid.PartID(fmt.Sprintf("image-%d", mediaIndex))
+		metadata := &aiid.MessageMetadata{
+			Role:         "assistant",
+			ProviderID:   providerID,
+			ModelID:      modelID,
+			RunID:        runID,
+			StreamStatus: "done",
+			StopReason:   string(message.StopReason),
+		}
+		block := block
+		cl.UserLogin.QueueRemoteEvent(&simplevent.Message[ai.ContentBlock]{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventMessage,
+				PortalKey: portalKey,
+				Sender: bridgev2.EventSender{
+					Sender: aiid.AssistantUserID(),
+				},
+				Timestamp: time.Now(),
+			},
+			ID:   messageID,
+			Data: block,
+			ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data ai.ContentBlock) (*bridgev2.ConvertedMessage, error) {
+				return assistantImageConvertedMessage(ctx, portal, intent, data, partID, metadata)
+			},
+		})
+		mediaIndex++
+	}
+}
+
+type matrixMediaUploader interface {
+	UploadMedia(ctx context.Context, roomID id.RoomID, data []byte, fileName, mimeType string) (url id.ContentURIString, file *event.EncryptedFileInfo, err error)
+}
+
+func assistantImageConvertedMessage(ctx context.Context, portal *bridgev2.Portal, intent matrixMediaUploader, block ai.ContentBlock, partID networkid.PartID, metadata *aiid.MessageMetadata) (*bridgev2.ConvertedMessage, error) {
+	if portal == nil || portal.Portal == nil {
+		return nil, fmt.Errorf("missing portal for assistant image")
+	}
+	data, mimeType, err := decodeContentBlockDataWithMIME(block)
+	if err != nil {
+		return nil, err
+	}
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	fileName := strings.TrimSpace(block.Name)
+	if fileName == "" {
+		fileName = fileNameForImageMIME(mimeType)
+	}
+	uri, file, err := intent.UploadMedia(ctx, portal.MXID, data, fileName, mimeType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload assistant image: %w", err)
+	}
+	info := &event.FileInfo{
+		MimeType: mimeType,
+		Size:     len(data),
+	}
+	if width, height := imageSize(data); width > 0 && height > 0 {
+		info.Width = width
+		info.Height = height
+	}
+	content := &event.MessageEventContent{
+		MsgType:  event.MsgImage,
+		Body:     fileName,
+		FileName: fileName,
+		Info:     info,
+		Mentions: &event.Mentions{},
+	}
+	if file != nil {
+		content.File = file
+	} else {
+		content.URL = uri
+	}
+	return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
+		ID:         partID,
+		Type:       event.EventMessage,
+		Content:    content,
+		DBMetadata: metadata,
+	}}}, nil
+}
+
+func imageSize(data []byte) (int, int) {
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return config.Width, config.Height
+}
+
+func fileNameForImageMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "image/jpeg":
+		return "image.jpg"
+	case "image/gif":
+		return "image.gif"
+	case "image/webp":
+		return "image.webp"
+	default:
+		return "image.png"
+	}
+}
+
 func (cl *Client) logStreamError(err error, roomID id.RoomID, eventID id.EventID, run *aistream.Run, message string) {
 	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil {
 		return
@@ -1306,6 +1451,7 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 	appendToolOutputs(stream.run, stream.tools)
 	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), r.portalKey, stream.messageID, stream.metadata)
 	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(r.portalKey, stream.messageID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata))
+	cl.queueAssistantMediaMessages(r.portalKey, providerID, modelID, stream.runID, message)
 }
 
 func (r *activeAIRun) failOpenAssistant(ctx context.Context, cl *Client, providerID string, modelID string, err error) {
