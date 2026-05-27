@@ -324,6 +324,15 @@ func modelSupportsImage(model ai.Model) bool {
 	return false
 }
 
+func modelSupportsAudio(model ai.Model) bool {
+	for _, input := range model.Input {
+		if input == "audio" {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeCompletionsToolCallID(id string, model ai.Model, _ ai.Message) string {
 	if strings.Contains(id, "|") {
 		callID := strings.Split(id, "|")[0]

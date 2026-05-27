@@ -128,7 +128,7 @@ func TestHandleMatrixRoomNameUpdatesPortalName(t *testing.T) {
 		Main:      &Connector{Store: store},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: networkid.UserLoginID("login")}},
 	}
-	portal := &bridgev2.Portal{Portal: &database.Portal{Metadata: &aiid.PortalMetadata{SessionID: "session-1"}}}
+	portal := &bridgev2.Portal{Portal: &database.Portal{Metadata: &aiid.PortalMetadata{SessionID: "session-1", AutoTitlePending: true}}}
 
 	ok, err := client.HandleMatrixRoomName(ctx, &bridgev2.MatrixRoomName{
 		MatrixEventBase: bridgev2.MatrixEventBase[*event.RoomNameEventContent]{
@@ -151,5 +151,8 @@ func TestHandleMatrixRoomNameUpdatesPortalName(t *testing.T) {
 	}
 	if sessionName == nil || *sessionName != "Manual AI Title" {
 		t.Fatalf("session name not appended: %#v", sessionName)
+	}
+	if portalMetadata(portal).AutoTitlePending {
+		t.Fatalf("manual room name should clear pending auto-title metadata")
 	}
 }

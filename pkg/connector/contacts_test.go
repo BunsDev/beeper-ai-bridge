@@ -9,6 +9,7 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 )
 
 func TestModelContactsExposeConfiguredModels(t *testing.T) {
@@ -52,6 +53,19 @@ func TestNewAIChatPortalKeyCreatesFreshChatPortal(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(first.ID), "chat:") || !strings.HasPrefix(string(second.ID), "chat:") {
 		t.Fatalf("expected chat portal IDs, got %#v %#v", first, second)
+	}
+}
+
+func TestAIChatMembersUseGlobalAssistantGhost(t *testing.T) {
+	members := aiChatMembers()
+	if members == nil || !members.IsFull || members.OtherUserID != aiid.AssistantUserID() {
+		t.Fatalf("unexpected AI chat members %#v", members)
+	}
+	if member, ok := members.MemberMap[networkid.UserID("")]; !ok || !member.IsFromMe {
+		t.Fatalf("expected Matrix user member, got %#v", members.MemberMap)
+	}
+	if member, ok := members.MemberMap[aiid.AssistantUserID()]; !ok || member.Sender != aiid.AssistantUserID() {
+		t.Fatalf("expected assistant ghost member, got %#v", members.MemberMap)
 	}
 }
 

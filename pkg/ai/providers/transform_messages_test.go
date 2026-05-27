@@ -36,6 +36,21 @@ func TestTransformMessagesPreservesStringUserContentForNonVisionModels(t *testin
 	}
 }
 
+func TestTransformMessagesDowngradesUnsupportedAudio(t *testing.T) {
+	model := ai.Model{ID: "gpt-test", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, Input: []string{"text"}}
+	transformed := TransformMessages([]ai.Message{{
+		Role: "user",
+		Content: []ai.ContentBlock{
+			{Type: "text", Text: "please handle this"},
+			{Type: "audio", MimeType: "audio/ogg", Data: "abc"},
+		},
+	}}, model, nil)
+	blocks := transformed[0].Content.([]ai.ContentBlock)
+	if len(blocks) != 2 || blocks[1].Text != nonAudioUserAudioPlaceholder {
+		t.Fatalf("expected unsupported audio placeholder, got %#v", blocks)
+	}
+}
+
 func TestTransformMessagesStripsTextSignatureAcrossModels(t *testing.T) {
 	model := ai.Model{ID: "gpt-test", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, Input: []string{"text"}}
 	messages := []ai.Message{{

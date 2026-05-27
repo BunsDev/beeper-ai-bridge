@@ -9,6 +9,8 @@ import (
 
 const nonVisionUserImagePlaceholder = "(image omitted: model does not support images)"
 const nonVisionToolImagePlaceholder = "(tool image omitted: model does not support images)"
+const nonAudioUserAudioPlaceholder = "(audio omitted: model does not support audio input)"
+const nonAudioToolAudioPlaceholder = "(tool audio omitted: model does not support audio input)"
 
 func TransformMessages(messages []ai.Message, model ai.Model, normalizeToolCallID func(string, ai.Model, ai.Message) string) []ai.Message {
 	return transformMessages(messages, model, normalizeToolCallID)
@@ -19,6 +21,7 @@ func transformMessages(messages []ai.Message, model ai.Model, normalizeToolCallI
 	transformed := make([]ai.Message, 0, len(messages))
 	for _, msg := range messages {
 		msg = downgradeUnsupportedImages(msg, model)
+		msg = downgradeUnsupportedAudio(msg, model)
 		switch msg.Role {
 		case "toolResult":
 			if normalized := toolCallIDMap[msg.ToolCallID]; normalized != "" && normalized != msg.ToolCallID {
@@ -124,26 +127,41 @@ func transformMessages(messages []ai.Message, model ai.Model, normalizeToolCallI
 	return result
 }
 
+func downgradeUnsupportedAudio(msg ai.Message, model ai.Model) ai.Message {
+	if modelSupportsAudio(model) {
+		return msg
+	}
+	if msg.Role == "user" {
+		if _, ok := msg.Content.(string); !ok {
+			msg.Content = replaceBlocksWithPlaceholder(contentBlocks(msg.Content), "audio", nonAudioUserAudioPlaceholder)
+		}
+	}
+	if msg.Role == "toolResult" {
+		msg.Content = replaceBlocksWithPlaceholder(contentBlocks(msg.Content), "audio", nonAudioToolAudioPlaceholder)
+	}
+	return msg
+}
+
 func downgradeUnsupportedImages(msg ai.Message, model ai.Model) ai.Message {
 	if modelSupportsImage(model) {
 		return msg
 	}
 	if msg.Role == "user" {
 		if _, ok := msg.Content.(string); !ok {
-			msg.Content = replaceImagesWithPlaceholder(contentBlocks(msg.Content), nonVisionUserImagePlaceholder)
+			msg.Content = replaceBlocksWithPlaceholder(contentBlocks(msg.Content), "image", nonVisionUserImagePlaceholder)
 		}
 	}
 	if msg.Role == "toolResult" {
-		msg.Content = replaceImagesWithPlaceholder(contentBlocks(msg.Content), nonVisionToolImagePlaceholder)
+		msg.Content = replaceBlocksWithPlaceholder(contentBlocks(msg.Content), "image", nonVisionToolImagePlaceholder)
 	}
 	return msg
 }
 
-func replaceImagesWithPlaceholder(content []ai.ContentBlock, placeholder string) []ai.ContentBlock {
+func replaceBlocksWithPlaceholder(content []ai.ContentBlock, blockType string, placeholder string) []ai.ContentBlock {
 	result := []ai.ContentBlock{}
 	previousWasPlaceholder := false
 	for _, block := range content {
-		if block.Type == "image" {
+		if block.Type == blockType {
 			if !previousWasPlaceholder {
 				result = append(result, ai.ContentBlock{Type: "text", Text: placeholder})
 			}

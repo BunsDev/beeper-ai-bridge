@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -138,7 +137,7 @@ func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*br
 		disappear = &disappearSetting
 	}
 	roomType := database.RoomTypeDM
-	return &bridgev2.ChatInfo{Name: &name, Topic: topic, Type: &roomType, Disappear: disappear}, nil
+	return &bridgev2.ChatInfo{Name: &name, Topic: topic, Type: &roomType, Members: aiChatMembers(), Disappear: disappear}, nil
 }
 
 func (cl *Client) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
@@ -169,9 +168,10 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 	return &bridgev2.CreateChatResponse{
 		PortalKey: aiid.PortalKey(params.RoomID, cl.UserLogin.ID),
 		PortalInfo: &bridgev2.ChatInfo{
-			Name:  &name,
-			Topic: topic,
-			Type:  &roomType,
+			Name:    &name,
+			Topic:   topic,
+			Type:    &roomType,
+			Members: aiChatMembers(),
 		},
 	}, nil
 }
@@ -218,7 +218,7 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if err != nil {
 		return nil, err
 	}
-	if len(prompt.Images) > 0 && !isImageModel(model) {
+	if hasPromptAttachmentType(prompt.Images, "image") && !isImageModel(model) {
 		return nil, fmt.Errorf("model %s does not support image input", model.ID)
 	}
 	agentSession, err := cl.sessionForPortal(ctx, msg.Portal, portalMeta)
@@ -238,6 +238,15 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	pending := cl.preparePendingAIMessage(ctx, msg, prompt, provider.ID, model.ID, "", nil)
 	cl.startAsyncPrompt(context.WithoutCancel(ctx), msg, portalMeta, roomConfig, provider, model, agentSession, prompt, pending)
 	return &bridgev2.MatrixMessageResponse{DB: pending.dbMessage(), Pending: true}, nil
+}
+
+func hasPromptAttachmentType(blocks []ai.ContentBlock, blockType string) bool {
+	for _, block := range blocks {
+		if block.Type == blockType {
+			return true
+		}
+	}
+	return false
 }
 
 func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, portalMeta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, agentSession *session.Session, prompt msgconv.MatrixPrompt, pending *pendingAIMessage) {
@@ -267,19 +276,8 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 	go cl.runAsyncPrompt(ctx, msg, portalMeta, provider, model, agentSession, streamPublisher, agentHarness, active, prompt)
 }
 
-func (cl *Client) shouldGenerateSessionTitle(portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model) bool {
-	if portal == nil {
-		return false
-	}
-	name := strings.TrimSpace(portal.Name)
-	if name == "" || name == "AI" || name == "New AI Chat" {
-		return true
-	}
-	return name == defaultConversationTitle(provider, model)
-}
-
-func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Portal, agentSession *session.Session, provider aiid.ProviderConfig, model ai.Model) {
-	if !cl.shouldGenerateSessionTitle(portal, provider, model) {
+func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Portal, meta *aiid.PortalMetadata, agentSession *session.Session, provider aiid.ProviderConfig, model ai.Model) {
+	if portal == nil || meta == nil || !meta.AutoTitlePending {
 		return
 	}
 	contextView, err := agentSession.BuildContext(ctx)
@@ -296,6 +294,10 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 		Headers: auth.Headers,
 	})
 	if err != nil || title == "" {
+		return
+	}
+	meta.AutoTitlePending = false
+	if err = portal.Save(ctx); err != nil {
 		return
 	}
 	cl.queueRoomTitleUpdate(portal.PortalKey, title)
@@ -397,7 +399,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 			if event.Type == "turn_end" && event.Message != nil && event.Message.Role == "assistant" {
 				active.finalizeAssistant(ctx, cl, provider.ID, model.ID, *event.Message)
 				if event.Message.StopReason != ai.StopReasonError && event.Message.StopReason != ai.StopReasonAborted && !assistantMessageHasToolCalls(*event.Message) {
-					cl.generateSessionTitle(ctx, msg.Portal, agentSession, provider, model)
+					cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
 				}
 			}
 			return nil
@@ -619,6 +621,7 @@ func (cl *Client) HandleMatrixRoomName(ctx context.Context, msg *bridgev2.Matrix
 	msg.Portal.Name = name
 	msg.Portal.NameSet = name != ""
 	meta := portalMetadata(msg.Portal)
+	meta.AutoTitlePending = false
 	if meta.SessionID != "" {
 		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
 			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},

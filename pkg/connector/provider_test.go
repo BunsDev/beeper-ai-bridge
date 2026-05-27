@@ -132,6 +132,15 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	if !caps.TypingNotifications {
 		t.Fatalf("expected assistant typing notifications")
 	}
+	if caps.File[event.MsgAudio] == nil {
+		t.Fatalf("expected audio message support")
+	}
+	if caps.File[event.CapMsgVoice] == nil {
+		t.Fatalf("expected voice message support")
+	}
+	if caps.File[event.MsgFile] == nil || caps.File[event.MsgFile].MimeTypes["text/*"] != event.CapLevelFullySupported {
+		t.Fatalf("expected text file support, got %#v", caps.File[event.MsgFile])
+	}
 	for _, stateType := range []string{aiid.RoomToolsType, aiid.RoomModelType, aiid.RoomPromptType} {
 		if caps.State[stateType] == nil || caps.State[stateType].Level != event.CapLevelFullySupported {
 			t.Fatalf("expected %s state support, got %#v", stateType, caps.State[stateType])

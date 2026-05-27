@@ -11,6 +11,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 )
 
 func (cl *Client) GetContactList(ctx context.Context) ([]*bridgev2.ResolveIdentifierResponse, error) {
@@ -45,22 +46,42 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	}
 	name := defaultConversationTitle(provider, model)
 	roomType := database.RoomTypeDM
+	info := &bridgev2.ChatInfo{Name: &name, Type: &roomType, Members: aiChatMembers()}
+	meta := portalMetadata(portal)
+	meta.AutoTitlePending = true
 	if portal.MXID == "" {
-		if err = portal.CreateMatrixRoom(ctx, cl.UserLogin, &bridgev2.ChatInfo{Name: &name, Type: &roomType}); err != nil {
+		if err = portal.CreateMatrixRoom(ctx, cl.UserLogin, info); err != nil {
 			return nil, err
 		}
+	} else if err = portal.Save(ctx); err != nil {
+		return nil, err
 	}
 	if _, err = cl.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
 		return nil, err
 	}
 	return &bridgev2.CreateChatResponse{
-		PortalKey: portalKey,
-		Portal:    portal,
-		PortalInfo: &bridgev2.ChatInfo{
-			Name: &name,
-			Type: &roomType,
-		},
+		PortalKey:      portalKey,
+		Portal:         portal,
+		PortalInfo:     info,
+		DMRedirectedTo: aiid.AssistantUserID(),
 	}, nil
+}
+
+func aiChatMembers() *bridgev2.ChatMemberList {
+	return &bridgev2.ChatMemberList{
+		IsFull:      true,
+		OtherUserID: aiid.AssistantUserID(),
+		MemberMap: bridgev2.ChatMemberMap{
+			"": {
+				EventSender: bridgev2.EventSender{IsFromMe: true},
+				Membership:  event.MembershipJoin,
+			},
+			aiid.AssistantUserID(): {
+				EventSender: bridgev2.EventSender{Sender: aiid.AssistantUserID()},
+				Membership:  event.MembershipJoin,
+			},
+		},
+	}
 }
 
 func newAIChatPortalKey(loginID networkid.UserLoginID) networkid.PortalKey {

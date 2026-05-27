@@ -32,6 +32,38 @@ var roomCaps = &event.RoomFeatures{
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: 20000,
 		},
+		event.MsgAudio: {
+			MimeTypes: map[string]event.CapabilitySupportLevel{
+				"*/*": event.CapLevelFullySupported,
+			},
+			MaxSize: 25 * 1024 * 1024,
+		},
+		event.CapMsgVoice: {
+			MimeTypes: map[string]event.CapabilitySupportLevel{
+				"*/*": event.CapLevelFullySupported,
+			},
+			MaxSize: 25 * 1024 * 1024,
+		},
+		event.MsgFile: {
+			MimeTypes: map[string]event.CapabilitySupportLevel{
+				"text/*":                    event.CapLevelFullySupported,
+				"application/json":          event.CapLevelFullySupported,
+				"application/ld+json":       event.CapLevelFullySupported,
+				"application/manifest+json": event.CapLevelFullySupported,
+				"application/x-ndjson":      event.CapLevelFullySupported,
+				"application/xml":           event.CapLevelFullySupported,
+				"application/xhtml+xml":     event.CapLevelFullySupported,
+				"application/yaml":          event.CapLevelFullySupported,
+				"application/x-yaml":        event.CapLevelFullySupported,
+				"application/toml":          event.CapLevelFullySupported,
+				"application/javascript":    event.CapLevelFullySupported,
+				"application/ecmascript":    event.CapLevelFullySupported,
+				"application/sql":           event.CapLevelFullySupported,
+			},
+			MaxSize:          512 * 1024,
+			Caption:          event.CapLevelFullySupported,
+			MaxCaptionLength: 20000,
+		},
 	},
 	State: event.StateFeatureMap{
 		aiid.RoomToolsType:                      {Level: event.CapLevelFullySupported},
