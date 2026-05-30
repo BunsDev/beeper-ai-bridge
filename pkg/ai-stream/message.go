@@ -172,31 +172,9 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 			messageID, _ := evt.Get("messageId").(string)
 			message := ensureReasoningMessage(messageID)
 			message.content.WriteString(asString(evt.Get("delta")))
-		case agui.EventReasoningMsgChunk:
-			if !includeReasoning {
-				continue
-			}
-			messageID, _ := evt.Get("messageId").(string)
-			if delta := asString(evt.Get("delta")); delta != "" {
-				message := ensureReasoningMessage(messageID)
-				message.content.WriteString(delta)
-			} else {
-				closeReasoningMessage(messageID)
-			}
 		case agui.EventReasoningMsgEnd:
 			messageID, _ := evt.Get("messageId").(string)
 			closeReasoningMessage(messageID)
-		case agui.EventReasoningEncrypted:
-			entityID, _ := evt.Get("entityId").(string)
-			encryptedValue, _ := evt.Get("encryptedValue").(string)
-			switch evt.Get("subtype") {
-			case "message":
-				ensureReasoningMessage(entityID).message.EncryptedValue = encryptedValue
-			case "tool-call":
-				if tool := toolCalls[entityID]; tool != nil {
-					tool.call.EncryptedValue = encryptedValue
-				}
-			}
 		case agui.EventToolCallStart:
 			toolCallID, _ := evt.Get("toolCallId").(string)
 			tool := ensureToolCall(toolCallID, evt)
@@ -216,19 +194,6 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 			if args := evt.Get("args"); args != nil {
 				tool.call.Function.Arguments = asString(jsonString(args))
 			}
-		case agui.EventToolCallChunk:
-			toolCallID, _ := evt.Get("toolCallId").(string)
-			tool := ensureToolCall(toolCallID, evt)
-			if tool == nil {
-				continue
-			}
-			if tool.call.Function.Name == "" {
-				tool.call.Function.Name = firstString(evt.Get("toolName"), evt.Get("toolCallName"))
-			}
-			if delta, _ := evt.Get("delta").(string); delta != "" {
-				tool.args.WriteString(delta)
-				tool.call.Function.Arguments = tool.args.String()
-			}
 		case agui.EventToolCallEnd:
 			toolCallID, _ := evt.Get("toolCallId").(string)
 			tool := ensureToolCall(toolCallID, evt)
@@ -243,13 +208,6 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 			message.content.WriteString(asString(evt.Get("content")))
 			if state, _ := evt.Get("state").(string); state == agui.ToolResultStateError {
 				message.message.Error = asString(evt.Get("error"))
-			}
-		case agui.EventActivitySnapshot:
-			messageID, _ := evt.Get("messageId").(string)
-			message := ensureMessage(messageID, "activity")
-			message.message.ActivityType = firstString(evt.Get("activityType"))
-			if content, ok := evt.Get("content").(map[string]any); ok {
-				message.message.Content = content
 			}
 		}
 	}
@@ -345,7 +303,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	textParts := map[string]*projectedPart{}
 	thinkingParts := map[string]*projectedPart{}
 	toolParts := map[string]MessagePart{}
-	activityParts := map[string]MessagePart{}
+	stepParts := map[string]MessagePart{}
 	currentTextMessageID := ""
 	openTextMessageID := ""
 	openTextPartID := ""
@@ -463,14 +421,16 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			}
 			ensureTextPart(messageID).content.WriteString(delta)
 		case agui.EventTextMessageChunk:
+			delta, _ := evt.Get("delta").(string)
+			if delta == "" {
+				continue
+			}
 			messageID, _ := evt.Get("messageId").(string)
 			if messageID == "" {
 				messageID = currentTextMessageID
 			}
 			currentTextMessageID = messageID
-			if delta, _ := evt.Get("delta").(string); delta != "" {
-				ensureTextPart(messageID).content.WriteString(delta)
-			}
+			ensureTextPart(messageID).content.WriteString(delta)
 		case agui.EventTextMessageEnd:
 			messageID, _ := evt.Get("messageId").(string)
 			closeTextPart(messageID)
@@ -490,16 +450,6 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			}
 			messageID, _ := evt.Get("messageId").(string)
 			ensureThinkingPart(messageID).content.WriteString(delta)
-		case agui.EventReasoningMsgChunk:
-			if !includeThinking {
-				continue
-			}
-			messageID, _ := evt.Get("messageId").(string)
-			if delta, _ := evt.Get("delta").(string); delta != "" {
-				ensureThinkingPart(messageID).content.WriteString(delta)
-			} else {
-				closeThinkingPart(messageID)
-			}
 		case agui.EventReasoningMsgEnd:
 			messageID, _ := evt.Get("messageId").(string)
 			closeThinkingPart(messageID)
@@ -536,18 +486,6 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			}
 			if args := evt.Get("args"); args != nil {
 				part["input"] = args
-			}
-		case agui.EventToolCallChunk:
-			toolCallID, _ := evt.Get("toolCallId").(string)
-			part := toolParts[toolCallID]
-			if part == nil {
-				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID, "arguments": ""})
-				toolParts[toolCallID] = part
-			}
-			part["name"] = firstString(part["name"], evt.Get("toolName"), evt.Get("toolCallName"))
-			part["state"] = firstString(evt.Get("state"), agui.ToolStateInputStreaming)
-			if delta, _ := evt.Get("delta").(string); delta != "" {
-				part["arguments"] = asString(part["arguments"]) + delta
 			}
 		case agui.EventToolCallEnd:
 			toolCallID, _ := evt.Get("toolCallId").(string)
@@ -625,44 +563,12 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 				state = agui.PartStateDone
 			}
 			id := fmt.Sprintf("%s:step:%s", messageID, stepName)
-			part := activityParts[id]
+			part := stepParts[id]
 			if part == nil {
-				part = appendPart(MessagePart{"type": "activity", "id": id, "messageId": messageID, "activityType": "step", "title": stepName})
-				activityParts[id] = part
+				part = appendPart(MessagePart{"type": "thinking", "id": id, "messageId": messageID, "content": stepName, "stepId": stepName})
+				stepParts[id] = part
 			}
 			part["state"] = state
-		case agui.EventActivitySnapshot:
-			messageID := firstString(evt.Get("messageId"), t.MessageID)
-			activityType := firstString(evt.Get("activityType"), "activity")
-			id := fmt.Sprintf("%s:%s:%s", messageID, activityType, activityType)
-			content := evt.Get("content")
-			title := activityType
-			if contentMap, ok := content.(map[string]any); ok {
-				title = firstString(contentMap["title"], contentMap["label"], contentMap["message"], contentMap["name"], activityType)
-			}
-			part := activityParts[id]
-			if part == nil {
-				part = appendPart(MessagePart{"type": "activity", "id": id, "messageId": messageID, "activityType": activityType})
-				activityParts[id] = part
-			}
-			part["title"] = title
-			part["state"] = "running"
-			if content != nil {
-				part["content"] = content
-			}
-		case agui.EventActivityDelta:
-			messageID := firstString(evt.Get("messageId"), t.MessageID)
-			activityType := firstString(evt.Get("activityType"), "activity")
-			id := fmt.Sprintf("%s:%s:%s", messageID, activityType, activityType)
-			part := activityParts[id]
-			if part == nil {
-				part = appendPart(MessagePart{"type": "activity", "id": id, "messageId": messageID, "activityType": activityType, "title": activityType})
-				activityParts[id] = part
-			}
-			part["state"] = "running"
-			if patch := evt.Get("patch"); patch != nil {
-				part["patches"] = patch
-			}
 		case agui.EventCustom:
 			name, _ := evt.Get("name").(string)
 			value, _ := evt.Get("value").(map[string]any)
@@ -704,7 +610,11 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 		compactTextPart(projected.part, textBudget)
 	}
 	for _, projected := range thinkingParts {
-		projected.part["content"] = projected.content.String()
+		content := projected.content.String()
+		if content == "" {
+			content = "Thinking..."
+		}
+		projected.part["content"] = content
 		compactTextPart(projected.part, textBudget)
 	}
 	return message
@@ -825,9 +735,7 @@ func isReasoningEventType(eventType string) bool {
 		agui.EventReasoningEnd,
 		agui.EventReasoningMsgStart,
 		agui.EventReasoningMsgCont,
-		agui.EventReasoningMsgEnd,
-		agui.EventReasoningMsgChunk,
-		agui.EventReasoningEncrypted:
+		agui.EventReasoningMsgEnd:
 		return true
 	default:
 		return false
@@ -836,8 +744,7 @@ func isReasoningEventType(eventType string) bool {
 
 func isNeutralEventType(eventType string) bool {
 	switch eventType {
-	case agui.EventRaw,
-		agui.EventStateSnapshot,
+	case agui.EventStateSnapshot,
 		agui.EventStateDelta,
 		agui.EventMessagesSnapshot,
 		agui.EventCustom:
@@ -855,7 +762,6 @@ func isActivityEventType(eventType string) bool {
 	case agui.EventToolCallStart,
 		agui.EventToolCallArgs,
 		agui.EventToolCallEnd,
-		agui.EventToolCallChunk,
 		agui.EventToolCallResult:
 		return true
 	default:

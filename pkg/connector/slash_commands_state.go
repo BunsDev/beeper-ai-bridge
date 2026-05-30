@@ -112,19 +112,15 @@ func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Port
 	if err != nil {
 		return eventID, err
 	}
-	cl.updateRoomModelProfile(ctx, portal, provider, model)
-	return eventID, nil
-}
-
-func (cl *Client) updateRoomModelProfile(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model) {
 	if cl == nil || cl.UserLogin == nil || portal == nil {
-		return
+		return eventID, nil
 	}
 	topic := modelRoomDescription(provider, model)
 	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{
 		Topic:  &topic,
 		Avatar: modelAvatar(provider, model),
 	}, cl.UserLogin, nil, time.Now())
+	return eventID, nil
 }
 
 func modelRoomDescription(provider aiid.ProviderConfig, model ai.Model) string {

@@ -97,11 +97,16 @@ func TestFinalContentIncludesFinalUIParts(t *testing.T) {
 		t.Fatalf("bad final preview content: %#v", content)
 	}
 	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if !ok || ai.Message == nil || len(ai.Message.Parts) != 2 || ai.Message.Parts[0]["type"] != "thinking" || ai.Message.Parts[1]["type"] != "text" {
-		t.Fatalf("final edit must include concrete UI parts: %#v", extra[aistream.BeeperAIKey])
+	if !ok || ai.Message == nil || len(ai.Message.Parts) != 0 || ai.Final == nil || ai.Final.Delivery != "segmented" {
+		t.Fatalf("final edit should keep parts out of the anchor payload: %#v", extra[aistream.BeeperAIKey])
 	}
-	if ai.Message.Parts[0]["content"] != "hidden reasoning" || ai.Message.Parts[1]["content"] == "" {
-		t.Fatalf("final edit must preserve reasoning and text parts: %#v", ai.Message.Parts)
+	projection := ProjectFinal(*run)
+	parts := collectFinalSegmentParts(projection.Segments)
+	if len(parts) != 2 || parts[0]["type"] != "thinking" || parts[1]["type"] != "text" {
+		t.Fatalf("final segments must include concrete UI parts: %#v", parts)
+	}
+	if parts[0]["content"] != "hidden reasoning" || parts[1]["content"] == "" {
+		t.Fatalf("final segments must preserve reasoning and text parts: %#v", parts)
 	}
 }
 
@@ -114,18 +119,76 @@ func TestFinalContentDoesNotTruncateUIParts(t *testing.T) {
 	writer.Finish(agui.FinishReasonStop)
 	expected := run.Text()
 
-	_, extra := FinalContent(*run)
+	projection := ProjectFinal(*run)
+	extra := projection.Extra
 	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if !ok || ai.Message == nil || len(ai.Message.Parts) == 0 {
+	if !ok || ai.Message == nil || ai.Final == nil || ai.Final.Delivery != "segmented" {
 		t.Fatalf("missing final UI message: %#v", extra[aistream.BeeperAIKey])
 	}
-	textPart := ai.Message.Parts[len(ai.Message.Parts)-1]
+	parts := collectFinalSegmentParts(projection.Segments)
+	if len(parts) == 0 {
+		t.Fatalf("missing final segment parts: %#v", projection.Segments)
+	}
+	textPart := parts[len(parts)-1]
 	if textPart["content"] != expected {
 		t.Fatalf("final UI text was truncated: got %d bytes want %d", len(textPart["content"].(string)), len(expected))
 	}
 	if metadata, ok := textPart["providerMetadata"]; ok {
 		t.Fatalf("final UI text should not be marked truncated: %#v", metadata)
 	}
+}
+
+func TestFinalProjectionPutsOverflowTextInHTMLOnlySegmentsBeforeParts(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text(strings.Repeat("Use **bold** text. ", 80))
+	writer.Finish(agui.FinishReasonStop)
+
+	_, segments, _ := projectFinal(*run, 4000)
+	if len(segments) < 2 || segments[0].Text == "" {
+		t.Fatalf("expected overflow text segment before final parts: %#v", segments)
+	}
+	content, _ := FinalSegmentContent(*run, segments[0], id.EventID("$anchor"))
+	if content.Body != "" || content.FormattedBody == "" || !strings.Contains(content.FormattedBody, "<strong>bold</strong>") {
+		t.Fatalf("overflow text segment should carry HTML without plain fallback: %#v", content)
+	}
+	for _, part := range segments[0].Message.Parts {
+		if part["type"] == "text" && part["content"] == run.Text() {
+			t.Fatalf("text segment should prefer Matrix HTML body before carrying final text parts: %#v", segments[0])
+		}
+	}
+}
+
+func TestFinalProjectionUsesEmptyBodyForPartOnlySegments(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Thinking("reasoning")
+	writer.Text("short")
+	writer.Finish(agui.FinishReasonStop)
+
+	projection := ProjectFinal(*run)
+	if len(projection.Segments) == 0 {
+		t.Fatal("expected final parts to be delivered in segments")
+	}
+	for _, segment := range projection.Segments {
+		if segment.Text != "" {
+			t.Fatalf("short final text should fit the anchor, got text segment: %#v", segment)
+		}
+		content, _ := FinalSegmentContent(*run, segment, id.EventID("$anchor"))
+		if content.Body != "" || content.FormattedBody != "" {
+			t.Fatalf("part-only final segment should have empty Matrix body: %#v", content)
+		}
+	}
+}
+
+func collectFinalSegmentParts(segments []aistream.FinalSegment) []aistream.MessagePart {
+	var parts []aistream.MessagePart
+	for _, segment := range segments {
+		parts = append(parts, segment.Message.Parts...)
+	}
+	return parts
 }
 
 func TestCarrierContentIsHiddenTextCarrierWithEvents(t *testing.T) {

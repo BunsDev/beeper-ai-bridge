@@ -352,7 +352,9 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	if err = portal.Save(ctx); err != nil {
 		return
 	}
-	cl.queueRoomTitleUpdate(portal.PortalKey, title)
+	if cl != nil && cl.UserLogin != nil {
+		portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &title}, cl.UserLogin, nil, time.Now())
+	}
 }
 
 func (cl *Client) titleGenerationModel(provider aiid.ProviderConfig, fallback ai.Model) ai.Model {
@@ -375,25 +377,6 @@ func titleGenerationModelID(provider aiid.ProviderConfig) string {
 	default:
 		return ""
 	}
-}
-
-func (cl *Client) queueRoomTitleUpdate(portalKey networkid.PortalKey, title string) {
-	if cl == nil || cl.UserLogin == nil || title == "" {
-		return
-	}
-	cl.UserLogin.QueueRemoteEvent(&simplevent.ChatInfoChange{
-		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventChatInfoChange,
-			PortalKey: portalKey,
-			Sender: bridgev2.EventSender{
-				Sender: aiid.AssistantUserID(),
-			},
-			Timestamp: time.Now(),
-		},
-		ChatInfoChange: &bridgev2.ChatInfoChange{
-			ChatInfo: &bridgev2.ChatInfo{Name: &title},
-		},
-	})
 }
 
 func (cl *Client) queueAssistantTyping(portalKey networkid.PortalKey, timeout time.Duration) {
@@ -450,9 +433,6 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 		if event.Type != "tool_execution_end" || event.AgentEvent == nil || event.AgentEvent.ToolCallID == "" {
 			if event.Type == "turn_end" && event.Message != nil && event.Message.Role == "assistant" {
 				active.finalizeAssistant(ctx, cl, provider.ID, model.ID, *event.Message)
-				if event.Message.StopReason != ai.StopReasonError && event.Message.StopReason != ai.StopReasonAborted && !assistantMessageHasToolCalls(*event.Message) {
-					cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
-				}
 			}
 			return nil
 		}
@@ -503,6 +483,9 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 	portalMeta.LastRunID = active.lastRunID()
 	_ = msg.Portal.Save(ctx)
+	if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted && !assistantMessageHasToolCalls(assistantMessage) {
+		cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
+	}
 }
 
 func (cl *Client) preparePendingAIMessage(ctx context.Context, msg *bridgev2.MatrixMessage, prompt msgconv.MatrixPrompt, providerID string, modelID string, runID string, replyTo *networkid.MessageOptionalPartID) *pendingAIMessage {
@@ -635,14 +618,15 @@ func (cl *Client) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.M
 		return nil
 	}
 	active := cl.getActiveRun(msg.Portal.PortalKey)
+	if active == nil || !active.matchesRedactionTarget(msg.TargetMessage) {
+		return nil
+	}
 	h := cl.getActiveHarness(msg.Portal.PortalKey)
 	if h == nil {
 		return nil
 	}
 	_, err := h.Abort(ctx)
-	if active != nil {
-		active.failAll(ctx, cl, fmt.Errorf("AI run aborted"))
-	}
+	active.failAll(ctx, cl, fmt.Errorf("AI run aborted"))
 	return err
 }
 
@@ -746,11 +730,20 @@ func finalizedAssistantRun(run aistream.Run, message ai.Message) aistream.Run {
 	} else if run.Status.State == "streaming" {
 		run.Status = aistream.Status{State: "complete", FinishReason: aguiFinishReasonFromAI(message.StopReason)}
 	}
-	run.Usage = aguiUsage(message.Usage)
+	if isZeroAGUIUsage(run.Usage) {
+		run.Usage = aguiUsage(message.Usage)
+	}
 	if run.Preview.Text == "" {
 		run.Preview = aistream.PreviewFromText(msgconv.AssistantText(message), aistream.PreviewBudgetBytes)
 	}
 	return run
+}
+
+func isZeroAGUIUsage(usage agui.Usage) bool {
+	return usage.PromptTokens == 0 &&
+		usage.CompletionTokens == 0 &&
+		usage.ReasoningTokens == 0 &&
+		usage.TotalTokens == 0
 }
 
 func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
@@ -1263,20 +1256,6 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 	if writer == nil {
 		return
 	}
-	annotateLast := func() {
-		if evt.RawEvent == nil || writer.Run == nil || len(writer.Run.Events) == 0 {
-			return
-		}
-		writer.Run.Events[len(writer.Run.Events)-1].Set("rawEvent", evt.RawEvent)
-		if evt.RawSource != "" {
-			writer.Run.Events[len(writer.Run.Events)-1].Set("rawSource", evt.RawSource)
-		}
-	}
-	annotateIfAdded := func(before int) {
-		if writer.Run != nil && len(writer.Run.Events) > before {
-			annotateLast()
-		}
-	}
 	toolCallFromEvent := func() *ai.ToolCall {
 		if evt.ToolCall != nil {
 			return evt.ToolCall
@@ -1294,86 +1273,54 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 		}
 		return &ai.ToolCall{Type: "toolCall", ID: block.ID, Name: block.Name, Arguments: block.Arguments, ThoughtSignature: block.ThoughtSignature}
 	}
-	thinkingSignatureFromEvent := func() string {
-		if evt.Partial == nil || evt.ContentIndex < 0 {
-			return ""
-		}
-		blocks := aiContentBlocks(evt.Partial.Content)
-		if evt.ContentIndex >= len(blocks) {
-			return ""
-		}
-		block := blocks[evt.ContentIndex]
-		if block.Type != "thinking" {
-			return ""
-		}
-		return block.ThinkingSignature
-	}
 	switch evt.Type {
 	case "text_start":
-		before := len(writer.Run.Events)
 		writer.TextStart(evt.ContentIndex)
-		annotateIfAdded(before)
 	case "text_delta":
-		before := len(writer.Run.Events)
 		writer.TextDelta(evt.ContentIndex, evt.Delta)
-		annotateIfAdded(before)
 	case "text_end":
-		before := len(writer.Run.Events)
 		writer.TextEnd(evt.ContentIndex)
-		annotateIfAdded(before)
 	case "thinking_start":
-		before := len(writer.Run.Events)
 		writer.ReasoningMessageStart(evt.ContentIndex)
-		annotateIfAdded(before)
 	case "thinking_delta":
-		before := len(writer.Run.Events)
 		writer.ReasoningDelta(evt.ContentIndex, evt.Delta)
-		annotateIfAdded(before)
 	case "thinking_end":
-		before := len(writer.Run.Events)
 		writer.ReasoningMessageEnd(evt.ContentIndex)
-		if signature := thinkingSignatureFromEvent(); signature != "" {
-			writer.ReasoningEncryptedValue(evt.ContentIndex, signature)
-		}
-		annotateIfAdded(before)
 	case "toolcall_start":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
 			writer.ToolStart(toolCall.ID, toolCall.Name, evt.ContentIndex, nil)
-			annotateLast()
 		}
 	case "toolcall_delta":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
 			writer.ToolArgs(toolCall.ID, evt.Delta, toolCall.Arguments)
-			annotateLast()
 		}
 	case "toolcall_end":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
-			writer.ToolEnd(toolCall.ID, toolCall.Name, toolCall.Arguments, nil)
-			writer.ToolEncryptedValue(toolCall.ID, toolCall.ThoughtSignature)
-			annotateLast()
+			writer.ToolInputComplete(toolCall.ID, toolCall.Name, toolCall.Arguments)
 		}
-	case "raw":
-		writer.Raw(evt.RawEvent, evt.RawSource)
 	case "custom":
 		if evt.CustomName != "" {
 			writer.Custom(evt.CustomName, evt.CustomValue)
-			annotateLast()
 		}
 	case "done":
 		if evt.Message != nil {
 			usage := aguiUsage(evt.Message.Usage)
-			writer.FinishWithUsage(aguiFinishReasonFromAI(evt.Reason), &usage)
+			if evt.Reason == ai.StopReasonToolUse {
+				writer.AwaitToolUseWithUsage(&usage)
+			} else {
+				writer.FinishWithUsage(aguiFinishReasonFromAI(evt.Reason), &usage)
+			}
+		} else if evt.Reason == ai.StopReasonToolUse {
+			writer.AwaitToolUseWithUsage(nil)
 		} else {
 			writer.Finish(aguiFinishReasonFromAI(evt.Reason))
 		}
-		annotateLast()
 	case "error":
 		message := "stream error"
 		if evt.Error != nil && evt.Error.ErrorMessage != "" {
 			message = evt.Error.ErrorMessage
 		}
 		writer.Error(message)
-		annotateLast()
 	}
 }
 
@@ -1622,6 +1569,30 @@ func (r *activeAIRun) removePending(pending *pendingAIMessage) {
 			return
 		}
 	}
+}
+
+func (r *activeAIRun) matchesRedactionTarget(target *database.Message) bool {
+	if r == nil || target == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, pending := range r.pending {
+		if pending != nil && networkid.MessageID("pending:"+string(pending.txnID)) == target.ID {
+			return true
+		}
+	}
+	for _, consumed := range r.consumed {
+		if consumed != nil && consumed.metadata != nil && consumed.metadata.SessionEntryID != "" && aiid.UserMessageID(consumed.metadata.SessionEntryID) == target.ID {
+			return true
+		}
+	}
+	for _, stream := range r.streams {
+		if stream != nil && stream.messageID == target.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *activeAIRun) replyTarget() *networkid.MessageOptionalPartID {

@@ -97,7 +97,7 @@ func aiChatMembers() *bridgev2.ChatMemberList {
 }
 
 func aiAssistantUserInfo() *bridgev2.UserInfo {
-	isBot := true
+	isBot := false
 	name := "AI"
 	return &bridgev2.UserInfo{
 		Name:   &name,

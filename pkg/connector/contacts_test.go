@@ -232,7 +232,7 @@ func TestNewAIChatPortalKeyCreatesFreshChatPortal(t *testing.T) {
 	}
 }
 
-func TestAIChatMembersUseGlobalAssistantGhost(t *testing.T) {
+func TestAIChatMembersUseGlobalAssistantGhostWithoutNetworkBotFlag(t *testing.T) {
 	members := aiChatMembers()
 	if members == nil || !members.IsFull || members.OtherUserID != aiid.AssistantUserID() {
 		t.Fatalf("unexpected AI chat members %#v", members)
@@ -244,6 +244,8 @@ func TestAIChatMembersUseGlobalAssistantGhost(t *testing.T) {
 		t.Fatalf("expected assistant ghost member, got %#v", members.MemberMap)
 	} else if member.UserInfo == nil || member.UserInfo.Avatar == nil || string(member.UserInfo.Avatar.MXC) != defaultAIAssistantAvatarMXC {
 		t.Fatalf("expected assistant ghost avatar %q, got %#v", defaultAIAssistantAvatarMXC, member.UserInfo)
+	} else if member.UserInfo.IsBot == nil || *member.UserInfo.IsBot {
+		t.Fatalf("expected assistant ghost to not be marked as a network bot, got %#v", member.UserInfo)
 	}
 }
 

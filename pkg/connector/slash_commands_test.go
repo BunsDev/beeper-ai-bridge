@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -132,6 +133,37 @@ func TestCommandResponseContentIsVisibleText(t *testing.T) {
 	}
 	if !strings.Contains(content.FormattedBody, "<code>/help [command]</code>") {
 		t.Fatalf("command response formatted body did not render command usage as HTML:\n%s", content.FormattedBody)
+	}
+}
+
+func TestCommandRejectedErrorSendsFailedStatusNoticeWithExactMessage(t *testing.T) {
+	text := `AI room settings rejected: reasoning level "invalidvalue" is invalid`
+	err := commandRejectedError(text)
+	var status bridgev2.MessageStatus
+	if !errors.As(err, &status) {
+		t.Fatalf("commandRejectedError did not return message status: %T", err)
+	}
+	if status.Status != event.MessageStatusFail {
+		t.Fatalf("status=%s, want %s", status.Status, event.MessageStatusFail)
+	}
+	if status.ErrorReason != event.MessageStatusUnsupported {
+		t.Fatalf("reason=%s, want %s", status.ErrorReason, event.MessageStatusUnsupported)
+	}
+	if !status.SendNotice || !status.IsCertain || !status.ErrorAsMessage {
+		t.Fatalf("status flags not set for visible exact notice: %#v", status)
+	}
+	info := &bridgev2.MessageStatusEventInfo{
+		RoomID:        "!room:example.com",
+		SourceEventID: "$event",
+		EventType:     event.EventMessage,
+	}
+	mss := status.ToMSSEvent(info)
+	if mss.Message != text || mss.InternalError != text {
+		t.Fatalf("message status did not expose exact error: message=%q internal=%q", mss.Message, mss.InternalError)
+	}
+	notice := status.ToNoticeEvent(info)
+	if notice.MsgType != event.MsgNotice || !strings.Contains(notice.Body, text) {
+		t.Fatalf("notice did not expose exact error: %#v", notice)
 	}
 }
 

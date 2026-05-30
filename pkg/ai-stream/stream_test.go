@@ -280,35 +280,89 @@ func TestFinalBeeperAIMessagePreservesInterleavedTextAndToolOrder(t *testing.T) 
 	}
 }
 
-func TestFinalBeeperAIMessageDoesNotSplitReasoningAroundRawEvents(t *testing.T) {
+func TestFinalBeeperAIMessagePreservesTextChunksAfterToolCalls(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
 	run.Events = append(run.Events,
 		builder.RunStarted("thread-1", "run-1"),
-		builder.ReasoningMessageStart("reasoning-1"),
-		builder.ReasoningMessageContent("reasoning-1", "I "),
-		builder.Raw(map[string]any{"type": "response.reasoning_text.delta"}, "openai"),
-		builder.ReasoningMessageContent("reasoning-1", "need "),
-		builder.Raw(map[string]any{"type": "response.reasoning_text.delta"}, "openai"),
-		builder.ReasoningMessageContent("reasoning-1", "context"),
-		builder.ReasoningMessageEnd("reasoning-1"),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "first "),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "text"),
+		builder.ToolCallStart(run.MessageID, "tool-1", "fetch", nil),
+		builder.ToolCallEnd("tool-1", "fetch", map[string]any{"query": "events"}, agui.ToolStateInputComplete),
+		builder.ToolCallResult("tool-tool-1", "tool-1", `{"ok":true}`, agui.ToolResultStateComplete, agui.RoleTool),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "second "),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "text"),
 		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
 	)
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	messages := run.Messages(false)
+	if len(messages) == 0 || messages[0].Content != "first textsecond text" {
+		t.Fatalf("final snapshot messages dropped text chunks: %#v", messages)
+	}
 
 	uiMessage := run.FinalBeeperAIMessage(0, true)
-	var thinkingParts []string
+	got := make([]string, 0, len(uiMessage.Parts))
 	for _, part := range uiMessage.Parts {
-		if part["type"] == "thinking" {
-			thinkingParts = append(thinkingParts, part["content"].(string))
+		switch part["type"] {
+		case "text":
+			got = append(got, fmt.Sprintf("text:%s", part["content"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["toolCallId"]))
 		}
 	}
-	if !reflect.DeepEqual(thinkingParts, []string{"I need context"}) {
-		t.Fatalf("raw events split reasoning chunks: %#v", uiMessage.Parts)
+	want := []string{
+		"text:first text",
+		"tool-call:tool-1",
+		"text:second text",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage text chunk order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
-func TestFinalBeeperAIMessagePreservesToolCallChunksAndActivities(t *testing.T) {
+func TestFinalBeeperAIMessageShowsHiddenReasoningInOrder(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.TextMessageContent(run.MessageID, "first text"),
+		builder.ToolCallStart(run.MessageID, "tool-1", "fetch", nil),
+		builder.ReasoningMessageStart(run.MessageID+"-reasoning-0"),
+		builder.ReasoningMessageEnd(run.MessageID+"-reasoning-0"),
+		builder.TextMessageContent(run.MessageID, "second text"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		switch part["type"] {
+		case "text", "thinking":
+			got = append(got, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["toolCallId"]))
+		}
+	}
+	want := []string{
+		"text:first text",
+		"tool-call:tool-1",
+		"thinking:Thinking...",
+		"text:second text",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final hidden reasoning order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessagePreservesStepsAsThinking(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
@@ -316,72 +370,19 @@ func TestFinalBeeperAIMessagePreservesToolCallChunksAndActivities(t *testing.T) 
 		builder.RunStarted("thread-1", "run-1"),
 		builder.StepStarted(run.MessageID, "Search docs"),
 		builder.StepFinished(run.MessageID, "Search docs"),
-		builder.ActivitySnapshot(run.MessageID, "planning", map[string]any{"title": "Planning answer"}, nil),
-		builder.ToolCallChunk("tool-1", "search", run.MessageID, `{"query":"docs"}`),
 		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
 	)
 
 	uiMessage := run.FinalBeeperAIMessage(0, true)
 	got := make([]string, 0, len(uiMessage.Parts))
 	for _, part := range uiMessage.Parts {
-		switch part["type"] {
-		case "activity":
-			got = append(got, fmt.Sprintf("activity:%s:%s", part["title"], part["state"]))
-		case "tool-call":
-			got = append(got, fmt.Sprintf("tool-call:%s", part["arguments"]))
+		if part["type"] == "thinking" {
+			got = append(got, fmt.Sprintf("thinking:%s:%s:%s", part["stepId"], part["content"], part["state"]))
 		}
 	}
-	want := []string{
-		"activity:Search docs:done",
-		"activity:Planning answer:running",
-		`tool-call:{"query":"docs"}`,
-	}
+	want := []string{"thinking:Search docs:Search docs:done"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("final UIMessage visible activity mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
-	}
-}
-
-func TestPackRunPreservesLargeOpaqueStreamEvents(t *testing.T) {
-	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
-	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
-	run.Events = append(run.Events, builder.Custom("com.beeper.debug", map[string]any{"ok": true}))
-	run.Events[0].Set("rawEvent", strings.Repeat("x", FinalMessageBudgetBytes))
-
-	carriers, err := PackRun(*run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	part := carriers[0].Envelopes[0].Event
-	if part.Get("rawEventTruncated") != nil {
-		t.Fatalf("stream packing must not truncate rawEvent: %#v", part)
-	}
-	if got, _ := part.Get("rawEvent").(string); len(got) != FinalMessageBudgetBytes {
-		t.Fatalf("rawEvent length = %d", len(got))
-	}
-}
-
-func TestPackRunPreservesLargeRawAGUIEvent(t *testing.T) {
-	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
-	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
-	run.Events = append(run.Events, builder.Raw(map[string]any{
-		"type": "response.large",
-		"data": strings.Repeat("x", FinalMessageBudgetBytes),
-	}, "openai"))
-
-	carriers, err := PackRun(*run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	part := carriers[0].Envelopes[0].Event
-	if part.Get("rawEventTruncated") != nil {
-		t.Fatalf("stream packing must not truncate raw AG-UI event: %#v", part)
-	}
-	raw, ok := part.Get("event").(map[string]any)
-	if !ok {
-		t.Fatalf("missing raw event payload: %#v", part)
-	}
-	if got, _ := raw["data"].(string); len(got) != FinalMessageBudgetBytes {
-		t.Fatalf("raw event data length = %d", len(got))
+		t.Fatalf("final UIMessage step mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
@@ -791,6 +792,81 @@ func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
 	if segments[0].Metadata.Count != 2 || segments[1].Metadata.Count != 2 || segments[1].Metadata.Index != 1 {
 		t.Fatalf("bad segment metadata: %#v %#v", segments[0].Metadata, segments[1].Metadata)
 	}
+}
+
+func TestFinalSegmentsFragmentOversizedNonContentPart(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	message := UIMessage{
+		ID:   run.MessageID,
+		Role: "assistant",
+		Parts: []MessagePart{
+			{"type": "text", "id": "text-1", "content": "before"},
+			{
+				"type":       "tool-call",
+				"id":         "tool-1",
+				"toolCallId": "tool-1",
+				"name":       "search",
+				"state":      "input-complete",
+				"output": map[string]any{
+					"state":  "complete",
+					"status": "success",
+					"value":  strings.Repeat("x", 5000),
+				},
+			},
+			{"type": "text", "id": "text-2", "content": "after"},
+		},
+	}
+	budget := 1500
+	segments := packFinalSegments(*run, message, message.Parts, budget)
+	assignFinalSegmentMetadata(*run, segments)
+
+	var packedParts []MessagePart
+	for _, segment := range segments {
+		if size := finalSegmentPayloadSize(*run, message, segment.Message.Parts, segment.Metadata); size > budget {
+			t.Fatalf("segment payload exceeded budget: size=%d budget=%d parts=%#v", size, budget, segment.Message.Parts)
+		}
+		packedParts = append(packedParts, segment.Message.Parts...)
+	}
+
+	reassembled := reassembleFinalPartFragmentsForTest(t, packedParts)
+	if len(reassembled) != len(message.Parts) {
+		t.Fatalf("reassembled part count = %d, want %d: %#v", len(reassembled), len(message.Parts), reassembled)
+	}
+	tool, _ := reassembled[1]["output"].(map[string]any)
+	if got, _ := tool["value"].(string); len(got) != 5000 {
+		t.Fatalf("tool output was not preserved after fragmentation: %d", len(got))
+	}
+	if reassembled[0]["content"] != "before" || reassembled[2]["content"] != "after" {
+		t.Fatalf("surrounding part order changed: %#v", reassembled)
+	}
+}
+
+func reassembleFinalPartFragmentsForTest(t *testing.T, parts []MessagePart) []MessagePart {
+	t.Helper()
+	out := make([]MessagePart, 0, len(parts))
+	for index := 0; index < len(parts); {
+		part := parts[index]
+		if part["type"] != finalPartFragmentType {
+			out = append(out, part)
+			index++
+			continue
+		}
+		fragmentCount, _ := part["fragmentCount"].(int)
+		chunks := make([]string, fragmentCount)
+		for i := 0; i < fragmentCount; i++ {
+			fragment := parts[index+i]
+			fragmentIndex, _ := fragment["fragmentIndex"].(int)
+			chunks[fragmentIndex], _ = fragment["data"].(string)
+		}
+		var decoded MessagePart
+		if err := json.Unmarshal([]byte(strings.Join(chunks, "")), &decoded); err != nil {
+			t.Fatalf("failed to reassemble fragment: %v", err)
+		}
+		out = append(out, decoded)
+		index += fragmentCount
+	}
+	return out
 }
 
 func TestApprovalResponseClearsResolvedInterrupt(t *testing.T) {

@@ -137,10 +137,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	if err := def.run(cl, ctx, msg.Portal, roomConfig, cmd.arg, responder); err != nil {
 		if def.noticeErrors {
 			cl.logAISlashCommandError(ctx, msg, cmd, err, "AI slash command rejected")
-			if noticeErr := responder.Reply(ctx, err.Error()); noticeErr != nil {
-				return nil, true, noticeErr
-			}
-			return cl.commandHandledResponse(msg, "rejected"), true, nil
+			return nil, true, commandRejectedError(err.Error())
 		}
 		return nil, true, err
 	}

@@ -74,6 +74,7 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 				Role:       "assistant",
 				Content:    []ai.ContentBlock{{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments}},
 				StopReason: ai.StopReasonToolUse,
+				Usage:      ai.Usage{Input: 10, Output: 1, ReasoningTokens: 2, TotalTokens: 11},
 			}
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: toolCall})
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ToolCall: toolCall})
@@ -84,7 +85,12 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
 		stream := ai.NewAssistantMessageEventStream()
 		go func() {
-			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "hello"}}, StopReason: ai.StopReasonStop}
+			message := ai.Message{
+				Role:       "assistant",
+				Content:    []ai.ContentBlock{{Type: "text", Text: "hello"}},
+				StopReason: ai.StopReasonStop,
+				Usage:      ai.Usage{Input: 3, Output: 2, ReasoningTokens: 1, TotalTokens: 5},
+			}
 			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "hello"})
 			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
 		}()
@@ -103,6 +109,14 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	if toolResult.StopReason != ai.StopReasonToolUse {
 		t.Fatalf("unexpected tool stream result %#v", toolResult)
 	}
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventRunFinished {
+			t.Fatalf("tool-use provider stop must not finish a continued AG-UI run: %#v", run.Events)
+		}
+		if evt.Type() == agui.EventToolCallResult {
+			t.Fatalf("provider toolcall_end must not emit a tool result before the tool runs: %#v", run.Events)
+		}
+	}
 	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
 	if answerResult.StopReason != ai.StopReasonStop {
 		t.Fatalf("unexpected answer stream result %#v", answerResult)
@@ -117,6 +131,18 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	if runStarted != 1 {
 		t.Fatalf("expected one run start event, got %d in %#v", runStarted, run.Events)
 	}
+	runFinished := 0
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventRunFinished {
+			runFinished++
+		}
+	}
+	if runFinished != 1 {
+		t.Fatalf("expected one terminal run finish after continuation, got %d in %#v", runFinished, run.Events)
+	}
+	if run.Usage != (agui.Usage{PromptTokens: 13, CompletionTokens: 3, ReasoningTokens: 3, TotalTokens: 16}) {
+		t.Fatalf("continued run usage was not accumulated: %#v", run.Usage)
+	}
 	message := run.FinalBeeperAIMessage(0, true)
 	if message.ID != "assistant:run" || len(message.Parts) != 2 {
 		t.Fatalf("expected one assistant UI message with text and tool parts, got %#v", message)
@@ -126,6 +152,22 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	}
 	if message.Parts[1]["type"] != "text" || message.Parts[1]["content"] != "hello" {
 		t.Fatalf("expected final answer text after tool call, got %#v", message.Parts)
+	}
+}
+
+func TestFinalizedAssistantRunPreservesAccumulatedStreamUsage(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.Usage = agui.Usage{PromptTokens: 13, CompletionTokens: 3, ReasoningTokens: 3, TotalTokens: 16}
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: ai.StopReasonStop,
+		Usage:      ai.Usage{Input: 3, Output: 2, ReasoningTokens: 1, TotalTokens: 5},
+	}
+
+	final := finalizedAssistantRun(run, message)
+	if final.Usage != run.Usage {
+		t.Fatalf("finalization overwrote accumulated usage: got %#v want %#v", final.Usage, run.Usage)
 	}
 }
 
@@ -384,7 +426,7 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 	}
 }
 
-func TestApplyAIStreamEventPublishesReasoningSignaturesToAGUI(t *testing.T) {
+func TestApplyAIStreamEventDoesNotPublishReasoningSignaturesToAGUI(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	writer := aistream.NewWriter(run, timeNow)
 	partial := &ai.Message{
@@ -400,30 +442,22 @@ func TestApplyAIStreamEventPublishesReasoningSignaturesToAGUI(t *testing.T) {
 	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "hidden continuity", Partial: partial})
 	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "hidden continuity", Partial: partial})
 
-	var encrypted agui.Event
 	for _, evt := range run.Events {
 		if evt.Type() == agui.EventReasoningEncrypted {
-			encrypted = evt
-			break
+			t.Fatalf("reasoning signatures must not be published as AG-UI events: %#v", run.Events)
 		}
-	}
-	if encrypted.Len() == 0 || encrypted.Get("subtype") != "message" || encrypted.Get("encryptedValue") != "opaque-reasoning-state" {
-		t.Fatalf("missing reasoning encrypted value event: %#v", run.Events)
 	}
 }
 
-func TestApplyAIStreamEventPublishesRawProviderEvent(t *testing.T) {
+func TestApplyAIStreamEventIgnoresRawProviderEvent(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	writer := aistream.NewWriter(run, timeNow)
 	raw := map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-1"}}
 
 	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "raw", RawEvent: raw, RawSource: "openai"})
 
-	if len(run.Events) != 1 || run.Events[0].Type() != agui.EventRaw || run.Events[0].Get("source") != "openai" {
-		t.Fatalf("expected AG-UI RAW event, got %#v", run.Events)
-	}
-	if event, ok := run.Events[0].Get("event").(map[string]any); !ok || event["type"] != "response.created" {
-		t.Fatalf("raw provider event was not preserved: %#v", run.Events[0])
+	if len(run.Events) != 0 {
+		t.Fatalf("raw provider events must not be published as AG-UI events: %#v", run.Events)
 	}
 }
 

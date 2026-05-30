@@ -104,6 +104,52 @@ func TestGetChatInfoIncludesStoredRoomInfo(t *testing.T) {
 	}
 }
 
+func TestNetworkCapabilitiesEnableDisappearingMessages(t *testing.T) {
+	caps := (&Connector{}).GetCapabilities()
+	if caps == nil || !caps.DisappearingMessages {
+		t.Fatalf("expected disappearing message loop to be enabled, got %#v", caps)
+	}
+}
+
+func TestActiveRunMatchesOnlyCurrentRedactionTargets(t *testing.T) {
+	run := &activeAIRun{
+		pending: []*pendingAIMessage{{
+			txnID: networkid.TransactionID("$pending"),
+		}},
+		consumed: []*pendingAIMessage{{
+			metadata: &aiid.MessageMetadata{SessionEntryID: "user-entry"},
+		}},
+		streams: []*assistantStreamState{{
+			messageID: networkid.MessageID("assistant:active"),
+		}},
+		last: &assistantStreamState{
+			messageID: networkid.MessageID("assistant:finished"),
+		},
+	}
+
+	for _, messageID := range []networkid.MessageID{
+		"pending:$pending",
+		aiid.UserMessageID("user-entry"),
+		"assistant:active",
+	} {
+		if !run.matchesRedactionTarget(&database.Message{ID: messageID}) {
+			t.Fatalf("expected active run to match redaction target %q", messageID)
+		}
+	}
+	for _, messageID := range []networkid.MessageID{
+		"assistant:finished",
+		"assistant:historical",
+		"user:",
+	} {
+		if run.matchesRedactionTarget(&database.Message{ID: messageID}) {
+			t.Fatalf("did not expect active run to match redaction target %q", messageID)
+		}
+	}
+	if run.matchesRedactionTarget(nil) {
+		t.Fatalf("nil target should not match")
+	}
+}
+
 func TestHandleMatrixRoomNameUpdatesPortalName(t *testing.T) {
 	ctx := context.Background()
 	rawDB, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "bridge.db"))

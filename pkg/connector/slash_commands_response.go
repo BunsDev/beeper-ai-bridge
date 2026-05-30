@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -64,6 +65,15 @@ func commandResponseContent(text string) *event.MessageEventContent {
 	content := format.RenderMarkdown(text, true, false)
 	content.EnsureHasHTML()
 	return &content
+}
+
+func commandRejectedError(text string) error {
+	return bridgev2.WrapErrorInStatus(errors.New(text)).
+		WithStatus(event.MessageStatusFail).
+		WithErrorReason(event.MessageStatusUnsupported).
+		WithErrorAsMessage().
+		WithIsCertain(true).
+		WithSendNotice(true)
 }
 
 func (cl *Client) commandHandledResponse(msg *bridgev2.MatrixMessage, status string) *bridgev2.MatrixMessageResponse {

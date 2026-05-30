@@ -118,6 +118,7 @@ func textFileFeatures() *event.FileFeatures {
 
 func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 	return &bridgev2.NetworkGeneralCapabilities{
+		DisappearingMessages: true,
 		Provisioning: bridgev2.ProvisioningCapabilities{
 			ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
 				CreateDM:       true,

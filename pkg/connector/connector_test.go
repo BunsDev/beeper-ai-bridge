@@ -28,3 +28,10 @@ func TestConnectorGetNameMatchesDesktopMetadata(t *testing.T) {
 		t.Fatalf("unexpected default command prefix %q", name.DefaultCommandPrefix)
 	}
 }
+
+func TestConnectorBridgeInfoVersions(t *testing.T) {
+	info, caps := (&Connector{}).GetBridgeInfoVersion()
+	if info != 1 || caps != 4 {
+		t.Fatalf("unexpected bridge info versions info=%d caps=%d", info, caps)
+	}
+}

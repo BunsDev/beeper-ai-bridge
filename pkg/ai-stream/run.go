@@ -290,18 +290,6 @@ func (w *Writer) ReasoningMessageEnd(index int) {
 	w.reasoningOpen[index] = false
 }
 
-func (w *Writer) ReasoningEncryptedValue(index int, encryptedValue string) {
-	if encryptedValue == "" {
-		return
-	}
-	w.initState()
-	messageID := w.reasoningMessages[index]
-	if messageID == "" {
-		messageID = w.ReasoningMessageStart(index)
-	}
-	w.Add(w.builder.ReasoningEncryptedValue("message", messageID, encryptedValue))
-}
-
 func (w *Writer) StepStart(stepID string) {
 	w.Add(w.builder.StepStarted(w.Run.MessageID, stepID))
 }
@@ -316,8 +304,7 @@ func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApp
 
 func (w *Writer) ToolStartWithMetadata(toolCallID, name string, index int, approval *ToolApproval, metadata map[string]any) {
 	idx := index
-	parentMessageID := w.ensureTextMessage(0)
-	w.Add(w.builder.ToolCallStartWithMetadata(parentMessageID, toolCallID, name, &idx, metadata))
+	w.Add(w.builder.ToolCallStartWithMetadata(w.Run.MessageID, toolCallID, name, &idx, metadata))
 	if approval != nil {
 		w.recordApprovalRequest(toolCallID, name, approval)
 	}
@@ -355,13 +342,6 @@ func (w *Writer) ToolArgs(toolCallID, delta string, args any) {
 	w.Add(w.builder.ToolCallArgs(toolCallID, delta, args))
 }
 
-func (w *Writer) ToolEncryptedValue(toolCallID, encryptedValue string) {
-	if toolCallID == "" || encryptedValue == "" {
-		return
-	}
-	w.Add(w.builder.ReasoningEncryptedValue("tool-call", toolCallID, encryptedValue))
-}
-
 func (w *Writer) ToolEnd(toolCallID, name string, input, result any) {
 	if result == nil {
 		result = map[string]any{
@@ -374,6 +354,10 @@ func (w *Writer) ToolEnd(toolCallID, name string, input, result any) {
 }
 
 func (w *Writer) ToolApprovalInputComplete(toolCallID, name string, input any) {
+	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
+}
+
+func (w *Writer) ToolInputComplete(toolCallID, name string, input any) {
 	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
 }
 
@@ -424,14 +408,6 @@ func (w *Writer) ToolDenied(toolCallID, name string, input any, approvalID, reas
 	w.ToolResult(toolCallID, asString(jsonString(DeniedApprovalToolResult(approvalID, reason))), agui.ToolResultStateError)
 }
 
-func (w *Writer) StateSnapshot(state map[string]any) {
-	w.Add(w.builder.StateSnapshot(state))
-}
-
-func (w *Writer) StateDelta(delta any) {
-	w.Add(w.builder.StateDelta(delta))
-}
-
 func (w *Writer) MessagesSnapshot(messages []agui.Message) {
 	w.Add(w.builder.MessagesSnapshot(messages))
 }
@@ -440,31 +416,25 @@ func (w *Writer) Custom(name string, value any) {
 	w.Add(w.builder.Custom(name, value))
 }
 
-func (w *Writer) Raw(event any, source string) {
-	w.Add(w.builder.Raw(event, source))
-}
-
 func (w *Writer) Finish(reason string) {
 	w.FinishWithUsage(reason, nil)
 }
 
 func (w *Writer) FinishWithUsage(reason string, usage *agui.Usage) {
 	reason = agui.NormalizeFinishReason(reason)
-	text := w.Run.Text()
 	w.finishReasoning()
 	w.finishText()
-	if usage != nil {
-		w.Run.Usage = *usage
-	} else {
-		w.Run.Usage = agui.Usage{
-			PromptTokens:     1,
-			CompletionTokens: utf8.RuneCountInString(text),
-			TotalTokens:      utf8.RuneCountInString(text) + 1,
-		}
-	}
+	w.addUsage(usage)
 	w.Run.Status = Status{State: "complete", FinishReason: reason}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunFinished(w.Run.ThreadID, w.Run.RunID, reason, w.Run.Usage))
+}
+
+func (w *Writer) AwaitToolUseWithUsage(usage *agui.Usage) {
+	w.finishReasoning()
+	w.finishText()
+	w.addUsage(usage)
+	w.Run.Status = Status{State: "streaming"}
 }
 
 func (w *Writer) Interrupt() {
@@ -476,18 +446,9 @@ func (w *Writer) InterruptWithUsage(usage *agui.Usage) {
 		w.FinishWithUsage(agui.FinishReasonStop, usage)
 		return
 	}
-	text := w.Run.Text()
 	w.finishReasoning()
 	w.finishText()
-	if usage != nil {
-		w.Run.Usage = *usage
-	} else {
-		w.Run.Usage = agui.Usage{
-			PromptTokens:     1,
-			CompletionTokens: utf8.RuneCountInString(text),
-			TotalTokens:      utf8.RuneCountInString(text) + 1,
-		}
-	}
+	w.addUsage(usage)
 	w.Run.Status = Status{State: "interrupted", FinishReason: agui.FinishReasonToolCalls}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunFinishedWithOutcome(
@@ -497,6 +458,21 @@ func (w *Writer) InterruptWithUsage(usage *agui.Usage) {
 		w.Run.Usage,
 		agui.RunFinishedOutcome{Type: agui.OutcomeInterrupt, Interrupts: append([]agui.Interrupt(nil), w.Run.Interrupts...)},
 	))
+}
+
+func (w *Writer) addUsage(usage *agui.Usage) {
+	if usage == nil {
+		text := w.Run.Text()
+		usage = &agui.Usage{
+			PromptTokens:     1,
+			CompletionTokens: utf8.RuneCountInString(text),
+			TotalTokens:      utf8.RuneCountInString(text) + 1,
+		}
+	}
+	w.Run.Usage.PromptTokens += usage.PromptTokens
+	w.Run.Usage.CompletionTokens += usage.CompletionTokens
+	w.Run.Usage.ReasoningTokens += usage.ReasoningTokens
+	w.Run.Usage.TotalTokens += usage.TotalTokens
 }
 
 func (w *Writer) Error(message string) {

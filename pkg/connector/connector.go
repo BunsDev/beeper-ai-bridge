@@ -81,7 +81,7 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 }
 
 func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 3
+	return 1, 4
 }
 
 func (c *Connector) defaultProviderConfig(userMXID id.UserID) aiid.ProviderConfig {
