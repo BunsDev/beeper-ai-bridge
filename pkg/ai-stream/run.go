@@ -100,6 +100,7 @@ type RunError struct {
 type FinalDelivery struct {
 	Delivery     string `json:"delivery"`
 	SegmentCount int    `json:"segmentCount"`
+	TextComplete *bool  `json:"textComplete,omitempty"`
 }
 
 func terminalOutcome(status Status, interrupts []agui.Interrupt) any {
@@ -473,6 +474,9 @@ func (w *Writer) addUsage(usage *agui.Usage) {
 	w.Run.Usage.CompletionTokens += usage.CompletionTokens
 	w.Run.Usage.ReasoningTokens += usage.ReasoningTokens
 	w.Run.Usage.TotalTokens += usage.TotalTokens
+	if usage.ContextLimit > w.Run.Usage.ContextLimit {
+		w.Run.Usage.ContextLimit = usage.ContextLimit
+	}
 }
 
 func (w *Writer) Error(message string) {

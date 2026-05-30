@@ -268,6 +268,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			Input:                item.inputModalities(),
 			ContextWindow:        item.contextWindow(),
 			MaxTokens:            item.maxTokens(),
+			BuiltInTools:         item.builtInTools(),
 		}
 		model = item.applyProviderRoute(model, provider)
 		models = append(models, normalizeProviderModel(model, provider))
@@ -335,6 +336,10 @@ type aiServicesModelEntry struct {
 			LevelMap     map[string]*string `json:"level_map"`
 			DefaultLevel string             `json:"default_level"`
 		} `json:"reasoning"`
+		Tools *struct {
+			Supported bool     `json:"supported"`
+			BuiltIn   []string `json:"built_in"`
+		} `json:"tools"`
 		Limits *struct {
 			ContextTokens int `json:"context_tokens"`
 			OutputTokens  int `json:"output_tokens"`
@@ -422,6 +427,13 @@ func (entry aiServicesModelEntry) maxTokens() int {
 
 func (entry aiServicesModelEntry) reasoning() bool {
 	return entry.Capabilities != nil && entry.Capabilities.Reasoning != nil && entry.Capabilities.Reasoning.Supported
+}
+
+func (entry aiServicesModelEntry) builtInTools() []string {
+	if entry.Capabilities == nil || entry.Capabilities.Tools == nil || !entry.Capabilities.Tools.Supported {
+		return nil
+	}
+	return append([]string(nil), entry.Capabilities.Tools.BuiltIn...)
 }
 
 func (entry aiServicesModelEntry) thinkingLevelMap() map[ai.ModelThinkingLevel]*string {

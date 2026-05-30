@@ -5,8 +5,11 @@ import (
 	"fmt"
 )
 
-const FinalMessageBudgetBytes = 64 * 1024
-const finalPartFragmentType = "data-com-beeper-final-part-fragment"
+// Matrix encrypted event content expands the cleartext message, so keep the
+// cleartext final projection low enough to land near a 60 KiB encrypted event.
+const FinalMessageBudgetBytes = 45 * 1024
+const FinalPartFragmentType = "data-com-beeper-final-part-fragment"
+const finalPartFragmentType = FinalPartFragmentType
 
 type FinalSegmentMetadata struct {
 	RunID     string `json:"runId"`

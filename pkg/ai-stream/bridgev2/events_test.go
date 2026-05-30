@@ -148,7 +148,7 @@ func TestFinalSegmentsUseMonotonicStreamOrder(t *testing.T) {
 	now := time.Unix(10, 0)
 	run := aistream.NewRun("run-1", "thread-1", "", "ai", "AI", now)
 	writer := aistream.NewWriter(run, func() time.Time { return now })
-	writer.Text(strings.Repeat("a", 70*1024))
+	writer.Text(strings.Repeat("a", 200*1024))
 	writer.Finish(agui.FinishReasonStop)
 
 	segments := FinalSegments(

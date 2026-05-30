@@ -56,6 +56,8 @@ func aguiFinishReasonFromAI(reason ai.StopReason) string {
 		return agui.FinishReasonLength
 	case ai.StopReasonToolUse:
 		return agui.FinishReasonToolCalls
+	case ai.StopReasonAborted:
+		return agui.FinishReasonCancelled
 	default:
 		return agui.FinishReasonOther
 	}
@@ -317,6 +319,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		cl.markPendingFailed(ctx, pending, err)
 		return
 	}
+	cl.registerProviderBuiltInToolHooks(agentHarness, provider, model, prompt)
 	active := &activeAIRun{portalKey: msg.Portal.PortalKey, harness: agentHarness, provider: provider, model: model, runID: runID}
 	active.addPending(pending)
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)
@@ -743,7 +746,8 @@ func isZeroAGUIUsage(usage agui.Usage) bool {
 	return usage.PromptTokens == 0 &&
 		usage.CompletionTokens == 0 &&
 		usage.ReasoningTokens == 0 &&
-		usage.TotalTokens == 0
+		usage.TotalTokens == 0 &&
+		usage.ContextLimit == 0
 }
 
 func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
@@ -777,12 +781,12 @@ func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID n
 	}
 	run = finalizedAssistantRun(run, message)
 	projection := aimatrix.ProjectFinal(run)
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, runID, run, projection, metadata))
 	if targetEventID != "" {
 		for _, segment := range aibridgev2.FinalSegmentMessages(portalKey, aiid.AssistantUserID(), run, projection.Segments, targetEventID, time.Now()) {
 			cl.UserLogin.QueueRemoteEvent(segment)
 		}
 	}
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, runID, run, projection, metadata))
 }
 
 func (cl *Client) applyModelProfile(ctx context.Context, content *event.MessageEventContent, providerID string, modelID string) {
@@ -833,6 +837,7 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		messageID := aiid.AssistantMessageID(runID)
 		run := aistream.NewRun(runID, meta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID()), "AI", time.Now())
 		run.MessageID = string(messageID)
+		enrichAIRunMetadata(run, model, options)
 		descriptor, err := publisher.NewDescriptor(ctx, portal.MXID, aiid.StreamType)
 		if err != nil {
 			cl.logStreamError(err, portal.MXID, "", run, "Failed to create AI stream descriptor")
@@ -933,6 +938,7 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 		}
 		cursor.mu.Lock()
 		if !cursor.started {
+			enrichAIRunMetadata(run, model, options)
 			writer.Start()
 			cursor.started = true
 		}
@@ -953,7 +959,7 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 			for evt := range upstream.Events() {
 				cursor.mu.Lock()
 				beforeEvents := len(run.Events)
-				applyAIStreamEvent(writer, evt)
+				applyAIStreamEvent(writer, evt, model.ContextWindow)
 				afterEvents := len(run.Events)
 				maybeSecondVisibleChunk(evt)
 				if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
@@ -1016,7 +1022,7 @@ func (cl *Client) publishNewStreamEvents(ctx context.Context, publisher bridgev2
 		return err
 	}
 	for _, carrier := range carriers {
-		if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(partial, carrier.Envelopes)); err != nil {
+		if err := publisher.Publish(suppressStreamCarrierRequestLogs(ctx), roomID, eventID, aistream.CarrierContent(partial, carrier.Envelopes)); err != nil {
 			return err
 		}
 		cl.logStreamDebug(ctx, roomID, eventID, run, "Published AI stream carrier", func(logEvt *zerolog.Event) {
@@ -1030,6 +1036,15 @@ func (cl *Client) publishNewStreamEvents(ctx context.Context, publisher bridgev2
 	cursor.nextSeq = aistream.NextSeq(carriers)
 	cursor.published = len(run.Events)
 	return nil
+}
+
+func suppressStreamCarrierRequestLogs(ctx context.Context) context.Context {
+	log := zerolog.Ctx(ctx)
+	level := log.GetLevel()
+	if level >= zerolog.FatalLevel && level != zerolog.Disabled {
+		return ctx
+	}
+	return log.Level(zerolog.FatalLevel).WithContext(ctx)
 }
 
 func (cl *Client) logMatrixMessageError(msg *bridgev2.MatrixMessage, err error, message string) {
@@ -1252,7 +1267,7 @@ func carrierEventTypes(carrier aistream.Carrier) []string {
 	return types
 }
 
-func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
+func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, contextLimit ...int) {
 	if writer == nil {
 		return
 	}
@@ -1304,7 +1319,8 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 		}
 	case "done":
 		if evt.Message != nil {
-			usage := aguiUsage(evt.Message.Usage)
+			writeFinalTextFallback(writer, *evt.Message)
+			usage := aguiUsage(evt.Message.Usage, contextLimit...)
 			if evt.Reason == ai.StopReasonToolUse {
 				writer.AwaitToolUseWithUsage(&usage)
 			} else {
@@ -1321,6 +1337,16 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 			message = evt.Error.ErrorMessage
 		}
 		writer.Error(message)
+	}
+}
+
+func writeFinalTextFallback(writer *aistream.Writer, message ai.Message) {
+	if writer == nil || writer.Run == nil || writer.Run.Text() != "" {
+		return
+	}
+	if text := msgconv.AssistantText(message); text != "" {
+		writer.Text(text)
+		writer.TextEnd(0)
 	}
 }
 
@@ -1435,16 +1461,38 @@ func textFromBlocks(blocks []ai.ContentBlock) string {
 	return out
 }
 
-func aguiUsage(usage ai.Usage) agui.Usage {
+func aguiUsage(usage ai.Usage, contextLimit ...int) agui.Usage {
 	total := usage.TotalTokens
 	if total == 0 {
 		total = usage.Input + usage.Output
+	}
+	limit := 0
+	for _, value := range contextLimit {
+		if value > limit {
+			limit = value
+		}
 	}
 	return agui.Usage{
 		PromptTokens:     usage.Input,
 		CompletionTokens: usage.Output,
 		ReasoningTokens:  usage.ReasoningTokens,
 		TotalTokens:      total,
+		ContextLimit:     limit,
+	}
+}
+
+func enrichAIRunMetadata(run *aistream.Run, model ai.Model, options ai.SimpleStreamOptions) {
+	if run == nil {
+		return
+	}
+	if run.Data == nil {
+		run.Data = map[string]any{}
+	}
+	if options.Reasoning != nil && *options.Reasoning != "" {
+		run.Data["reasoning"] = string(*options.Reasoning)
+	}
+	if model.ContextWindow > 0 {
+		run.Data["contextLimit"] = model.ContextWindow
 	}
 }
 

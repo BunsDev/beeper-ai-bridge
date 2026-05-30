@@ -778,6 +778,10 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			output.Content = s.blocks
 			toolCall := ai.ToolCall{Type: "toolCall", ID: id, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+		case "image_generation_call":
+			s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
+			s.currentIndex = len(s.blocks) - 1
+			output.Content = s.blocks
 		}
 	case "response.reasoning_summary_part.added":
 		if s.currentItemType == "reasoning" {
@@ -856,7 +860,7 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 	case "response.output_item.done":
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
-		if s.currentIndex < 0 {
+		if s.currentIndex < 0 && itemType != "image_generation_call" {
 			return
 		}
 		switch itemType {
@@ -890,6 +894,15 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+			s.currentIndex = -1
+		case "image_generation_call":
+			if s.currentIndex < 0 || s.currentIndex >= len(s.blocks) || s.blocks[s.currentIndex].Type != "image" {
+				s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
+				s.currentIndex = len(s.blocks) - 1
+			} else {
+				s.blocks[s.currentIndex] = imageBlockFromGenerationItem(item, s.blocks[s.currentIndex])
+			}
+			output.Content = s.blocks
 			s.currentIndex = -1
 		}
 	case "response.completed":
@@ -952,6 +965,35 @@ func messageTextFromItem(item map[string]any) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func imageBlockFromGenerationItem(item map[string]any, fallback ai.ContentBlock) ai.ContentBlock {
+	block := fallback
+	block.Type = "image"
+	if block.MimeType == "" {
+		block.MimeType = "image/png"
+	}
+	if block.Name == "" {
+		block.Name = "image.png"
+	}
+	if id, ok := item["id"].(string); ok && id != "" {
+		block.ID = id
+	}
+	if result, ok := item["result"].(string); ok && result != "" {
+		block.MimeType, block.Data = normalizeGeneratedImageData(result, block.MimeType)
+	}
+	return block
+}
+
+func normalizeGeneratedImageData(data string, fallbackMime string) (string, string) {
+	if prefix, value, ok := strings.Cut(data, ","); ok && strings.Contains(prefix, ";base64") {
+		mimeType := strings.TrimPrefix(strings.Split(prefix, ";")[0], "data:")
+		if mimeType == "" {
+			mimeType = fallbackMime
+		}
+		return mimeType, value
+	}
+	return fallbackMime, data
 }
 
 func parseResponsesUsageMap(rawUsage map[string]any, model ai.Model) ai.Usage {

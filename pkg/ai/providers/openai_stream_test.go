@@ -214,6 +214,43 @@ func TestResponsesStreamStateStreamsTextDeltasWithoutContentPartPrelude(t *testi
 	}
 }
 
+func TestResponsesStreamStateFinalizesImageGenerationCall(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "image_generation_call", "id": "ig_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":   "image_generation_call",
+			"id":     "ig_1",
+			"status": "completed",
+			"result": "data:image/webp;base64,abc123",
+		},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":     "response.completed",
+		"response": map[string]any{"status": "completed"},
+	})
+
+	if len(state.blocks) != 1 {
+		t.Fatalf("expected image block, got %#v", state.blocks)
+	}
+	block := state.blocks[0]
+	if block.Type != "image" || block.ID != "ig_1" || block.MimeType != "image/webp" || block.Data != "abc123" {
+		t.Fatalf("unexpected image block: %#v", block)
+	}
+	if output.StopReason != ai.StopReasonStop {
+		t.Fatalf("expected stop reason, got %q", output.StopReason)
+	}
+}
+
 func TestResponsesStreamStateSeedsFunctionCallArgumentsFromAddedItem(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()

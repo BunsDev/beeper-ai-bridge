@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
@@ -168,6 +170,27 @@ func TestFinalizedAssistantRunPreservesAccumulatedStreamUsage(t *testing.T) {
 	final := finalizedAssistantRun(run, message)
 	if final.Usage != run.Usage {
 		t.Fatalf("finalization overwrote accumulated usage: got %#v want %#v", final.Usage, run.Usage)
+	}
+}
+
+func TestDoneEventAddsFinalTextWhenProviderDidNotStreamDeltas(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "final only"}},
+		StopReason: ai.StopReasonStop,
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	if got := len(uiMessage.Parts); got != 1 {
+		t.Fatalf("expected final text part, got %d parts: %#v", got, uiMessage.Parts)
+	}
+	if uiMessage.Parts[0]["type"] != "text" || uiMessage.Parts[0]["content"] != "final only" {
+		t.Fatalf("final-only provider text was not preserved as a UI part: %#v", uiMessage.Parts)
 	}
 }
 
@@ -375,9 +398,9 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 		Message: &ai.Message{
 			Usage: ai.Usage{Input: 10, Output: 5, ReasoningTokens: 4, TotalTokens: 15},
 		},
-	})
+	}, 400000)
 
-	want := agui.Usage{PromptTokens: 10, CompletionTokens: 5, ReasoningTokens: 4, TotalTokens: 15}
+	want := agui.Usage{PromptTokens: 10, CompletionTokens: 5, ReasoningTokens: 4, TotalTokens: 15, ContextLimit: 400000}
 	if run.Usage != want {
 		t.Fatalf("run usage = %#v, want %#v", run.Usage, want)
 	}
@@ -389,6 +412,12 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 	}
 	if finished != want {
 		t.Fatalf("RUN_FINISHED usage = %#v, want %#v", finished, want)
+	}
+}
+
+func TestAGUIFinishReasonFromAIMapsAbortedToCancelled(t *testing.T) {
+	if got := aguiFinishReasonFromAI(ai.StopReasonAborted); got != agui.FinishReasonCancelled {
+		t.Fatalf("aborted finish reason = %q, want %q", got, agui.FinishReasonCancelled)
 	}
 }
 
@@ -505,8 +534,31 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	}
 }
 
+func TestPublishNewStreamEventsSuppressesMautrixRequestBodyLogs(t *testing.T) {
+	logger := zerolog.New(io.Discard).Level(zerolog.DebugLevel)
+	ctx := logger.WithContext(context.Background())
+	publisher := &recordingStreamPublisher{}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.Text("hello")
+
+	err := (&Client{}).publishNewStreamEvents(ctx, publisher, "!room:example.com", "$event", run, &streamPublishCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.publishLogLevels) != 1 {
+		t.Fatalf("expected one stream publish, got %d", len(publisher.publishLogLevels))
+	}
+	if publisher.publishLogLevels[0] < zerolog.FatalLevel {
+		t.Fatalf("stream carrier publish should suppress mautrix request body logs, got level %s", publisher.publishLogLevels[0])
+	}
+}
+
 type recordingStreamPublisher struct {
-	updates []map[string]any
+	updates          []map[string]any
+	publishLogLevels []zerolog.Level
 }
 
 func (p *recordingStreamPublisher) NewDescriptor(ctx context.Context, roomID id.RoomID, streamType string) (*event.BeeperStreamInfo, error) {
@@ -519,6 +571,7 @@ func (p *recordingStreamPublisher) Register(ctx context.Context, roomID id.RoomI
 
 func (p *recordingStreamPublisher) Publish(ctx context.Context, roomID id.RoomID, eventID id.EventID, delta map[string]any) error {
 	p.updates = append(p.updates, delta)
+	p.publishLogLevels = append(p.publishLogLevels, zerolog.Ctx(ctx).GetLevel())
 	return nil
 }
 

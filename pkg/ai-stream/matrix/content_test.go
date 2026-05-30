@@ -97,16 +97,36 @@ func TestFinalContentIncludesFinalUIParts(t *testing.T) {
 		t.Fatalf("bad final preview content: %#v", content)
 	}
 	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if !ok || ai.Message == nil || len(ai.Message.Parts) != 0 || ai.Final == nil || ai.Final.Delivery != "segmented" {
-		t.Fatalf("final edit should keep parts out of the anchor payload: %#v", extra[aistream.BeeperAIKey])
+	if !ok || ai.Message == nil || len(ai.Message.Parts) != 2 || ai.Message.Parts[0]["type"] != "thinking" || ai.Message.Parts[1]["type"] != "text" {
+		t.Fatalf("final edit should use remaining anchor budget for UI parts: %#v", extra[aistream.BeeperAIKey])
 	}
-	projection := ProjectFinal(*run)
-	parts := collectFinalSegmentParts(projection.Segments)
-	if len(parts) != 2 || parts[0]["type"] != "thinking" || parts[1]["type"] != "text" {
-		t.Fatalf("final segments must include concrete UI parts: %#v", parts)
+	if ai.Final == nil || ai.Final.Delivery != "inline" || ai.Final.SegmentCount != 0 {
+		t.Fatalf("small final payload should stay inline: %#v", ai.Final)
 	}
-	if parts[0]["content"] != "hidden reasoning" || parts[1]["content"] == "" {
-		t.Fatalf("final segments must preserve reasoning and text parts: %#v", parts)
+	if ai.Message.Parts[0]["content"] != "hidden reasoning" || ai.Message.Parts[1]["content"] == "" {
+		t.Fatalf("final edit must preserve reasoning and text parts: %#v", ai.Message.Parts)
+	}
+}
+
+func TestFinalContentUsesRemainingAnchorBudgetForToolParts(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.ToolStart("tool-1", "search", 0, nil)
+	writer.ToolEnd("tool-1", "search", map[string]any{"query": "beeper"}, map[string]any{"ok": true})
+	writer.Text("done")
+	writer.Finish(agui.FinishReasonStop)
+
+	_, extra := FinalContent(*run)
+	ai := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if ai.Message == nil {
+		t.Fatalf("missing final UI message: %#v", ai)
+	}
+	if len(ai.Message.Parts) != 2 || ai.Message.Parts[0]["type"] != "tool-call" || ai.Message.Parts[1]["type"] != "text" {
+		t.Fatalf("final edit should include fitting tool-call and text parts in order: %#v", ai.Message.Parts)
+	}
+	if ai.Message.Parts[0]["output"] == nil {
+		t.Fatalf("final tool-call part should preserve output: %#v", ai.Message.Parts[0])
 	}
 }
 
@@ -122,19 +142,26 @@ func TestFinalContentDoesNotTruncateUIParts(t *testing.T) {
 	projection := ProjectFinal(*run)
 	extra := projection.Extra
 	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if !ok || ai.Message == nil || ai.Final == nil || ai.Final.Delivery != "segmented" {
+	if !ok || ai.Message == nil {
 		t.Fatalf("missing final UI message: %#v", extra[aistream.BeeperAIKey])
 	}
-	parts := collectFinalSegmentParts(projection.Segments)
+	parts := append([]aistream.MessagePart(nil), ai.Message.Parts...)
+	parts = append(parts, collectFinalSegmentParts(projection.Segments)...)
 	if len(parts) == 0 {
-		t.Fatalf("missing final segment parts: %#v", projection.Segments)
+		t.Fatalf("missing final UI parts: %#v", projection)
 	}
-	textPart := parts[len(parts)-1]
-	if textPart["content"] != expected {
-		t.Fatalf("final UI text was truncated: got %d bytes want %d", len(textPart["content"].(string)), len(expected))
+	var text string
+	for _, part := range parts {
+		if part["type"] != "text" {
+			continue
+		}
+		if metadata, ok := part["providerMetadata"]; ok {
+			t.Fatalf("final UI text should not be marked truncated: %#v", metadata)
+		}
+		text += part["content"].(string)
 	}
-	if metadata, ok := textPart["providerMetadata"]; ok {
-		t.Fatalf("final UI text should not be marked truncated: %#v", metadata)
+	if text != expected {
+		t.Fatalf("final UI text was truncated: got %d bytes want %d", len(text), len(expected))
 	}
 }
 
@@ -145,7 +172,10 @@ func TestFinalProjectionPutsOverflowTextInHTMLOnlySegmentsBeforeParts(t *testing
 	writer.Text(strings.Repeat("Use **bold** text. ", 80))
 	writer.Finish(agui.FinishReasonStop)
 
-	_, segments, _ := projectFinal(*run, 4000)
+	_, segments, _, textComplete := projectFinal(*run, 4000)
+	if textComplete {
+		t.Fatal("overflow text should mark anchor Matrix HTML as incomplete")
+	}
 	if len(segments) < 2 || segments[0].Text == "" {
 		t.Fatalf("expected overflow text segment before final parts: %#v", segments)
 	}
@@ -162,23 +192,62 @@ func TestFinalProjectionPutsOverflowTextInHTMLOnlySegmentsBeforeParts(t *testing
 
 func TestFinalProjectionUsesEmptyBodyForPartOnlySegments(t *testing.T) {
 	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
-	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
-	writer.Start()
-	writer.Thinking("reasoning")
-	writer.Text("short")
-	writer.Finish(agui.FinishReasonStop)
-
-	projection := ProjectFinal(*run)
-	if len(projection.Segments) == 0 {
+	run.MessageID = "msg-run-1"
+	part := aistream.MessagePart{"type": "tool-call", "id": "tool-1", "toolCallId": "tool-1", "output": map[string]any{"value": strings.Repeat("x", 2500)}}
+	message := aistream.UIMessage{ID: run.MessageID, Role: "assistant", Parts: []aistream.MessagePart{part}}
+	budget := 1200
+	partSegments := []aistream.FinalSegment{{Message: message}}
+	anchorMessage, _, segments, textComplete := projectFinalWithCount(*run, message, partSegments, "short", 1, budget)
+	if !textComplete {
+		t.Fatal("short text should fit the anchor Matrix HTML")
+	}
+	if len(anchorMessage.Parts) > 0 {
+		anchorExtra := map[string]any{
+			aistream.BeeperAIKey: finalAIContentWithSegmentCount(*run, anchorMessage, len(segments), textComplete),
+		}
+		if size := finalPayloadSize(finalTextContent(*run, "short", true), anchorExtra); size > budget {
+			t.Fatalf("anchor projection exceeded budget after adding fitting parts: size=%d budget=%d parts=%#v", size, budget, anchorMessage.Parts)
+		}
+	}
+	if len(segments) == 0 {
 		t.Fatal("expected final parts to be delivered in segments")
 	}
-	for _, segment := range projection.Segments {
+	for _, segment := range segments {
 		if segment.Text != "" {
 			t.Fatalf("short final text should fit the anchor, got text segment: %#v", segment)
+		}
+		if size := finalSegmentProjectionSize(*run, segment); size > budget {
+			t.Fatalf("part-only segment exceeded projection budget: size=%d budget=%d segment=%#v", size, budget, segment)
 		}
 		content, _ := FinalSegmentContent(*run, segment, id.EventID("$anchor"))
 		if content.Body != "" || content.FormattedBody != "" {
 			t.Fatalf("part-only final segment should have empty Matrix body: %#v", content)
+		}
+	}
+}
+
+func TestFinalProjectionKeepsProjectedEventsWithinBudget(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text(strings.Repeat("Use **bold** text in a long answer.\n\n", 500))
+	writer.ToolStart("tool-1", "search", 0, nil)
+	writer.ToolEnd("tool-1", "search", map[string]any{"query": "beeper"}, map[string]any{
+		"value": strings.Repeat("x", aistream.FinalMessageBudgetBytes*2),
+	})
+	writer.Finish(agui.FinishReasonStop)
+
+	projection := ProjectFinal(*run)
+	if size := finalPayloadSize(projection.Content, projection.Extra); size > aistream.FinalMessageBudgetBytes {
+		t.Fatalf("final anchor projection exceeded budget: size=%d budget=%d", size, aistream.FinalMessageBudgetBytes)
+	}
+	if len(projection.Segments) == 0 {
+		t.Fatal("expected final projection to segment the oversized result")
+	}
+	for _, segment := range projection.Segments {
+		if size := finalSegmentProjectionSize(*run, segment); size > aistream.FinalMessageBudgetBytes {
+			t.Fatalf("final segment projection exceeded budget: size=%d budget=%d segment=%#v", size, aistream.FinalMessageBudgetBytes, segment)
 		}
 	}
 }

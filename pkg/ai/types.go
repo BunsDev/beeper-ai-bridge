@@ -143,6 +143,7 @@ type Model struct {
 	Cost                 ModelCost                      `json:"cost"`
 	ContextWindow        int                            `json:"contextWindow"`
 	MaxTokens            int                            `json:"maxTokens"`
+	BuiltInTools         []string                       `json:"builtInTools,omitempty"`
 	Headers              map[string]string              `json:"headers,omitempty"`
 	Compat               map[string]any                 `json:"compat,omitempty"`
 }

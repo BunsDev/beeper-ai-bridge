@@ -57,6 +57,7 @@ const (
 	FinishReasonLength        = "length"
 	FinishReasonContentFilter = "content_filter"
 	FinishReasonToolCalls     = "tool_calls"
+	FinishReasonCancelled     = "cancelled"
 	FinishReasonOther         = "other"
 	OutcomeSuccess            = "success"
 	OutcomeInterrupt          = "interrupt"
@@ -218,6 +219,7 @@ type Usage struct {
 	CompletionTokens int `json:"completionTokens,omitempty"`
 	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
 	TotalTokens      int `json:"totalTokens,omitempty"`
+	ContextLimit     int `json:"contextLimit,omitempty"`
 }
 
 type EventBuilder struct {
