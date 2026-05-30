@@ -41,10 +41,13 @@ func TestAIServicesLoggingTransportLogsMetadataWithoutBodies(t *testing.T) {
 	_ = resp.Body.Close()
 
 	output := logs.String()
-	if !strings.Contains(output, `"message":"AI Services request"`) || !strings.Contains(output, `"message":"AI Services response"`) {
+	if !strings.Contains(output, `"message":"Sending AI Services HTTP request"`) || !strings.Contains(output, `"message":"AI Services HTTP request returned error status"`) {
 		t.Fatalf("missing request/response logs:\n%s", output)
 	}
-	if !strings.Contains(output, `"status_code":401`) || !strings.Contains(output, `"level":"error"`) {
+	if !strings.Contains(output, `"action":"ai_services_http"`) || !strings.Contains(output, `"request_number":`) {
+		t.Fatalf("missing request context:\n%s", output)
+	}
+	if !strings.Contains(output, `"status_code":401`) || !strings.Contains(output, `"level":"error"`) || !strings.Contains(output, `"duration":`) {
 		t.Fatalf("missing error response metadata:\n%s", output)
 	}
 	for _, secret := range []string{"secret-request", "secret-response", "secret-token"} {
