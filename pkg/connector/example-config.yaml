@@ -4,3 +4,7 @@ fetch:
   timeout_ms: 10000
   max_bytes: 2097152
   max_chars: 20000
+compaction:
+  enabled: true
+  reserve_tokens: 16384
+  keep_recent_tokens: 20000

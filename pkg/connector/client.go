@@ -310,6 +310,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, prompt),
 		StreamFn:            streamFn,
 		GetAPIKeyAndHeaders: cl.authForProvider(provider),
+		CompactionSettings:  cl.Main.Config.Compaction.Settings(),
 	}
 	agentHarness, err := harness.NewAgentHarness(options)
 	if err != nil {
@@ -898,30 +899,10 @@ func (cl *Client) queueAssistantStreamAnchor(ctx context.Context, portal *bridge
 }
 
 func (cl *Client) waitForMessageEventID(ctx context.Context, portal *bridgev2.Portal, messageID networkid.MessageID, partID networkid.PartID, timeout time.Duration) (id.EventID, error) {
-	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || cl.Main.Bridge.DB == nil || cl.Main.Bridge.DB.Message == nil || portal == nil {
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || portal == nil {
 		return "", fmt.Errorf("missing message store for stream anchor")
 	}
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		message, err := cl.Main.Bridge.DB.Message.GetPartByID(ctx, portal.Receiver, messageID, partID)
-		if err == nil && message != nil && message.MXID != "" {
-			return message.MXID, nil
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			return "", err
-		}
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("timed out waiting for stream anchor event ID: %w", ctx.Err())
-		case <-ticker.C:
-		}
-	}
+	return aibridgev2.WaitForMessageEventID(ctx, cl.Main.Bridge, portal.Receiver, messageID, partID, timeout)
 }
 
 func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, onSecondVisibleChunk ...func()) agent.StreamFn {

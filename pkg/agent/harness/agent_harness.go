@@ -40,6 +40,7 @@ type AgentHarnessOptions struct {
 	TransformContext      func(context.Context, []agent.AgentMessage) ([]agent.AgentMessage, error)
 	GenerateSummary       func(context.Context, CompactionPreparation) (CompactResult, error)
 	GenerateBranchSummary func(context.Context, BranchPreparation) (BranchSummaryResult, error)
+	CompactionSettings    CompactionSettings
 }
 
 type AgentHarnessAuth struct {
@@ -69,6 +70,7 @@ type AgentHarness struct {
 	transformContext      func(context.Context, []agent.AgentMessage) ([]agent.AgentMessage, error)
 	generateSummary       func(context.Context, CompactionPreparation) (CompactResult, error)
 	generateBranchSummary func(context.Context, BranchPreparation) (BranchSummaryResult, error)
+	compactionSettings    CompactionSettings
 	subscribers           []func(context.Context, AgentHarnessEvent) error
 	nextSubscriberID      int
 	subscriberIDs         []int
@@ -269,6 +271,7 @@ func NewAgentHarness(options AgentHarnessOptions) (*AgentHarness, error) {
 		transformContext:      options.TransformContext,
 		generateSummary:       options.GenerateSummary,
 		generateBranchSummary: options.GenerateBranchSummary,
+		compactionSettings:    normalizeCompactionSettings(options.CompactionSettings),
 		handlers:              map[string][]func(context.Context, AgentHarnessEvent) (any, error){},
 		handlerIDs:            map[string][]int{},
 	}
@@ -365,22 +368,26 @@ func (h *AgentHarness) AppendMessage(ctx context.Context, message agent.AgentMes
 
 func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (CompactResult, error) {
 	if h.phase != "idle" {
-		return CompactResult{}, errors.New("compact() requires idle harness")
+		return CompactResult{}, NewAgentHarnessError(AgentHarnessErrorBusy, "compact() requires idle harness", nil)
 	}
 	h.phase = "compaction"
-	defer func() { h.phase = "idle" }()
-	branch, err := h.session.GetBranch(ctx, nil)
+	runCtx, finish := h.startRun(ctx)
+	defer func() {
+		h.phase = "idle"
+		finish()
+	}()
+	branch, err := h.session.GetBranch(runCtx, nil)
 	if err != nil {
 		return CompactResult{}, err
 	}
-	preparation, ok, err := PrepareCompaction(branch, DefaultCompactionSettings)
+	preparation, ok, err := PrepareCompaction(branch, h.compactionSettings)
 	if err != nil {
 		return CompactResult{}, err
 	}
 	if !ok || preparation == nil {
-		return CompactResult{}, errors.New("Nothing to compact")
+		return CompactResult{}, NewCompactionError(CompactionErrorUnknown, "Nothing to compact", nil)
 	}
-	hookResult, err := h.emitHook(ctx, AgentHarnessEvent{Type: "session_before_compact", CompactionPreparation: preparation, BranchEntries: branch, CustomInstructions: customInstructions})
+	hookResult, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "session_before_compact", CompactionPreparation: preparation, BranchEntries: branch, CustomInstructions: customInstructions})
 	if err != nil {
 		return CompactResult{}, err
 	}
@@ -388,7 +395,7 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 	var result CompactResult
 	if before, ok := hookResult.(SessionBeforeCompactResult); ok {
 		if before.Cancel {
-			return CompactResult{}, errors.New("Compaction cancelled")
+			return CompactResult{}, NewCompactionError(CompactionErrorAborted, "Compaction cancelled", nil)
 		}
 		if before.Compaction != nil {
 			result = *before.Compaction
@@ -396,12 +403,12 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 		}
 	}
 	if result.Summary == "" && h.generateSummary != nil {
-		result, err = h.generateSummary(ctx, *preparation)
+		result, err = h.generateSummary(runCtx, *preparation)
 		if err != nil {
 			return CompactResult{}, err
 		}
 	} else if result.Summary == "" && h.streamFn != nil {
-		result, err = GenerateSummary(ctx, *preparation, h.summaryGenerationOptions(ctx, customInstructions))
+		result, err = GenerateSummary(runCtx, *preparation, h.summaryGenerationOptions(runCtx, customInstructions))
 		if err != nil {
 			return CompactResult{}, err
 		}
@@ -414,12 +421,12 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 	if result.TokensBefore == 0 {
 		result.TokensBefore = preparation.TokensBefore
 	}
-	entryID, err := h.session.AppendCompaction(ctx, result.Summary, result.FirstKeptEntryID, result.TokensBefore, result.Details, &fromHook)
+	entryID, err := h.session.AppendCompaction(runCtx, result.Summary, result.FirstKeptEntryID, result.TokensBefore, result.Details, &fromHook)
 	if err != nil {
 		return CompactResult{}, err
 	}
-	raw, _ := h.session.GetEntry(ctx, entryID)
-	if err := h.emit(ctx, AgentHarnessEvent{Type: "session_compact", CompactionEntry: raw, FromHook: fromHook}); err != nil {
+	raw, _ := h.session.GetEntry(runCtx, entryID)
+	if err := h.emit(runCtx, AgentHarnessEvent{Type: "session_compact", CompactionEntry: raw, FromHook: fromHook}); err != nil {
 		return CompactResult{}, err
 	}
 	return result, nil
@@ -1066,6 +1073,23 @@ func (h *AgentHarness) systemPromptOrDefault(ctx context.Context) (string, error
 
 func (h *AgentHarness) summaryGenerationOptions(ctx context.Context, customInstructions string) SummaryGenerationOptions {
 	apiKey := ""
+	headers := cloneStringMap(h.streamOptions.Headers)
+	streamFn := h.streamFn
+	if h.getAPIKeyAndHeaders != nil {
+		streamFn = func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+			auth, err := h.getAPIKeyAndHeaders(ctx, model)
+			if err != nil {
+				return hookErrorStream(model, err)
+			}
+			if auth != nil {
+				if auth.APIKey != "" {
+					options.APIKey = auth.APIKey
+				}
+				options.Headers = mergeStringMaps(options.Headers, auth.Headers)
+			}
+			return ai.StreamSimple(ctx, model, llmContext, options)
+		}
+	}
 	if h.getAPIKey != nil {
 		key, _ := h.getAPIKey(ctx, h.model.Provider)
 		apiKey = key
@@ -1073,8 +1097,8 @@ func (h *AgentHarness) summaryGenerationOptions(ctx context.Context, customInstr
 	return SummaryGenerationOptions{
 		Model:              h.model,
 		APIKey:             apiKey,
-		Headers:            h.streamOptions.Headers,
-		StreamFn:           h.streamFn,
+		Headers:            headers,
+		StreamFn:           streamFn,
 		CustomInstructions: customInstructions,
 		ThinkingLevel:      h.thinkingLevel,
 	}
@@ -1120,6 +1144,19 @@ func branchSummaryTokenBudget(model ai.Model) int {
 		contextWindow = 128000
 	}
 	return contextWindow - DefaultCompactionSettings.ReserveTokens
+}
+
+func normalizeCompactionSettings(settings CompactionSettings) CompactionSettings {
+	if settings == (CompactionSettings{}) {
+		return DefaultCompactionSettings
+	}
+	if settings.ReserveTokens == 0 {
+		settings.ReserveTokens = DefaultCompactionSettings.ReserveTokens
+	}
+	if settings.KeepRecentTokens == 0 {
+		settings.KeepRecentTokens = DefaultCompactionSettings.KeepRecentTokens
+	}
+	return settings
 }
 
 func validateToolNames(names []string, tools map[string]agent.AgentTool[any]) error {

@@ -12,9 +12,9 @@ import (
 )
 
 type CompactionSettings struct {
-	Enabled          bool
-	ReserveTokens    int
-	KeepRecentTokens int
+	Enabled          bool `yaml:"enabled"`
+	ReserveTokens    int  `yaml:"reserve_tokens"`
+	KeepRecentTokens int  `yaml:"keep_recent_tokens"`
 }
 
 var DefaultCompactionSettings = CompactionSettings{Enabled: true, ReserveTokens: 16384, KeepRecentTokens: 20000}
@@ -226,7 +226,7 @@ func PrepareCompaction(rawEntries []json.RawMessage, settings CompactionSettings
 	cutPoint := FindCutPoint(entries, boundaryStart, len(entries), settings.KeepRecentTokens)
 	firstKeptEntry := entries[cutPoint.FirstKeptEntryIndex]
 	if firstKeptEntry.ID == "" {
-		return nil, false, fmt.Errorf("First kept entry has no UUID - session may need migration")
+		return nil, false, NewCompactionError(CompactionErrorInvalidSession, "First kept entry has no UUID - session may need migration", nil)
 	}
 	historyEnd := cutPoint.FirstKeptEntryIndex
 	if cutPoint.IsSplitTurn {

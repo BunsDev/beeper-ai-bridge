@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -27,6 +28,9 @@ func TestParseAISlashCommand(t *testing.T) {
 		{body: "/system-prompt be terse", name: "system-prompt", arg: "be terse", ok: true},
 		{body: "/system-prompt", name: "system-prompt", ok: true},
 		{body: "/help model", name: "help", arg: "model", ok: true},
+		{body: "/compact focus on decisions", name: "compact", arg: "focus on decisions", ok: true},
+		{body: "/abort", name: "abort", ok: true},
+		{body: "/session", name: "session", ok: true},
 		{body: "/unknown nope", ok: false},
 		{body: "hello /model gpt-5", ok: false},
 	}
@@ -131,6 +135,58 @@ func TestCommandResponseContentIsVisibleText(t *testing.T) {
 	}
 }
 
+func TestSessionCommandStatsFromEntries(t *testing.T) {
+	stats, err := sessionCommandStatsFromEntries([]json.RawMessage{
+		rawSessionEntry(t, map[string]any{"type": "message", "message": map[string]any{"role": "user"}}),
+		rawSessionEntry(t, map[string]any{"type": "message", "message": map[string]any{"role": "assistant"}}),
+		rawSessionEntry(t, map[string]any{"type": "message", "message": map[string]any{"role": "toolResult"}}),
+		rawSessionEntry(t, map[string]any{"type": "compaction"}),
+		rawSessionEntry(t, map[string]any{"type": "model_change"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalEntries != 5 || stats.Messages != 3 || stats.UserMessages != 1 || stats.AssistantMessages != 1 || stats.ToolResultMessages != 1 || stats.Compactions != 1 {
+		t.Fatalf("unexpected session stats: %#v", stats)
+	}
+}
+
+func TestFormatSessionCommandInfo(t *testing.T) {
+	text := formatSessionCommandInfo(sessionCommandInfo{
+		SessionID:    "session-1",
+		CreatedAt:    "2026-05-30T00:00:00Z",
+		Model:        "beeper/gpt-5.5",
+		Reasoning:    "off",
+		SystemPrompt: true,
+		Responding:   true,
+		Stats: sessionCommandStats{
+			TotalEntries:       4,
+			Messages:           3,
+			UserMessages:       1,
+			AssistantMessages:  1,
+			ToolResultMessages: 1,
+			Compactions:        1,
+		},
+	})
+	for _, want := range []string{
+		"Status: `responding`",
+		"ID: `session-1`",
+		"Model: `beeper/gpt-5.5`",
+		"System prompt: `yes`",
+		"Messages: `3` total, `1` user, `1` assistant, `1` tool results",
+		"Compactions: `1`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("session info missing %q:\n%s", want, text)
+		}
+	}
+
+	text = formatSessionCommandInfo(sessionCommandInfo{Model: "beeper/gpt-5.5", Reasoning: "off"})
+	if !strings.Contains(text, "No AI session has been started in this room yet.") {
+		t.Fatalf("empty session info missing no-session text:\n%s", text)
+	}
+}
+
 func TestResolveCanonicalRoomModelUsesDefaultProviderForBareModel(t *testing.T) {
 	client := canonicalTestClient()
 	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ModelID: "gpt-5.5"})
@@ -219,4 +275,13 @@ func canonicalTestClient() *Client {
 		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}
 	return &Client{Main: conn, UserLogin: login}
+}
+
+func rawSessionEntry(t *testing.T, entry map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }

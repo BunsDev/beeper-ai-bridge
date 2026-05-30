@@ -61,3 +61,12 @@ func TestCleanTitleSanitizesMarkdownLabelsAndLength(t *testing.T) {
 		t.Fatalf("title was not truncated: %q", title)
 	}
 }
+
+func TestAssistantTextReadsGenericJSONBlocks(t *testing.T) {
+	message := ai.Message{Content: []any{
+		map[string]any{"type": "text", "text": "Streaming title"},
+	}}
+	if text := assistantText(message); text != "Streaming title" {
+		t.Fatalf("unexpected assistant text %q", text)
+	}
+}

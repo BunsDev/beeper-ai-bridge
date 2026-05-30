@@ -65,6 +65,29 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 			needsRoomConfig: true,
 			run:             runSystemPromptCommand,
 		},
+		{
+			name:            "compact",
+			usage:           "/compact [instructions]",
+			description:     "Manually compact this room's AI session context.",
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runCompactCommand,
+		},
+		{
+			name:         "abort",
+			usage:        "/abort",
+			description:  "Abort the active AI response or compaction.",
+			noticeErrors: true,
+			run:          runAbortCommand,
+		},
+		{
+			name:            "session",
+			usage:           "/session",
+			description:     "Show this room's AI session info and stats.",
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runSessionCommand,
+		},
 	}
 }
 

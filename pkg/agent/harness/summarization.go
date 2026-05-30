@@ -223,13 +223,16 @@ func generateSummaryText(ctx context.Context, messages []agent.AgentMessage, pre
 		Messages:     []ai.Message{{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: promptText}}, Timestamp: time.Now().UnixMilli()}},
 	}, simpleOptions(options, summaryMaxTokens(options.Model, reserveTokens, 0.8)))
 	if err != nil {
-		return "", err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", NewCompactionError(CompactionErrorAborted, "Summarization aborted", err)
+		}
+		return "", NewCompactionError(CompactionErrorSummarizationFailed, "Summarization failed", err)
 	}
 	if response.StopReason == ai.StopReasonAborted {
-		return "", errors.New(nonEmpty(response.ErrorMessage, "Summarization aborted"))
+		return "", NewCompactionError(CompactionErrorAborted, nonEmpty(response.ErrorMessage, "Summarization aborted"), nil)
 	}
 	if response.StopReason == ai.StopReasonError {
-		return "", fmt.Errorf("Summarization failed: %s", nonEmpty(response.ErrorMessage, "Unknown error"))
+		return "", NewCompactionError(CompactionErrorSummarizationFailed, fmt.Sprintf("Summarization failed: %s", nonEmpty(response.ErrorMessage, "Unknown error")), nil)
 	}
 	return assistantText(response), nil
 }
@@ -241,13 +244,16 @@ func generateTurnPrefixSummary(ctx context.Context, messages []agent.AgentMessag
 		Messages:     []ai.Message{{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: promptText}}, Timestamp: time.Now().UnixMilli()}},
 	}, simpleOptions(options, summaryMaxTokens(options.Model, reserveTokens, 0.5)))
 	if err != nil {
-		return "", err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", NewCompactionError(CompactionErrorAborted, "Turn prefix summarization aborted", err)
+		}
+		return "", NewCompactionError(CompactionErrorSummarizationFailed, "Turn prefix summarization failed", err)
 	}
 	if response.StopReason == ai.StopReasonAborted {
-		return "", errors.New(nonEmpty(response.ErrorMessage, "Turn prefix summarization aborted"))
+		return "", NewCompactionError(CompactionErrorAborted, nonEmpty(response.ErrorMessage, "Turn prefix summarization aborted"), nil)
 	}
 	if response.StopReason == ai.StopReasonError {
-		return "", fmt.Errorf("Turn prefix summarization failed: %s", nonEmpty(response.ErrorMessage, "Unknown error"))
+		return "", NewCompactionError(CompactionErrorSummarizationFailed, fmt.Sprintf("Turn prefix summarization failed: %s", nonEmpty(response.ErrorMessage, "Unknown error")), nil)
 	}
 	return assistantText(response), nil
 }
