@@ -126,6 +126,9 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
 			{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
+			{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","provider":{"id":"wpcom_google","model_id":"google/gemini-3.1-pro-preview","api":"openai-responses"}},
+			{"id":"x-ai/grok-4.20","name":"Grok 4.20","provider":{"id":"wpcom_xai","model_id":"x-ai/grok-4.20","api":"openai-responses"}},
+			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","provider":{"id":"wpcom_groq","model_id":"groq/qwen/qwen3-32b","api":"openai-responses"}},
 			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-responses"}}
 		]}`))
 	}))
@@ -155,6 +158,15 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	}
 	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
 		t.Fatalf("unexpected Vertex route %#v", got)
+	}
+	if got := byID["google/gemini-3.1-pro-preview"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderGoogle || got.BaseURL != server.URL+"/proxy/google/v1" {
+		t.Fatalf("unexpected Google route %#v", got)
+	}
+	if got := byID["x-ai/grok-4.20"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderXAI || got.BaseURL != server.URL+"/proxy/xai/v1" {
+		t.Fatalf("unexpected xAI route %#v", got)
+	}
+	if got := byID["groq/qwen/qwen3-32b"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderGroq || got.BaseURL != server.URL+"/proxy/groq/v1" {
+		t.Fatalf("unexpected Groq route %#v", got)
 	}
 	if got := byID["anthropic/claude-sonnet-4.5"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderOpenRouter || got.BaseURL != server.URL+"/proxy/openrouter/v1" {
 		t.Fatalf("unexpected OpenRouter route %#v", got)

@@ -342,6 +342,18 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 		model.API = ai.ApiOpenAIResponses
 		model.Provider = ai.ProviderOpenAI
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openai", true)
+	case "wpcom_google":
+		model.API = ai.ApiOpenAIResponses
+		model.Provider = ai.ProviderGoogle
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "google", true)
+	case "wpcom_xai":
+		model.API = ai.ApiOpenAIResponses
+		model.Provider = ai.ProviderXAI
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "xai", true)
+	case "wpcom_groq":
+		model.API = ai.ApiOpenAIResponses
+		model.Provider = ai.ProviderGroq
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "groq", true)
 	case "openrouter":
 		model.API = ai.ApiOpenAIResponses
 		model.Provider = ai.ProviderOpenRouter
