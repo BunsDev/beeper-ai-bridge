@@ -45,8 +45,8 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 	if len(provider.Models) == 0 {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("Beeper AI model catalog is unavailable")
 	}
-	if providerHasModel(provider, modelID) {
-		return provider, modelID, nil
+	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
+		return provider, resolvedModelID, nil
 	}
 	if roomConfig.ModelID == "" {
 		return provider, provider.Models[0].ID, nil

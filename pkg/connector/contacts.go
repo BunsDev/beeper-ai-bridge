@@ -11,6 +11,7 @@ import (
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
@@ -224,7 +225,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := aiutils.WithAIServicesLogging(&http.Client{Timeout: 20 * time.Second})
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

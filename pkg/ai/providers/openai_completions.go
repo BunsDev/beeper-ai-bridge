@@ -329,7 +329,10 @@ func newClient(model ai.Model, llmContext ai.Context, options ai.StreamOptions) 
 	if err != nil {
 		return openaisdk.Client{}, nil, err
 	}
-	requestOptions := []option.RequestOption{option.WithAPIKey(config.APIKey)}
+	requestOptions := []option.RequestOption{
+		option.WithAPIKey(config.APIKey),
+		option.WithHTTPClient(aiutils.WithAIServicesLogging(defaultOpenAIHTTPClient())),
+	}
 	if config.BaseURL != "" {
 		requestOptions = append(requestOptions, option.WithBaseURL(config.BaseURL))
 	}
@@ -343,6 +346,15 @@ func newClient(model ai.Model, llmContext ai.Context, options ai.StreamOptions) 
 		requestOptions = append(requestOptions, option.WithMaxRetries(*options.MaxRetries))
 	}
 	return openaisdk.NewClient(requestOptions...), requestOptions, nil
+}
+
+func defaultOpenAIHTTPClient() *http.Client {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = transport.Clone()
+		transport.ResponseHeaderTimeout = 10 * time.Minute
+		return &http.Client{Transport: transport}
+	}
+	return &http.Client{Transport: http.DefaultTransport}
 }
 
 func buildOpenAIClientConfig(model ai.Model, llmContext ai.Context, options ai.StreamOptions) (openAIClientConfig, error) {

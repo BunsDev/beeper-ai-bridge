@@ -142,6 +142,25 @@ func TestResolveCanonicalRoomModelUsesDefaultProviderForBareModel(t *testing.T) 
 	}
 }
 
+func TestResolveCanonicalRoomModelMatchesBareModelByCatalogSuffixOrder(t *testing.T) {
+	client := canonicalTestClient()
+	meta := client.UserLogin.Metadata.(*aiid.UserLoginMetadata)
+	provider := meta.Providers[aiid.DefaultProvider]
+	provider.Models = []ai.Model{
+		{ID: "anthropic/gpt-5.5", Name: "First GPT 5.5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAIResponses},
+		{ID: "openai/gpt-5.5", Name: "OpenAI GPT 5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses},
+	}
+	meta.Providers[aiid.DefaultProvider] = provider
+
+	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ModelID: "gpt-5.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.ID != "anthropic/gpt-5.5" || canonical != "beeper/anthropic/gpt-5.5" {
+		t.Fatalf("unexpected canonical model %q %#v", canonical, model)
+	}
+}
+
 func TestResolveCanonicalRoomModelPreservesDefaultOpenAICatalogModel(t *testing.T) {
 	client := canonicalTestClient()
 	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ProviderID: "beeper", ModelID: "openai/gpt-5.5"})
