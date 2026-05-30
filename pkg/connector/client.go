@@ -1292,7 +1292,21 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 		if block.Type != "toolCall" || block.ID == "" {
 			return nil
 		}
-		return &ai.ToolCall{Type: "toolCall", ID: block.ID, Name: block.Name, Arguments: block.Arguments}
+		return &ai.ToolCall{Type: "toolCall", ID: block.ID, Name: block.Name, Arguments: block.Arguments, ThoughtSignature: block.ThoughtSignature}
+	}
+	thinkingSignatureFromEvent := func() string {
+		if evt.Partial == nil || evt.ContentIndex < 0 {
+			return ""
+		}
+		blocks := aiContentBlocks(evt.Partial.Content)
+		if evt.ContentIndex >= len(blocks) {
+			return ""
+		}
+		block := blocks[evt.ContentIndex]
+		if block.Type != "thinking" {
+			return ""
+		}
+		return block.ThinkingSignature
 	}
 	switch evt.Type {
 	case "text_start":
@@ -1318,6 +1332,9 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 	case "thinking_end":
 		before := len(writer.Run.Events)
 		writer.ReasoningMessageEnd(evt.ContentIndex)
+		if signature := thinkingSignatureFromEvent(); signature != "" {
+			writer.ReasoningEncryptedValue(evt.ContentIndex, signature)
+		}
 		annotateIfAdded(before)
 	case "toolcall_start":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
@@ -1332,6 +1349,7 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 	case "toolcall_end":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
 			writer.ToolEnd(toolCall.ID, toolCall.Name, toolCall.Arguments, nil)
+			writer.ToolEncryptedValue(toolCall.ID, toolCall.ThoughtSignature)
 			annotateLast()
 		}
 	case "raw":

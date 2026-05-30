@@ -384,6 +384,34 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 	}
 }
 
+func TestApplyAIStreamEventPublishesReasoningSignaturesToAGUI(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:              "thinking",
+			Thinking:          "hidden continuity",
+			ThinkingSignature: "opaque-reasoning-state",
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "hidden continuity", Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "hidden continuity", Partial: partial})
+
+	var encrypted agui.Event
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventReasoningEncrypted {
+			encrypted = evt
+			break
+		}
+	}
+	if encrypted.Len() == 0 || encrypted.Get("subtype") != "message" || encrypted.Get("encryptedValue") != "opaque-reasoning-state" {
+		t.Fatalf("missing reasoning encrypted value event: %#v", run.Events)
+	}
+}
+
 func TestApplyAIStreamEventPublishesRawProviderEvent(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	writer := aistream.NewWriter(run, timeNow)

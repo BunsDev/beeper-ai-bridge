@@ -345,6 +345,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	textParts := map[string]*projectedPart{}
 	thinkingParts := map[string]*projectedPart{}
 	toolParts := map[string]MessagePart{}
+	activityParts := map[string]MessagePart{}
 	currentTextMessageID := ""
 	openTextMessageID := ""
 	openTextPartID := ""
@@ -441,7 +442,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	}
 	for _, evt := range t.Events {
 		eventType := evt.Type()
-		if !isReasoningEventType(eventType) {
+		if !isReasoningEventType(eventType) && !isNeutralEventType(eventType) {
 			closeThinkingPart("")
 		}
 		if isActivityEventType(eventType) {
@@ -536,6 +537,18 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			if args := evt.Get("args"); args != nil {
 				part["input"] = args
 			}
+		case agui.EventToolCallChunk:
+			toolCallID, _ := evt.Get("toolCallId").(string)
+			part := toolParts[toolCallID]
+			if part == nil {
+				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID, "arguments": ""})
+				toolParts[toolCallID] = part
+			}
+			part["name"] = firstString(part["name"], evt.Get("toolName"), evt.Get("toolCallName"))
+			part["state"] = firstString(evt.Get("state"), agui.ToolStateInputStreaming)
+			if delta, _ := evt.Get("delta").(string); delta != "" {
+				part["arguments"] = asString(part["arguments"]) + delta
+			}
 		case agui.EventToolCallEnd:
 			toolCallID, _ := evt.Get("toolCallId").(string)
 			part := toolParts[toolCallID]
@@ -603,6 +616,52 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 				} else {
 					part["approval"] = ToolApproval{ID: interrupt.ID, NeedsApproval: true}
 				}
+			}
+		case agui.EventStepStarted, agui.EventStepFinished:
+			stepName := firstString(evt.Get("stepName"), evt.Get("stepId"), "Step")
+			messageID := firstString(evt.Get("messageId"), t.MessageID)
+			state := "running"
+			if eventType == agui.EventStepFinished {
+				state = agui.PartStateDone
+			}
+			id := fmt.Sprintf("%s:step:%s", messageID, stepName)
+			part := activityParts[id]
+			if part == nil {
+				part = appendPart(MessagePart{"type": "activity", "id": id, "messageId": messageID, "activityType": "step", "title": stepName})
+				activityParts[id] = part
+			}
+			part["state"] = state
+		case agui.EventActivitySnapshot:
+			messageID := firstString(evt.Get("messageId"), t.MessageID)
+			activityType := firstString(evt.Get("activityType"), "activity")
+			id := fmt.Sprintf("%s:%s:%s", messageID, activityType, activityType)
+			content := evt.Get("content")
+			title := activityType
+			if contentMap, ok := content.(map[string]any); ok {
+				title = firstString(contentMap["title"], contentMap["label"], contentMap["message"], contentMap["name"], activityType)
+			}
+			part := activityParts[id]
+			if part == nil {
+				part = appendPart(MessagePart{"type": "activity", "id": id, "messageId": messageID, "activityType": activityType})
+				activityParts[id] = part
+			}
+			part["title"] = title
+			part["state"] = "running"
+			if content != nil {
+				part["content"] = content
+			}
+		case agui.EventActivityDelta:
+			messageID := firstString(evt.Get("messageId"), t.MessageID)
+			activityType := firstString(evt.Get("activityType"), "activity")
+			id := fmt.Sprintf("%s:%s:%s", messageID, activityType, activityType)
+			part := activityParts[id]
+			if part == nil {
+				part = appendPart(MessagePart{"type": "activity", "id": id, "messageId": messageID, "activityType": activityType, "title": activityType})
+				activityParts[id] = part
+			}
+			part["state"] = "running"
+			if patch := evt.Get("patch"); patch != nil {
+				part["patches"] = patch
 			}
 		case agui.EventCustom:
 			name, _ := evt.Get("name").(string)
@@ -769,6 +828,19 @@ func isReasoningEventType(eventType string) bool {
 		agui.EventReasoningMsgEnd,
 		agui.EventReasoningMsgChunk,
 		agui.EventReasoningEncrypted:
+		return true
+	default:
+		return false
+	}
+}
+
+func isNeutralEventType(eventType string) bool {
+	switch eventType {
+	case agui.EventRaw,
+		agui.EventStateSnapshot,
+		agui.EventStateDelta,
+		agui.EventMessagesSnapshot,
+		agui.EventCustom:
 		return true
 	default:
 		return false

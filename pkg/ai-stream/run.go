@@ -290,6 +290,18 @@ func (w *Writer) ReasoningMessageEnd(index int) {
 	w.reasoningOpen[index] = false
 }
 
+func (w *Writer) ReasoningEncryptedValue(index int, encryptedValue string) {
+	if encryptedValue == "" {
+		return
+	}
+	w.initState()
+	messageID := w.reasoningMessages[index]
+	if messageID == "" {
+		messageID = w.ReasoningMessageStart(index)
+	}
+	w.Add(w.builder.ReasoningEncryptedValue("message", messageID, encryptedValue))
+}
+
 func (w *Writer) StepStart(stepID string) {
 	w.Add(w.builder.StepStarted(w.Run.MessageID, stepID))
 }
@@ -341,6 +353,13 @@ func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *ToolAp
 
 func (w *Writer) ToolArgs(toolCallID, delta string, args any) {
 	w.Add(w.builder.ToolCallArgs(toolCallID, delta, args))
+}
+
+func (w *Writer) ToolEncryptedValue(toolCallID, encryptedValue string) {
+	if toolCallID == "" || encryptedValue == "" {
+		return
+	}
+	w.Add(w.builder.ReasoningEncryptedValue("tool-call", toolCallID, encryptedValue))
 }
 
 func (w *Writer) ToolEnd(toolCallID, name string, input, result any) {

@@ -280,6 +280,67 @@ func TestFinalBeeperAIMessagePreservesInterleavedTextAndToolOrder(t *testing.T) 
 	}
 }
 
+func TestFinalBeeperAIMessageDoesNotSplitReasoningAroundRawEvents(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.ReasoningMessageStart("reasoning-1"),
+		builder.ReasoningMessageContent("reasoning-1", "I "),
+		builder.Raw(map[string]any{"type": "response.reasoning_text.delta"}, "openai"),
+		builder.ReasoningMessageContent("reasoning-1", "need "),
+		builder.Raw(map[string]any{"type": "response.reasoning_text.delta"}, "openai"),
+		builder.ReasoningMessageContent("reasoning-1", "context"),
+		builder.ReasoningMessageEnd("reasoning-1"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	var thinkingParts []string
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			thinkingParts = append(thinkingParts, part["content"].(string))
+		}
+	}
+	if !reflect.DeepEqual(thinkingParts, []string{"I need context"}) {
+		t.Fatalf("raw events split reasoning chunks: %#v", uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessagePreservesToolCallChunksAndActivities(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.StepStarted(run.MessageID, "Search docs"),
+		builder.StepFinished(run.MessageID, "Search docs"),
+		builder.ActivitySnapshot(run.MessageID, "planning", map[string]any{"title": "Planning answer"}, nil),
+		builder.ToolCallChunk("tool-1", "search", run.MessageID, `{"query":"docs"}`),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		switch part["type"] {
+		case "activity":
+			got = append(got, fmt.Sprintf("activity:%s:%s", part["title"], part["state"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["arguments"]))
+		}
+	}
+	want := []string{
+		"activity:Search docs:done",
+		"activity:Planning answer:running",
+		`tool-call:{"query":"docs"}`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage visible activity mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
 func TestPackRunPreservesLargeOpaqueStreamEvents(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
