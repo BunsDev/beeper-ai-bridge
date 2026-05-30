@@ -240,21 +240,16 @@ func TestDefaultProviderBaseURLRejectsUserHomeserverMismatch(t *testing.T) {
 	}
 }
 
-func TestDefaultProviderIgnoresPersistedMetadata(t *testing.T) {
+func TestDefaultProviderReadsAIChatsLoginMetadata(t *testing.T) {
 	conn := &Connector{}
+	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		UserMXID: "@alice:beeper.localtest.me",
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			aiid.DefaultProvider: {
-				ID:      aiid.DefaultProvider,
-				BaseURL: "https://ai-services.megahungry-proxy.megahungry/proxy/openai/v1",
-			},
-		}},
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}
-	ensureMetadata(login.Metadata.(*aiid.UserLoginMetadata))
-	provider := conn.providersForLogin(login)[aiid.DefaultProvider]
-	if provider.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
-		t.Fatalf("expected computed default provider, got %#v", provider)
+	got := conn.providersForLogin(login)[aiid.DefaultProvider]
+	if got.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
+		t.Fatalf("expected persisted default provider, got %#v", got)
 	}
 }
 
@@ -499,19 +494,16 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 
 func TestResolveProviderRequiresListedModelWhenModelListExists(t *testing.T) {
 	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:           "custom",
+		Provider:     "custom",
+		API:          ai.ApiOpenAIResponses,
+		DefaultModel: "allowed",
+		Models:       []ai.Model{{ID: "allowed", Provider: "custom", API: ai.ApiOpenAIResponses}},
+	}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{
-			Providers: map[string]aiid.ProviderConfig{
-				"custom": {
-					ID:           "custom",
-					Provider:     "custom",
-					API:          ai.ApiOpenAIResponses,
-					DefaultModel: "allowed",
-					Models:       []ai.Model{{ID: "allowed", Provider: "custom", API: ai.ApiOpenAIResponses}},
-				},
-			},
-		},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}
 	_, _, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
 	if err == nil {

@@ -594,9 +594,6 @@ func (cl *Client) loginMetadata() *aiid.UserLoginMetadata {
 	if !ok {
 		return nil
 	}
-	if cl.Main != nil {
-		ensureMetadata(meta)
-	}
 	return meta
 }
 

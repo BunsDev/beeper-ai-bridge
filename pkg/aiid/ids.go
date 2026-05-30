@@ -28,22 +28,6 @@ func ProviderLoginID(parent networkid.UserLoginID, providerID string) networkid.
 	return networkid.UserLoginID("provider:" + encode(string(parent)) + ":" + sanitizeID(providerID))
 }
 
-func ParseProviderLoginID(loginID networkid.UserLoginID) (parent networkid.UserLoginID, providerID string, ok bool) {
-	rest, ok := strings.CutPrefix(string(loginID), "provider:")
-	if !ok {
-		return "", "", false
-	}
-	encodedParent, providerID, ok := strings.Cut(rest, ":")
-	if !ok || encodedParent == "" || providerID == "" {
-		return "", "", false
-	}
-	decodedParent, err := decode(encodedParent)
-	if err != nil || decodedParent == "" {
-		return "", "", false
-	}
-	return networkid.UserLoginID(decodedParent), providerID, true
-}
-
 func PortalID(roomID id.RoomID) networkid.PortalID {
 	return networkid.PortalID("mxroom:" + encode(string(roomID)))
 }

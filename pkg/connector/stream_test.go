@@ -274,14 +274,13 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 }
 
 func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:     "custom",
+		Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
+	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"custom": {
-				ID:     "custom",
-				Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
-			},
-		}},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}}
 	content := &event.MessageEventContent{}
 	client.applyModelProfile(context.Background(), content, "custom", "gpt-5.5")
@@ -304,15 +303,13 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 			UserMXID: "@test:beeper.com",
-			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-				"beeper": {
-					ID:           aiid.DefaultProvider,
-					DisplayName:  "Beeper AI",
-					API:          ai.ApiOpenAIResponses,
-					Provider:     ai.ProviderOpenAI,
-					BaseURL:      server.URL + "/proxy/openai/v1",
-					DefaultModel: "beeper/default",
-				},
+			Metadata: &aiid.UserLoginMetadata{Provider: &aiid.ProviderConfig{
+				ID:           aiid.DefaultProvider,
+				DisplayName:  "Beeper AI",
+				API:          ai.ApiOpenAIResponses,
+				Provider:     ai.ProviderOpenAI,
+				BaseURL:      server.URL + "/proxy/openai/v1",
+				DefaultModel: "beeper/default",
 			}},
 		}},
 	}

@@ -13,6 +13,7 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/bridgev2"
 )
 
 const aiServicesAppserviceTokenPrefix = "as::"
@@ -239,26 +240,35 @@ func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.Pro
 }
 
 func (cl *Client) savedProviderConfig(providerID string) (aiid.ProviderConfig, bool) {
-	meta := cl.loginMetadata()
-	if meta == nil || meta.Providers == nil || providerID == "" {
+	if cl == nil || cl.Main == nil || cl.UserLogin == nil || providerID == "" {
 		return aiid.ProviderConfig{}, false
 	}
-	provider, ok := meta.Providers[providerID]
-	return provider, ok
+	return cl.Main.providerForLogin(cl.UserLogin, providerID)
 }
 
 func (cl *Client) saveProviderConfig(ctx context.Context, provider aiid.ProviderConfig) {
-	meta := cl.loginMetadata()
-	if meta == nil || meta.Providers == nil || provider.ID == "" {
+	if cl == nil || cl.Main == nil || cl.UserLogin == nil || provider.ID == "" {
 		return
 	}
-	if _, ok := meta.Providers[provider.ID]; !ok {
+	var login *bridgev2.UserLogin
+	if provider.ID == aiid.DefaultProvider {
+		var err error
+		login, err = cl.Main.aiChatsLoginFromLoadedUser(cl.UserLogin)
+		if err != nil {
+			return
+		}
+	} else {
+		login = cl.Main.providerLoginForID(cl.UserLogin, provider.ID)
+	}
+	if login == nil {
 		return
 	}
-	meta.Providers[provider.ID] = provider
-	if cl.UserLogin != nil {
-		_ = cl.UserLogin.Save(ctx)
+	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
+	if !ok {
+		return
 	}
+	meta.Provider = &provider
+	_ = login.Save(ctx)
 }
 
 func resolveConfiguredAPIKey(apiKey string) string {

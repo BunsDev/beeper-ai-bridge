@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	loginFlowDefaultProvider      = "beeper"
+	loginFlowBeeper               = "beeper"
 	loginFlowOpenAIResponses      = "openai-responses"
 	loginFlowOpenAICompletions    = "openai-completions"
 	loginFlowOpenAICodexResponses = "openai-codex-responses"
 	loginFlowChatGPTDevice        = "chatgpt-device"
-	loginStepDefault              = "com.beeper.ai.login.default"
+	loginStepBeeper               = "com.beeper.ai.login.beeper"
 	loginStepProviderConfig       = "com.beeper.ai.login.provider.config"
 	loginStepProviderDefault      = "com.beeper.ai.login.provider.default_model"
 	loginStepComplete             = "com.beeper.ai.login.complete"
@@ -33,7 +33,7 @@ func (c *Connector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		Name:        "Beeper AI",
 		Description: "Use the default Beeper AI provider",
-		ID:          loginFlowDefaultProvider,
+		ID:          loginFlowBeeper,
 	}, {
 		Name:        "OpenAI Responses",
 		Description: "Add a provider using the OpenAI Responses API",
@@ -55,32 +55,44 @@ func (c *Connector) GetLoginFlows() []bridgev2.LoginFlow {
 
 func (c *Connector) CreateLogin(ctx context.Context, user *bridgev2.User, flowID string) (bridgev2.LoginProcess, error) {
 	switch flowID {
-	case loginFlowDefaultProvider:
-		return &DefaultProviderLogin{Main: c, User: user}, nil
+	case loginFlowBeeper:
+		return &BeeperLogin{Main: c, User: user}, nil
 	case loginFlowOpenAIResponses:
+		if _, err := c.requireAIChatsLogin(ctx, user); err != nil {
+			return nil, err
+		}
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAIResponses}}, nil
 	case loginFlowOpenAICompletions:
+		if _, err := c.requireAIChatsLogin(ctx, user); err != nil {
+			return nil, err
+		}
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAICompletions}}, nil
 	case loginFlowOpenAICodexResponses:
+		if _, err := c.requireAIChatsLogin(ctx, user); err != nil {
+			return nil, err
+		}
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAICodexResponses}}, nil
 	case loginFlowChatGPTDevice:
+		if _, err := c.requireAIChatsLogin(ctx, user); err != nil {
+			return nil, err
+		}
 		return &ChatGPTDeviceLogin{Main: c, User: user}, nil
 	default:
 		return nil, fmt.Errorf("invalid login flow ID")
 	}
 }
 
-type DefaultProviderLogin struct {
+type BeeperLogin struct {
 	Main *Connector
 	User *bridgev2.User
 }
 
-var _ bridgev2.LoginProcess = (*DefaultProviderLogin)(nil)
+var _ bridgev2.LoginProcess = (*BeeperLogin)(nil)
 
-func (l *DefaultProviderLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
-	log := providerLoginLog(ctx, loginFlowDefaultProvider, aiid.DefaultProvider)
+func (l *BeeperLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	log := providerLoginLog(ctx, loginFlowBeeper, aiid.DefaultProvider)
 	ctx = log.WithContext(ctx)
-	login, err := l.Main.EnsureDefaultLogin(ctx, l.User)
+	login, err := l.Main.EnsureAIChatsLogin(ctx, l.User)
 	if err != nil {
 		log.Err(err).Msg("Failed to ensure default AI provider login")
 		return nil, err
@@ -92,7 +104,7 @@ func (l *DefaultProviderLogin) Start(ctx context.Context) (*bridgev2.LoginStep, 
 	log.Debug().Str("login_id", string(login.ID)).Msg("Default AI provider login ready")
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
-		StepID:       loginStepDefault,
+		StepID:       loginStepBeeper,
 		Instructions: "AI bridge login ready",
 		CompleteParams: &bridgev2.LoginCompleteParams{
 			UserLoginID: login.ID,
@@ -101,7 +113,7 @@ func (l *DefaultProviderLogin) Start(ctx context.Context) (*bridgev2.LoginStep, 
 	}, nil
 }
 
-func (l *DefaultProviderLogin) Cancel() {
+func (l *BeeperLogin) Cancel() {
 }
 
 type CustomProviderLogin struct {
@@ -113,7 +125,8 @@ type CustomProviderLogin struct {
 var _ bridgev2.LoginProcessUserInput = (*CustomProviderLogin)(nil)
 
 func (l *CustomProviderLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
-	providerLoginLog(ctx, string(l.config.API), "").Debug().Msg("Prompting for provider login config")
+	log := providerLoginLog(ctx, string(l.config.API), "")
+	log.Debug().Msg("Prompting for provider login config")
 	return l.providerConfigStep(), nil
 }
 
@@ -366,20 +379,22 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 		Str("default_model", provider.DefaultModel).
 		Logger()
 	ctx = log.WithContext(ctx)
-	mainLogin, err := c.EnsureDefaultLogin(ctx, user)
-	if err != nil {
-		log.Err(err).Msg("Failed to ensure parent AI login for provider")
-		return nil, err
+	if provider.ID == "" {
+		return nil, fmt.Errorf("provider id is required")
 	}
-	if err = c.addProviderToLogin(ctx, mainLogin, provider); err != nil {
-		log.Err(err).Str("parent_login_id", string(mainLogin.ID)).Msg("Failed to save provider on parent AI login")
+	if provider.ID == aiid.DefaultProvider {
+		return nil, fmt.Errorf("provider id %q is reserved for the Beeper AI login", aiid.DefaultProvider)
+	}
+	mainLogin, err := c.requireAIChatsLogin(ctx, user)
+	if err != nil {
+		log.Err(err).Msg("Provider login requires Beeper AI login")
 		return nil, err
 	}
 	loginID := aiid.ProviderLoginID(mainLogin.ID, provider.ID)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
 		cached.RemoteName = provider.DisplayName
 		cached.RemoteProfile.Name = provider.DisplayName
-		cached.Metadata = &aiid.UserLoginMetadata{}
+		cached.Metadata = &aiid.UserLoginMetadata{Provider: &provider}
 		if err = cached.Save(ctx); err != nil {
 			log.Err(err).Str("login_id", string(cached.ID)).Msg("Failed to save cached provider login")
 			return nil, err
@@ -397,7 +412,7 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 		RemoteProfile: status.RemoteProfile{
 			Name: provider.DisplayName,
 		},
-		Metadata: &aiid.UserLoginMetadata{},
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}, &bridgev2.NewLoginParams{})
 	if err != nil {
 		log.Err(err).Str("login_id", string(loginID)).Msg("Failed to create provider login")
@@ -409,37 +424,6 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 	}
 	log.Debug().Str("login_id", string(login.ID)).Str("parent_login_id", string(mainLogin.ID)).Msg("Created provider login")
 	return login, nil
-}
-
-func (c *Connector) addProviderToLogin(ctx context.Context, login *bridgev2.UserLogin, provider aiid.ProviderConfig) error {
-	if provider.ID == "" {
-		return fmt.Errorf("provider id is required")
-	}
-	if provider.ID == aiid.DefaultProvider {
-		return fmt.Errorf("provider id %q is reserved for the Beeper AI provider", aiid.DefaultProvider)
-	}
-	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
-	if !ok {
-		return fmt.Errorf("unexpected login metadata type %T", login.Metadata)
-	}
-	ensureMetadata(meta)
-	meta.Providers[provider.ID] = provider
-	return login.Save(ctx)
-}
-
-func (c *Connector) connectUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
-	if login == nil {
-		return nil
-	}
-	if login.Client == nil {
-		if err := c.LoadUserLogin(ctx, login); err != nil {
-			return err
-		}
-	}
-	if login.Client != nil {
-		login.Client.Connect(ctx)
-	}
-	return nil
 }
 
 func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {

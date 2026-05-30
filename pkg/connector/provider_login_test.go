@@ -10,19 +10,23 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 func TestProviderLoginUsesParentGhostIdentity(t *testing.T) {
+	userMXID := id.UserID("@alice:example.com")
+	mainLoginID := aiid.DefaultLoginID(userMXID)
 	providerLogin := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID:       aiid.ProviderLoginID("main-login", "openai-codex"),
+		ID:       aiid.ProviderLoginID(mainLoginID, "openai-codex"),
+		UserMXID: userMXID,
 		Metadata: &aiid.UserLoginMetadata{},
 	}}
-	client := &ProviderLoginClient{UserLogin: providerLogin}
+	client := &ProviderLoginClient{Main: &Connector{}, UserLogin: providerLogin}
 
-	if got := client.GetUserID(); got != networkid.UserID("login:main-login") {
+	if got := client.GetUserID(); got != networkid.UserID("login:"+string(mainLoginID)) {
 		t.Fatalf("expected provider login to use parent ghost ID, got %q", got)
 	}
-	if !client.IsThisUser(t.Context(), networkid.UserID("login:main-login")) {
+	if !client.IsThisUser(t.Context(), networkid.UserID("login:"+string(mainLoginID))) {
 		t.Fatalf("expected parent ghost ID to match provider login")
 	}
 	if client.IsThisUser(t.Context(), networkid.UserID("login:provider-login")) {

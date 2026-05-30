@@ -33,24 +33,22 @@ func TestPortalAndAssistantIDsAreStable(t *testing.T) {
 		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
 	}
 	providerLogin := ProviderLoginID(loginID, "openai")
-	parent, providerID, ok := ParseProviderLoginID(providerLogin)
-	if !ok || parent != loginID || providerID != "openai" {
-		t.Fatalf("provider login ID did not parse: %q %q %v", parent, providerID, ok)
+	if !strings.HasPrefix(string(providerLogin), "provider:") || !strings.Contains(string(providerLogin), ":openai") {
+		t.Fatalf("unexpected provider login ID %q", providerLogin)
 	}
 }
 
 func TestMetadataJSONRoundTrip(t *testing.T) {
+	provider := ProviderConfig{
+		ID:           "custom",
+		DisplayName:  "Custom",
+		API:          ai.ApiOpenAIResponses,
+		Provider:     "custom",
+		BaseURL:      "https://example.com/v1/responses",
+		DefaultModel: "gpt-5",
+	}
 	meta := &UserLoginMetadata{
-		Providers: map[string]ProviderConfig{
-			"custom": {
-				ID:           "custom",
-				DisplayName:  "Custom",
-				API:          ai.ApiOpenAIResponses,
-				Provider:     "custom",
-				BaseURL:      "https://example.com/v1/responses",
-				DefaultModel: "gpt-5",
-			},
-		},
+		Provider: &provider,
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -60,10 +58,10 @@ func TestMetadataJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Providers["custom"].BaseURL != "https://example.com/v1/responses" {
-		t.Fatalf("provider metadata did not round trip: %#v", decoded.Providers["custom"])
+	if decoded.Provider == nil || decoded.Provider.BaseURL != "https://example.com/v1/responses" {
+		t.Fatalf("provider metadata did not round trip: %#v", decoded.Provider)
 	}
-	if decoded.Providers["custom"].DefaultModel != "gpt-5" {
+	if decoded.Provider.DefaultModel != "gpt-5" {
 		t.Fatalf("metadata did not round trip: %#v", decoded)
 	}
 }

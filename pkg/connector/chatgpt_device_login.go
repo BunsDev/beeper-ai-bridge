@@ -270,8 +270,8 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 		return chatGPTDeviceToken{}, false, false, fmt.Errorf("failed to poll ChatGPT device login: %w", err)
 	}
 	defer resp.Body.Close()
-	logChatGPTHTTPResponse(log, resp, time.Since(started), "Received ChatGPT auth HTTP response")
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		logChatGPTHTTPResponse(log, resp, time.Since(started), "Received ChatGPT auth HTTP response")
 		var body struct {
 			AuthorizationCode string `json:"authorization_code"`
 			CodeVerifier      string `json:"code_verifier"`
@@ -286,15 +286,31 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 	}
 	responseText, _ := io.ReadAll(resp.Body)
 	errorCode := chatGPTErrorCode(string(responseText))
+	duration := time.Since(started)
 	if errorCode == "deviceauth_authorization_pending" {
-		log.Trace().Str("error_code", errorCode).Msg("ChatGPT device login is pending")
+		log.Trace().
+			Dur("duration", duration).
+			Int("status_code", resp.StatusCode).
+			Str("status", resp.Status).
+			Str("error_code", errorCode).
+			Msg("ChatGPT device login is pending")
 		return chatGPTDeviceToken{}, true, false, nil
 	}
 	if errorCode == "slow_down" {
-		log.Debug().Str("error_code", errorCode).Msg("ChatGPT device login poll slowed down")
+		log.Debug().
+			Dur("duration", duration).
+			Int("status_code", resp.StatusCode).
+			Str("status", resp.Status).
+			Str("error_code", errorCode).
+			Msg("ChatGPT device login poll slowed down")
 		return chatGPTDeviceToken{}, true, true, nil
 	}
-	log.Error().Str("error_code", errorCode).Msg("ChatGPT device login failed")
+	log.Error().
+		Dur("duration", duration).
+		Int("status_code", resp.StatusCode).
+		Str("status", resp.Status).
+		Str("error_code", errorCode).
+		Msg("ChatGPT device login failed")
 	return chatGPTDeviceToken{}, false, false, fmt.Errorf("ChatGPT device login failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseText)))
 }
 

@@ -15,17 +15,16 @@ import (
 )
 
 func TestModelContactsExposeConfiguredModels(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:          "local",
+		DisplayName: "Local",
+		Provider:    "local",
+		API:         ai.ApiOpenAIResponses,
+		Models:      []ai.Model{{ID: "model-a"}, {ID: "model-b", Name: "Model Bee"}},
+	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"local": {
-				ID:          "local",
-				DisplayName: "Local",
-				Provider:    "local",
-				API:         ai.ApiOpenAIResponses,
-				Models:      []ai.Model{{ID: "model-a"}, {ID: "model-b", Name: "Model Bee"}},
-			},
-		}},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}}
 	contacts, err := client.GetContactList(context.Background())
 	if err != nil {
@@ -265,14 +264,13 @@ func TestModelWelcomeNoticeUsesDisplayName(t *testing.T) {
 }
 
 func TestSearchUsersFiltersModelContacts(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:     "local",
+		Models: []ai.Model{{ID: "small"}, {ID: "large"}},
+	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"local": {
-				ID:     "local",
-				Models: []ai.Model{{ID: "small"}, {ID: "large"}},
-			},
-		}},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}}
 	results, err := client.SearchUsers(context.Background(), "large")
 	if err != nil {
@@ -284,17 +282,16 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 }
 
 func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:          "local",
+		DisplayName: "Local",
+		Provider:    "local",
+		API:         ai.ApiOpenAIResponses,
+		Models:      []ai.Model{{ID: "listed"}},
+	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"local": {
-				ID:          "local",
-				DisplayName: "Local",
-				Provider:    "local",
-				API:         ai.ApiOpenAIResponses,
-				Models:      []ai.Model{{ID: "listed"}},
-			},
-		}},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}}
 	results, err := client.SearchUsers(context.Background(), "whateveristyped")
 	if err != nil {
@@ -309,34 +306,22 @@ func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
 	}
 }
 
-func TestContactListIncludesLoginProviders(t *testing.T) {
+func TestContactListIncludesLoginProvider(t *testing.T) {
 	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:           "openrouter",
+		DisplayName:  "OpenRouter",
+		Provider:     ai.ProviderOpenRouter,
+		API:          ai.ApiOpenAICompletions,
+		BaseURL:      "https://openrouter.ai/api/v1",
+		DefaultModel: "anthropic/claude-sonnet-4.5",
+		Models:       []ai.Model{{ID: "anthropic/claude-sonnet-4.5"}},
+	}
 	client := &Client{
 		Main: conn,
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-			ID: "login",
-			Metadata: &aiid.UserLoginMetadata{
-				Providers: map[string]aiid.ProviderConfig{
-					"openrouter": {
-						ID:           "openrouter",
-						DisplayName:  "OpenRouter",
-						Provider:     ai.ProviderOpenRouter,
-						API:          ai.ApiOpenAICompletions,
-						BaseURL:      "https://openrouter.ai/api/v1",
-						DefaultModel: "anthropic/claude-sonnet-4.5",
-						Models:       []ai.Model{{ID: "anthropic/claude-sonnet-4.5"}},
-					},
-					"custom": {
-						ID:           "custom",
-						DisplayName:  "Custom",
-						Provider:     "custom",
-						API:          ai.ApiOpenAIResponses,
-						BaseURL:      "https://custom.test/v1",
-						DefaultModel: "custom-model",
-						Models:       []ai.Model{{ID: "custom-model"}},
-					},
-				},
-			},
+			ID:       "login",
+			Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 		}},
 	}
 
@@ -352,7 +337,6 @@ func TestContactListIncludesLoginProviders(t *testing.T) {
 	}
 	for _, want := range []string{
 		"openrouter/anthropic/claude-sonnet-4.5",
-		"custom/custom-model",
 	} {
 		if !got[want] {
 			t.Fatalf("expected contact %s in %#v", want, got)

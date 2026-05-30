@@ -99,7 +99,7 @@ func TestCurrentCommandResponseText(t *testing.T) {
 	if !strings.Contains(modelStatus, "Current model is `beeper/gpt-5.5`. Current reasoning is `off`.") {
 		t.Fatalf("model status is missing current value:\n%s", modelStatus)
 	}
-	if !strings.Contains(modelStatus, "Options: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`, `openrouter/openai/gpt-5`.") {
+	if !strings.Contains(modelStatus, "Options: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`.") {
 		t.Fatalf("model status is missing available options:\n%s", modelStatus)
 	}
 	if got := currentSystemPromptText(RoomConfig{}); got != "No additional system prompt is set." {
@@ -145,12 +145,12 @@ func TestResolveCanonicalRoomModelUsesDefaultProviderForBareModel(t *testing.T) 
 func TestResolveCanonicalRoomModelMatchesBareModelByCatalogSuffixOrder(t *testing.T) {
 	client := canonicalTestClient()
 	meta := client.UserLogin.Metadata.(*aiid.UserLoginMetadata)
-	provider := meta.Providers[aiid.DefaultProvider]
+	provider := *meta.Provider
 	provider.Models = []ai.Model{
 		{ID: "anthropic/gpt-5.5", Name: "First GPT 5.5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAIResponses},
 		{ID: "openai/gpt-5.5", Name: "OpenAI GPT 5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses},
 	}
-	meta.Providers[aiid.DefaultProvider] = provider
+	meta.Provider = &provider
 
 	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ModelID: "gpt-5.5"})
 	if err != nil {
@@ -174,6 +174,14 @@ func TestResolveCanonicalRoomModelPreservesDefaultOpenAICatalogModel(t *testing.
 
 func TestResolveCanonicalRoomModelPreservesFullProviderModel(t *testing.T) {
 	client := canonicalTestClient()
+	openrouter := aiid.ProviderConfig{
+		ID:           "openrouter",
+		Provider:     ai.ProviderOpenRouter,
+		API:          ai.ApiOpenAICompletions,
+		DefaultModel: "openai/gpt-5",
+		Models:       []ai.Model{{ID: "openai/gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
+	}
+	client.UserLogin.Metadata = &aiid.UserLoginMetadata{Provider: &openrouter}
 	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ProviderID: "openrouter", ModelID: "openai/gpt-5"})
 	if err != nil {
 		t.Fatal(err)
@@ -199,26 +207,16 @@ func TestRoomReasoningValidationSyntax(t *testing.T) {
 func canonicalTestClient() *Client {
 	conn := &Connector{}
 	conn.Config.ApplyDefaults()
+	provider := aiid.ProviderConfig{
+		ID:           "beeper",
+		Provider:     ai.ProviderOpenAI,
+		API:          ai.ApiOpenAIResponses,
+		DefaultModel: "gpt-5.5",
+		Models:       []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}, {ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+	}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{
-			Providers: map[string]aiid.ProviderConfig{
-				"beeper": {
-					ID:           "beeper",
-					Provider:     ai.ProviderOpenAI,
-					API:          ai.ApiOpenAIResponses,
-					DefaultModel: "gpt-5.5",
-					Models:       []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}, {ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
-				},
-				"openrouter": {
-					ID:           "openrouter",
-					Provider:     ai.ProviderOpenRouter,
-					API:          ai.ApiOpenAICompletions,
-					DefaultModel: "openai/gpt-5",
-					Models:       []ai.Model{{ID: "openai/gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
-				},
-			},
-		},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
 	}}
 	return &Client{Main: conn, UserLogin: login}
 }

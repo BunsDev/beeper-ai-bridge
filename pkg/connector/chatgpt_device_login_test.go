@@ -19,7 +19,7 @@ import (
 func TestGetLoginFlowsIncludesChatGPTDeviceLogin(t *testing.T) {
 	conn := &Connector{}
 	flows := conn.GetLoginFlows()
-	if len(flows) == 0 || flows[0].ID != loginFlowDefaultProvider {
+	if len(flows) == 0 || flows[0].ID != loginFlowBeeper {
 		t.Fatalf("expected default Beeper AI login flow first, got %#v", flows)
 	}
 	found := false
@@ -32,11 +32,8 @@ func TestGetLoginFlowsIncludesChatGPTDeviceLogin(t *testing.T) {
 		t.Fatalf("expected ChatGPT device login flow in %#v", flows)
 	}
 	process, err := conn.CreateLogin(t.Context(), &bridgev2.User{}, loginFlowChatGPTDevice)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := process.(*ChatGPTDeviceLogin); !ok {
-		t.Fatalf("expected ChatGPTDeviceLogin, got %T", process)
+	if err == nil {
+		t.Fatalf("expected ChatGPT device login to require Beeper AI first, got %T", process)
 	}
 }
 
