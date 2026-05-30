@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -40,10 +41,12 @@ type Attachment struct {
 }
 
 type FetchOptions struct {
-	Timeout  time.Duration
-	MaxBytes int64
-	MaxChars int
-	Client   *http.Client
+	Timeout     time.Duration
+	MaxBytes    int64
+	MaxChars    int
+	Client      *http.Client
+	ExaEndpoint string
+	APIKey      string
 }
 
 type SearchOptions struct {
@@ -108,9 +111,10 @@ func FetchTool(options FetchOptions) agent.AgentTool[any] {
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "fetch",
-			Description: "Fetch an HTTP or HTTPS URL and return status, final URL, content type, page title, and extracted text.",
+			Description: "Fetch an HTTP or HTTPS URL. Uses direct HTTP fetch for assets, markdown, text, and data files; uses Exa page extraction for normal web pages when configured.",
 			Parameters: objectSchema(map[string]any{
-				"url": map[string]any{"type": "string", "description": "HTTP or HTTPS URL to fetch."},
+				"url":       map[string]any{"type": "string", "description": "HTTP or HTTPS URL to fetch."},
+				"max_chars": map[string]any{"type": "integer", "description": "Maximum number of text characters to return."},
 			}, []string{"url"}),
 		},
 		Execute: func(ctx context.Context, toolCallID string, params any, onUpdate agent.AgentToolUpdateCallback[any]) (agent.AgentToolResult[any], error) {
@@ -118,7 +122,11 @@ func FetchTool(options FetchOptions) agent.AgentTool[any] {
 			if err != nil {
 				return agent.AgentToolResult[any]{}, err
 			}
-			result, err := Fetch(ctx, urlValue, options)
+			fetchOptions := options
+			if maxChars := intParam(params, "max_chars", 0); maxChars > 0 {
+				fetchOptions.MaxChars = maxChars
+			}
+			result, err := Fetch(ctx, urlValue, fetchOptions)
 			if err != nil {
 				return agent.AgentToolResult[any]{}, err
 			}
@@ -128,13 +136,30 @@ func FetchTool(options FetchOptions) agent.AgentTool[any] {
 }
 
 type FetchResult struct {
-	URL         string `json:"url"`
-	FinalURL    string `json:"final_url"`
-	Status      int    `json:"status"`
-	ContentType string `json:"content_type,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Text        string `json:"text,omitempty"`
-	Truncated   bool   `json:"truncated"`
+	URL             string          `json:"url"`
+	FinalURL        string          `json:"final_url"`
+	Status          int             `json:"status"`
+	ContentType     string          `json:"content_type,omitempty"`
+	Title           string          `json:"title,omitempty"`
+	Text            string          `json:"text,omitempty"`
+	Truncated       bool            `json:"truncated"`
+	ID              string          `json:"id,omitempty"`
+	Published       string          `json:"published,omitempty"`
+	Author          string          `json:"author,omitempty"`
+	Image           string          `json:"image,omitempty"`
+	Favicon         string          `json:"favicon,omitempty"`
+	Highlights      []string        `json:"highlights,omitempty"`
+	HighlightScores []float64       `json:"highlightScores,omitempty"`
+	Summary         any             `json:"summary,omitempty"`
+	Subpages        []SearchSubpage `json:"subpages,omitempty"`
+	Entities        []any           `json:"entities,omitempty"`
+	Extras          map[string]any  `json:"extras,omitempty"`
+	Source          string          `json:"source,omitempty"`
+	RequestID       string          `json:"requestId,omitempty"`
+	Context         string          `json:"context,omitempty"`
+	CostDollars     map[string]any  `json:"costDollars,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	FetchMethod     string          `json:"fetch_method,omitempty"`
 }
 
 func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
@@ -154,6 +179,16 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 	if options.MaxChars == 0 {
 		options.MaxChars = 20000
 	}
+	if options.ExaEndpoint != "" && !shouldDirectFetch(parsed) {
+		result, err := FetchContents(ctx, parsed.String(), options)
+		if err == nil {
+			return result, nil
+		}
+	}
+	return fetchDirect(ctx, rawURL, parsed, options)
+}
+
+func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options FetchOptions) (FetchResult, error) {
 	client := options.Client
 	if client == nil {
 		client = &http.Client{Timeout: options.Timeout}
@@ -190,7 +225,95 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 		Title:       extractTitle(body),
 		Text:        text,
 		Truncated:   truncated,
+		FetchMethod: "direct",
 	}, nil
+}
+
+func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
+	if options.ExaEndpoint == "" {
+		return FetchResult{}, errors.New("fetch contents is not configured")
+	}
+	textMaxChars := options.MaxChars
+	if textMaxChars <= 0 || textMaxChars > 10000 {
+		textMaxChars = 10000
+	}
+	client := options.Client
+	if client == nil {
+		client = &http.Client{Timeout: options.Timeout}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"urls": []string{rawURL},
+		"text": map[string]any{
+			"maxCharacters": textMaxChars,
+			"verbosity":     "standard",
+		},
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.ExaEndpoint, bytes.NewReader(payload))
+	if err != nil {
+		return FetchResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if options.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+options.APIKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return FetchResult{}, fmt.Errorf("fetch contents failed with HTTP %d", resp.StatusCode)
+	}
+	var body contentsResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&body); err != nil {
+		return FetchResult{}, err
+	}
+	result := FetchResult{
+		URL:         rawURL,
+		FinalURL:    rawURL,
+		Status:      200,
+		Truncated:   false,
+		RequestID:   body.RequestID,
+		Context:     body.Context,
+		CostDollars: body.CostDollars,
+		FetchMethod: "exa",
+	}
+	if len(body.Statuses) > 0 {
+		status := body.Statuses[0]
+		result.Source = status.Source
+		if status.Status == "error" {
+			result.Status = status.Error.HTTPStatusCode
+			if result.Status == 0 {
+				result.Status = 502
+			}
+			result.Error = status.Error.Tag
+			return result, fmt.Errorf("fetch contents failed: %s", firstNonEmpty(status.Error.Tag, status.Status))
+		}
+	}
+	if len(body.Results) == 0 {
+		return result, nil
+	}
+	item := body.Results[0]
+	result.FinalURL = firstNonEmpty(item.URL, rawURL)
+	result.ID = item.ID
+	result.Title = item.Title
+	result.Text = item.Text
+	result.Published = firstNonEmpty(item.Published, item.PublishedDate)
+	result.Author = item.Author
+	result.Image = item.Image
+	result.Favicon = item.Favicon
+	result.Highlights = item.Highlights
+	result.HighlightScores = item.HighlightScores
+	result.Summary = item.Summary
+	result.Subpages = item.Subpages
+	result.Entities = item.Entities
+	result.Extras = item.Extras
+	if len([]rune(result.Text)) > options.MaxChars {
+		runes := []rune(result.Text)
+		result.Text = string(runes[:options.MaxChars])
+		result.Truncated = true
+	}
+	return result, nil
 }
 
 func WebSearchTool(options SearchOptions) agent.AgentTool[any] {
@@ -358,6 +481,44 @@ type searchResponseItem struct {
 	Metadata        map[string]any  `json:"metadata"`
 }
 
+type contentsResponse struct {
+	RequestID   string                `json:"requestId"`
+	Context     string                `json:"context"`
+	CostDollars map[string]any        `json:"costDollars"`
+	Results     []contentsResultItem  `json:"results"`
+	Statuses    []contentsStatusEntry `json:"statuses"`
+}
+
+type contentsResultItem struct {
+	ID              string          `json:"id"`
+	Title           string          `json:"title"`
+	URL             string          `json:"url"`
+	Text            string          `json:"text"`
+	Highlights      []string        `json:"highlights"`
+	HighlightScores []float64       `json:"highlightScores"`
+	Summary         any             `json:"summary"`
+	Published       string          `json:"published"`
+	PublishedDate   string          `json:"publishedDate"`
+	Author          string          `json:"author"`
+	Image           string          `json:"image"`
+	Favicon         string          `json:"favicon"`
+	Subpages        []SearchSubpage `json:"subpages"`
+	Entities        []any           `json:"entities"`
+	Extras          map[string]any  `json:"extras"`
+}
+
+type contentsStatusEntry struct {
+	ID     string              `json:"id"`
+	Status string              `json:"status"`
+	Source string              `json:"source"`
+	Error  contentsStatusError `json:"error"`
+}
+
+type contentsStatusError struct {
+	Tag            string `json:"tag"`
+	HTTPStatusCode int    `json:"httpStatusCode"`
+}
+
 func (body searchResponse) result() SearchResult {
 	result := SearchResult{
 		Query:              body.Query,
@@ -427,6 +588,110 @@ func searchPayload(query string, limit int, request SearchRequestOptions) map[st
 	return payload
 }
 
+func requestOptions(params any) SearchRequestOptions {
+	values, ok := params.(map[string]any)
+	if !ok {
+		return SearchRequestOptions{}
+	}
+	var out SearchRequestOptions
+	out.IncludeDomains = stringSliceParam(values, "includeDomains")
+	out.ExcludeDomains = stringSliceParam(values, "excludeDomains")
+	out.StartCrawlDate = stringValueParam(values, "startCrawlDate")
+	out.EndCrawlDate = stringValueParam(values, "endCrawlDate")
+	out.StartPublishedDate = stringValueParam(values, "startPublishedDate")
+	out.EndPublishedDate = stringValueParam(values, "endPublishedDate")
+	if value, ok := values["context"]; ok {
+		out.Context = value
+	}
+	if value, ok := values["moderation"].(bool); ok {
+		out.Moderation = &value
+	}
+	out.Contents = mapParam(values, "contents")
+	out.AdditionalQueries = stringSliceParam(values, "additionalQueries")
+	out.Type = stringValueParam(values, "type")
+	out.Category = stringValueParam(values, "category")
+	out.UserLocation = stringValueParam(values, "userLocation")
+	out.Compliance = stringValueParam(values, "compliance")
+	out.OutputSchema = mapParam(values, "outputSchema")
+	out.SystemPrompt = stringValueParam(values, "systemPrompt")
+	return out
+}
+
+func addString(payload map[string]any, key string, value string) {
+	if strings.TrimSpace(value) != "" {
+		payload[key] = strings.TrimSpace(value)
+	}
+}
+
+func addStrings(payload map[string]any, key string, values []string) {
+	if len(values) > 0 {
+		payload[key] = values
+	}
+}
+
+func addMap(payload map[string]any, key string, value map[string]any) {
+	if len(value) > 0 {
+		payload[key] = value
+	}
+}
+
+func addAny(payload map[string]any, key string, value any) {
+	if value != nil {
+		payload[key] = value
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func shouldDirectFetch(parsed *url.URL) bool {
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.ToLower(parsed.EscapedPath())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
+		return true
+	}
+	if host == "raw.githubusercontent.com" || host == "gist.githubusercontent.com" {
+		return true
+	}
+	if strings.Contains(path, "/-/raw/") || strings.Contains(path, "/raw/") {
+		return true
+	}
+	dot := strings.LastIndex(path, ".")
+	if dot < 0 {
+		return false
+	}
+	switch path[dot:] {
+	case ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml", ".rss", ".atom",
+		".log", ".diff", ".patch",
+		".go", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sass", ".less",
+		".c", ".cc", ".cpp", ".h", ".hpp", ".java", ".kt", ".kts", ".rs", ".py", ".rb", ".swift", ".sh", ".bash", ".zsh", ".fish", ".sql",
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".svg",
+		".pdf", ".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar",
+		".mp3", ".mp4", ".m4a", ".mov", ".wav", ".webm", ".ogg",
+		".woff", ".woff2", ".ttf", ".otf", ".eot", ".wasm",
+		".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx":
+		return true
+	default:
+		return false
+	}
+}
+
 func jsonResult(value any) (agent.AgentToolResult[any], error) {
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -478,6 +743,50 @@ func intParam(params any, key string, fallback int) int {
 	default:
 		return fallback
 	}
+}
+
+func stringValueParam(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func stringSliceParam(values map[string]any, key string) []string {
+	raw, ok := values[key].([]any)
+	if !ok {
+		if typed, ok := values[key].([]string); ok {
+			return cleanStringSlice(typed)
+		}
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if value, ok := item.(string); ok && strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
+}
+
+func cleanStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
+}
+
+func mapParam(values map[string]any, key string) map[string]any {
+	value, ok := values[key].(map[string]any)
+	if !ok || len(value) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for k, v := range value {
+		out[k] = v
+	}
+	return out
 }
 
 var titleRE = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)

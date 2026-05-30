@@ -178,11 +178,17 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 			Details: map[string]any{
 				"results": []any{
 					map[string]any{
-						"title":       "One",
-						"url":         "https://example.com/one",
-						"description": "desc",
-						"published":   "2026-01-01",
-						"siteName":    "Example",
+						"id":              "doc_1",
+						"title":           "One",
+						"url":             "https://example.com/one",
+						"description":     "desc",
+						"published":       "2026-01-01",
+						"siteName":        "Example",
+						"highlights":      []any{"hit"},
+						"highlightScores": []any{0.5},
+						"summary":         "sum",
+						"subpages":        []any{map[string]any{"title": "Sub", "url": "https://example.com/sub"}},
+						"extras":          map[string]any{"links": []any{"https://example.com/link"}},
 					},
 				},
 			},
@@ -200,12 +206,15 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 	if source == nil {
 		t.Fatalf("expected source-url part, got %#v", message.Parts)
 	}
-	if source["url"] != "https://example.com/one" || source["title"] != "One" {
+	if source["url"] != "https://example.com/one" || source["title"] != "One" || source["sourceId"] != "doc_1" {
 		t.Fatalf("unexpected source part %#v", source)
 	}
 	meta, ok := source["providerMetadata"].(map[string]any)
 	if !ok || meta["description"] != "desc" || meta["published"] != "2026-01-01" || meta["siteName"] != "Example" {
 		t.Fatalf("missing source metadata: %#v", source["providerMetadata"])
+	}
+	if meta["summary"] != "sum" || meta["highlights"] == nil || meta["highlightScores"] == nil || meta["subpages"] == nil || meta["extras"] == nil {
+		t.Fatalf("missing rich source metadata: %#v", source["providerMetadata"])
 	}
 }
 

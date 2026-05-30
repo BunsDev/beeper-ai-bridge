@@ -39,11 +39,20 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		info.Attachments = append(info.Attachments, chattools.Attachment{Type: attachment.Type, MimeType: attachment.MimeType})
 	}
 	search := cl.searchOptions(roomConfig, provider)
-	return chattools.Tools(info, chattools.FetchOptions{
+	fetch := chattools.FetchOptions{
 		Timeout:  time.Duration(cl.Main.Config.Fetch.TimeoutMS) * time.Millisecond,
 		MaxBytes: cl.Main.Config.Fetch.MaxBytes,
 		MaxChars: cl.Main.Config.Fetch.MaxChars,
-	}, search)
+	}
+	if provider.ID == aiid.DefaultProvider && provider.BaseURL != "" {
+		if token, err := cl.defaultProviderBearerToken(); err == nil {
+			if endpoint, err := aiServicesExaContentsURL(provider.BaseURL); err == nil {
+				fetch.ExaEndpoint = endpoint
+				fetch.APIKey = token
+			}
+		}
+	}
+	return chattools.Tools(info, fetch, search)
 }
 
 func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderConfig) chattools.SearchOptions {
@@ -67,11 +76,19 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 }
 
 func aiServicesExaSearchURL(proxyBaseURL string) (string, error) {
+	return aiServicesExaURL(proxyBaseURL, "search")
+}
+
+func aiServicesExaContentsURL(proxyBaseURL string) (string, error) {
+	return aiServicesExaURL(proxyBaseURL, "contents")
+}
+
+func aiServicesExaURL(proxyBaseURL string, route string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/exa/v1/search"
+	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/exa/v1/" + route
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
@@ -182,6 +199,9 @@ func webSearchSourceParts(toolName string, result any, isError bool) []map[strin
 		part := map[string]any{
 			"url": rawURL,
 		}
+		if id := strings.TrimSpace(stringFromAny(item["id"])); id != "" {
+			part["sourceId"] = id
+		}
 		if title := strings.TrimSpace(stringFromAny(item["title"])); title != "" {
 			part["title"] = title
 		}
@@ -195,19 +215,40 @@ func webSearchSourceParts(toolName string, result any, isError bool) []map[strin
 
 func webSearchProviderMetadata(item map[string]any) map[string]any {
 	meta := map[string]any{}
-	for _, key := range []string{"snippet", "description", "published", "siteName", "author", "image", "favicon", "source"} {
-		if value := strings.TrimSpace(stringFromAny(item[key])); value != "" {
-			meta[key] = value
+	for key, value := range item {
+		if key == "url" || key == "title" || key == "id" || emptyMetadataValue(value) {
+			continue
 		}
+		meta[key] = value
 	}
 	if nested, ok := item["metadata"].(map[string]any); ok {
+		if !emptyMetadataValue(nested) {
+			meta["metadata"] = nested
+		}
 		for key, value := range nested {
-			if _, exists := meta[key]; !exists {
+			if _, exists := meta[key]; !exists && !emptyMetadataValue(value) {
 				meta[key] = value
 			}
 		}
 	}
 	return meta
+}
+
+func emptyMetadataValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(typed) == ""
+	case []any:
+		return len(typed) == 0
+	case []string:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
 }
 
 func stringFromAny(value any) string {

@@ -62,7 +62,11 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	} else if err = portal.Save(ctx); err != nil {
 		return nil, err
 	}
-	if _, err = cl.writeRoomModelState(ctx, portal, provider, model, provider.ID+"/"+model.ID, ""); err != nil {
+	reasoning := cl.reasoningLevelForModel(model, RoomConfig{ProviderID: provider.ID, ModelID: model.ID})
+	if _, err = cl.writeRoomModelState(ctx, portal, provider, model, provider.ID+"/"+model.ID, reasoning); err != nil {
+		return nil, err
+	}
+	if err = cl.sendCommandNotice(ctx, portal, modelWelcomeNoticeText(provider, model)); err != nil {
 		return nil, err
 	}
 	return &bridgev2.CreateChatResponse{

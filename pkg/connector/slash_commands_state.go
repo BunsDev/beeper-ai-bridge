@@ -102,6 +102,10 @@ func modelRoomDescription(provider aiid.ProviderConfig, model ai.Model) string {
 	return "AI Chat with " + modelDisplayName(provider, model)
 }
 
+func modelWelcomeNoticeText(provider aiid.ProviderConfig, model ai.Model) string {
+	return "You are chatting with " + modelDisplayName(provider, model) + ". AI can make mistakes."
+}
+
 func (cl *Client) writeAIRoomState(ctx context.Context, portal *bridgev2.Portal, stateType string, content map[string]any) (string, error) {
 	return cl.Main.aiRoomStateStore().Write(ctx, portal, stateType, content)
 }

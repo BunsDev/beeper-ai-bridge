@@ -256,6 +256,14 @@ func TestModelRoomDescriptionUsesDisplayName(t *testing.T) {
 	}
 }
 
+func TestModelWelcomeNoticeUsesDisplayName(t *testing.T) {
+	provider := aiid.ProviderConfig{ID: "beeper"}
+	model := ai.Model{ID: "anthropic/claude-opus-4.5", Name: "Claude Opus 4.5"}
+	if got := modelWelcomeNoticeText(provider, model); got != "You are chatting with Claude Opus 4.5. AI can make mistakes." {
+		t.Fatalf("unexpected model welcome notice %q", got)
+	}
+}
+
 func TestSearchUsersFiltersModelContacts(t *testing.T) {
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
