@@ -3,6 +3,8 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -50,12 +52,12 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	if len(publisher.updates) != 4 {
 		t.Fatalf("expected stream updates, got %#v", publisher.updates)
 	}
-	deltas, ok := publisher.updates[1][aistream.BeeperAIStreamDeltas].([]aistream.Envelope)
-	if !ok || len(deltas) != 1 {
+	aiPayload, ok := publisher.updates[1][aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || len(aiPayload.Events) != 2 {
 		t.Fatalf("unexpected first delta %#v", publisher.updates[1])
 	}
-	part := deltas[0].Part
-	if part["type"] != agui.EventTextMessageContent || part["delta"] != "hel" {
+	part := aiPayload.Events[1].Event
+	if part.Type() != agui.EventTextMessageContent || part.Get("delta") != "hel" {
 		t.Fatalf("unexpected first text part %#v", part)
 	}
 }
@@ -108,22 +110,22 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 
 	runStarted := 0
 	for _, evt := range run.Events {
-		if evt["type"] == agui.EventRunStarted {
+		if evt.Type() == agui.EventRunStarted {
 			runStarted++
 		}
 	}
 	if runStarted != 1 {
 		t.Fatalf("expected one run start event, got %d in %#v", runStarted, run.Events)
 	}
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if message.ID != "assistant:run" || len(message.Parts) != 2 {
 		t.Fatalf("expected one assistant UI message with text and tool parts, got %#v", message)
 	}
-	if message.Parts[0]["type"] != "text" || message.Parts[0]["content"] != "hello" {
-		t.Fatalf("expected final answer text first, got %#v", message.Parts)
+	if message.Parts[0]["type"] != "tool-call" || message.Parts[0]["toolCallId"] != "call-session" {
+		t.Fatalf("expected folded tool-call part first, got %#v", message.Parts)
 	}
-	if message.Parts[1]["type"] != "tool-call" || message.Parts[1]["toolCallId"] != "call-session" {
-		t.Fatalf("expected folded tool-call part, got %#v", message.Parts)
+	if message.Parts[1]["type"] != "text" || message.Parts[1]["content"] != "hello" {
+		t.Fatalf("expected final answer text after tool call, got %#v", message.Parts)
 	}
 }
 
@@ -147,7 +149,7 @@ func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 		},
 	}})
 
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
 		t.Fatalf("expected one tool part, got %#v", message.Parts)
 	}
@@ -161,11 +163,58 @@ func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 	}
 }
 
+func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolStart("call-search", "web_search", 0, nil)
+	writer.ToolEnd("call-search", "web_search", map[string]any{"query": "q"}, nil)
+
+	appendToolOutputs(run, []toolOutputEvent{{
+		ID:    "call-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "q"},
+		Result: agent.AgentToolResult[any]{
+			Details: map[string]any{
+				"results": []any{
+					map[string]any{
+						"title":       "One",
+						"url":         "https://example.com/one",
+						"description": "desc",
+						"published":   "2026-01-01",
+						"siteName":    "Example",
+					},
+				},
+			},
+		},
+	}})
+
+	message := run.FinalBeeperAIMessage(0, true)
+	var source map[string]any
+	for _, part := range message.Parts {
+		if part["type"] == "source-url" {
+			source = part
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("expected source-url part, got %#v", message.Parts)
+	}
+	if source["url"] != "https://example.com/one" || source["title"] != "One" {
+		t.Fatalf("unexpected source part %#v", source)
+	}
+	meta, ok := source["providerMetadata"].(map[string]any)
+	if !ok || meta["description"] != "desc" || meta["published"] != "2026-01-01" || meta["siteName"] != "Example" {
+		t.Fatalf("missing source metadata: %#v", source["providerMetadata"])
+	}
+}
+
 func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	client := &Client{}
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
 	run.MessageID = "assistant:run"
 	assistantEvent, metadata := client.assistantEvent(
+		context.Background(),
 		aiid.PortalKey(id.RoomID("!room:example.com"), "login"),
 		"assistant:run",
 		"beeper",
@@ -181,7 +230,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		t.Fatalf("assistant event used sender %q", assistantEvent.Sender.Sender)
 	}
 	profile := assistantEvent.Data.Parts[0].Content.BeeperPerMessageProfile
-	if profile == nil || profile.ID != "beeper/gpt-5" || profile.Displayname != "gpt-5" || !profile.HasFallback {
+	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "gpt-5")) || profile.Displayname != "gpt-5" || !profile.HasFallback {
 		t.Fatalf("assistant event missing model profile: %#v", profile)
 	}
 	fillAssistantMetadata(metadata, "entry", "beeper", "gpt-5", "run", ai.Message{
@@ -210,27 +259,59 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile = converted.ModifiedParts[0].Content.BeeperPerMessageProfile
-	if profile == nil || profile.ID != "beeper/gpt-5" || profile.Displayname != "gpt-5" || !profile.HasFallback {
+	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "gpt-5")) || profile.Displayname != "gpt-5" || !profile.HasFallback {
 		t.Fatalf("assistant final edit missing model profile: %#v", profile)
 	}
 }
 
 func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
-	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"beeper": {
-				ID:      "beeper",
-				Models:  []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
-				Enabled: true,
+			"custom": {
+				ID:     "custom",
+				Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
 			},
 		}},
 	}}}
 	content := &event.MessageEventContent{}
-	client.applyModelProfile(content, "beeper", "gpt-5.5")
+	client.applyModelProfile(context.Background(), content, "custom", "gpt-5.5")
 	profile := content.BeeperPerMessageProfile
-	if profile == nil || profile.ID != "beeper/gpt-5.5" || profile.Displayname != "GPT 5.5" || !profile.HasFallback {
+	if profile == nil || profile.ID != string(aiid.ModelContactID("custom", "gpt-5.5")) || profile.Displayname != "GPT 5.5" || !profile.HasFallback {
 		t.Fatalf("assistant model profile lost configured display name: %#v", profile)
+	}
+}
+
+func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","provider":{"id":"wpcom_openai","model_id":"gpt-5.5","api":"openai-responses"}}]}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		Main: &Connector{AppServiceToken: "as-token"},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@test:beeper.com",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				"beeper": {
+					ID:           aiid.DefaultProvider,
+					DisplayName:  "Beeper AI",
+					API:          ai.ApiOpenAIResponses,
+					Provider:     ai.ProviderOpenAI,
+					BaseURL:      server.URL + "/proxy/openai/v1",
+					DefaultModel: "beeper/default",
+				},
+			}},
+		}},
+	}
+	content := &event.MessageEventContent{}
+	client.applyModelProfile(context.Background(), content, "beeper", "openai/gpt-5.5")
+	profile := content.BeeperPerMessageProfile
+	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "openai/gpt-5.5")) || profile.Displayname != "GPT 5.5 Catalog" || !profile.HasFallback {
+		t.Fatalf("assistant model profile ignored catalog display name: %#v", profile)
 	}
 }
 
@@ -254,8 +335,8 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 	}
 	var finished agui.Usage
 	for _, evt := range run.Events {
-		if evt["type"] == agui.EventRunFinished {
-			finished = evt["usage"].(agui.Usage)
+		if evt.Type() == agui.EventRunFinished {
+			finished = evt.Get("usage").(agui.Usage)
 		}
 	}
 	if finished != want {
@@ -282,13 +363,13 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 
 	var sawStart, sawArgs bool
 	for _, evt := range run.Events {
-		switch evt["type"] {
+		switch evt.Type() {
 		case agui.EventToolCallStart:
-			sawStart = evt["toolCallId"] == "call-1" && evt["toolName"] == "read_file"
+			sawStart = evt.Get("toolCallId") == "call-1" && evt.Get("toolName") == "read_file"
 		case agui.EventToolCallArgs:
-			sawArgs = evt["toolCallId"] == "call-1" && evt["delta"] == `{"path":"README.md"}`
-			if args, ok := evt["args"].(map[string]any); !ok || args["path"] != "README.md" {
-				t.Fatalf("expected streamed tool args, got %#v", evt["args"])
+			sawArgs = evt.Get("toolCallId") == "call-1" && evt.Get("delta") == `{"path":"README.md"}`
+			if args, ok := evt.Get("args").(map[string]any); !ok || args["path"] != "README.md" {
+				t.Fatalf("expected streamed tool args, got %#v", evt.Get("args"))
 			}
 		}
 	}
@@ -304,10 +385,10 @@ func TestApplyAIStreamEventPublishesRawProviderEvent(t *testing.T) {
 
 	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "raw", RawEvent: raw, RawSource: "openai"})
 
-	if len(run.Events) != 1 || run.Events[0]["type"] != agui.EventRaw || run.Events[0]["source"] != "openai" {
+	if len(run.Events) != 1 || run.Events[0].Type() != agui.EventRaw || run.Events[0].Get("source") != "openai" {
 		t.Fatalf("expected AG-UI RAW event, got %#v", run.Events)
 	}
-	if event, ok := run.Events[0]["event"].(map[string]any); !ok || event["type"] != "response.created" {
+	if event, ok := run.Events[0].Get("event").(map[string]any); !ok || event["type"] != "response.created" {
 		t.Fatalf("raw provider event was not preserved: %#v", run.Events[0])
 	}
 }
@@ -319,14 +400,13 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	run.MessageID = "assistant:run"
 	writer := aistream.NewWriter(run, timeNow)
 	writer.ToolStart("call-1", "get_session", 0, nil)
-	cursor := streamPublishCursor{nextSeq: 1, published: len(run.Events)}
 	active := &activeAIRun{streams: []*assistantStreamState{{
 		eventID: "$event",
 		run:     run,
-		publish: cursor,
+		publish: streamPublishCursor{nextSeq: 1, published: len(run.Events)},
 	}}}
 
-	err := active.publishToolOutput(ctx, publisher, "!room:example.com", toolOutputEvent{
+	err := active.publishToolOutput(ctx, &Client{}, publisher, "!room:example.com", toolOutputEvent{
 		ID:    "call-1",
 		Name:  "get_session",
 		Input: map[string]any{},
@@ -343,17 +423,17 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	if len(publisher.updates) != 1 {
 		t.Fatalf("expected one live stream update, got %#v", publisher.updates)
 	}
-	deltas, ok := publisher.updates[0][aistream.BeeperAIStreamDeltas].([]aistream.Envelope)
-	if !ok || len(deltas) != 1 {
+	aiPayload, ok := publisher.updates[0][aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || len(aiPayload.Events) != 2 {
 		t.Fatalf("unexpected live stream carrier %#v", publisher.updates[0])
 	}
-	part := deltas[0].Part
-	if part["type"] != agui.EventToolCallEnd || part["toolCallId"] != "call-1" {
+	part := aiPayload.Events[1].Event
+	if part.Type() != agui.EventToolCallResult || part.Get("toolCallId") != "call-1" {
 		t.Fatalf("expected live tool result event, got %#v", part)
 	}
-	result, ok := part["result"].(string)
+	result, ok := part.Get("content").(string)
 	if !ok || result == "" {
-		t.Fatalf("expected encoded tool result, got %#v", part["result"])
+		t.Fatalf("expected encoded tool result, got %#v", part.Get("content"))
 	}
 }
 

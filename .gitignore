@@ -1,6 +1,10 @@
 /mautrix-ai
+/ai
 
 # Local runtime config/state
+/.bbctl-local.json
+/config-local.yaml
+/config.local.yaml
 /config.yaml
 /logs/
 *.log

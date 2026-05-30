@@ -7,14 +7,18 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
+
+type AIRoomStateStore struct {
+	connector *Connector
+}
 
 type RoomConfig struct {
 	ProviderID       string
@@ -30,14 +34,26 @@ type RoomConfig struct {
 	promptStateEventID string
 }
 
+func (c *Connector) aiRoomStateStore() AIRoomStateStore {
+	return AIRoomStateStore{connector: c}
+}
+
+func (s AIRoomStateStore) canRead() bool {
+	return s.connector != nil && s.connector.Bridge != nil && implementsArbitraryRoomState(s.connector.Bridge.Matrix)
+}
+
 func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID) (RoomConfig, string, error) {
+	return c.aiRoomStateStore().ReadConfig(ctx, roomID)
+}
+
+func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (RoomConfig, string, error) {
 	config := RoomConfig{}
-	reader, ok := c.Bridge.Matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
+	reader, ok := s.connector.Bridge.Matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
 	if !ok {
 		return config, "", nil
 	}
 	stateEventIDs := []string{}
-	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomModelType); err != nil {
+	if raw, eventID, err := s.readRoomState(ctx, reader, roomID, aiid.RoomModelType); err != nil {
 		return RoomConfig{}, "", err
 	} else if raw != nil {
 		config.modelStatePresent = true
@@ -50,14 +66,14 @@ func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID) (RoomC
 		}
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
-	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomPromptType); err != nil {
+	if raw, eventID, err := s.readRoomState(ctx, reader, roomID, aiid.RoomPromptType); err != nil {
 		return RoomConfig{}, "", err
 	} else if raw != nil {
 		config.AdditionalPrompt = firstString(raw, "prompt")
 		config.promptStateEventID = eventID
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
-	if raw, eventID, err := c.readRoomState(ctx, reader, roomID, aiid.RoomToolsType); err != nil {
+	if raw, eventID, err := s.readRoomState(ctx, reader, roomID, aiid.RoomToolsType); err != nil {
 		return RoomConfig{}, "", err
 	} else if raw != nil {
 		config.DisabledTools = stringSlice(raw["disabled"])
@@ -66,15 +82,30 @@ func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID) (RoomC
 	return config, strings.Join(stateEventIDs, ","), nil
 }
 
+func (s AIRoomStateStore) Write(ctx context.Context, portal *bridgev2.Portal, stateType string, content map[string]any) (string, error) {
+	if portal == nil || portal.MXID == "" {
+		return "", fmt.Errorf("portal room is not available to write room state")
+	}
+	// bridgev2 exposes arbitrary room-state reads through MatrixConnectorWithArbitraryRoomState,
+	// but does not expose an equivalent public write API. Keep this local-only escape hatch
+	// isolated here until upstream has a connector-facing arbitrary state writer.
+	resp, err := portal.Internal().SendStateWithIntentOrBot(ctx, nil, event.Type{Type: stateType, Class: event.StateEventType}, "", &event.Content{Raw: content}, time.Now())
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", nil
+	}
+	return string(resp.EventID), nil
+}
+
 func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLogin, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
-	meta := login.Metadata.(*aiid.UserLoginMetadata)
-	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
 	providerID := roomConfig.ProviderID
 	if providerID == "" {
-		providerID = meta.DefaultProviderID
+		providerID = aiid.DefaultProvider
 	}
-	provider, ok := meta.Providers[providerID]
-	if !ok || !provider.Enabled {
+	provider, ok := c.providersForLogin(login)[providerID]
+	if !ok {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s is not available for login %s", providerID, login.ID)
 	}
 	modelID := roomConfig.ModelID
@@ -82,18 +113,10 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 		modelID = provider.DefaultModel
 	}
 	if modelID == "" {
-		modelID = meta.DefaultModelID
-	}
-	if modelID == "" {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s has no selected model", providerID)
 	}
 	if !providerAllowsModel(provider, modelID) {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
-	}
-	if provider.ID != aiid.DefaultProvider && len(provider.Models) == 0 && len(provider.AllowedModels) == 0 {
-		if _, ok := ai.GetModel(provider.Provider, modelID); !ok {
-			return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
-		}
 	}
 	return provider, modelID, nil
 }
@@ -102,10 +125,7 @@ func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
 	if len(provider.Models) > 0 {
 		return providerHasModel(provider, modelID)
 	}
-	if len(provider.AllowedModels) > 0 {
-		return slices.Contains(provider.AllowedModels, modelID)
-	}
-	return true
+	return strings.TrimSpace(modelID) != ""
 }
 
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {
@@ -117,7 +137,7 @@ func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {
 	return false
 }
 
-func (c *Connector) readRoomState(ctx context.Context, reader bridgev2.MatrixConnectorWithArbitraryRoomState, roomID id.RoomID, stateType string) (map[string]any, string, error) {
+func (s AIRoomStateStore) readRoomState(ctx context.Context, reader bridgev2.MatrixConnectorWithArbitraryRoomState, roomID id.RoomID, stateType string) (map[string]any, string, error) {
 	evt, err := reader.GetStateEvent(ctx, roomID, event.Type{Type: stateType, Class: event.StateEventType}, "")
 	if errors.Is(err, mautrix.MNotFound) {
 		return nil, "", nil
@@ -138,6 +158,11 @@ func (c *Connector) readRoomState(ctx context.Context, reader bridgev2.MatrixCon
 		}
 	}
 	return raw, string(evt.ID), nil
+}
+
+func implementsArbitraryRoomState(matrix bridgev2.MatrixConnector) bool {
+	_, ok := matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
+	return ok
 }
 
 func applyRoomModelConfig(config *RoomConfig, raw map[string]any) {

@@ -11,26 +11,45 @@ import (
 
 const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
 
+type FinalProjection struct {
+	Content  *event.MessageEventContent
+	Extra    map[string]any
+	Segments []aistream.FinalSegment
+}
+
 func AnchorContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
 	content := previewContent(run)
 	extra := map[string]any{
-		aistream.BeeperAIKey:         run.InitialUIMessage(),
-		aistream.BeeperAIMetadataKey: run.Metadata(),
-		"com.beeper.stream": map[string]any{
-			"type": aistream.BeeperAIStreamDeltas,
-		},
+		aistream.BeeperAIKey: run.AIWithMessage(aistream.AIKindAnchor, run.InitialBeeperAIMessage()),
 	}
 	return content, extra
 }
 
-func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
+func ProjectFinal(run aistream.Run) FinalProjection {
+	uiMessage, segments := aistream.FinalUIMessageContent(run, aistream.FinalMessageBudgetBytes)
 	content := previewContent(run)
 	extra := map[string]any{
-		aistream.BeeperAIKey:         run.FinalUIMessage(0, true),
-		aistream.BeeperAIMetadataKey: run.Metadata(),
-		"com.beeper.stream":          nil,
+		aistream.BeeperAIKey: finalAIContent(run, uiMessage, len(segments)),
 	}
-	return content, extra
+	return FinalProjection{Content: content, Extra: extra, Segments: segments}
+}
+
+func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
+	projection := ProjectFinal(run)
+	return projection.Content, projection.Extra
+}
+
+func finalAIContent(run aistream.Run, message aistream.UIMessage, segmentCount int) aistream.BeeperAI {
+	if segmentCount > 0 {
+		run.Final = aistream.FinalDelivery{Delivery: "segmented", SegmentCount: segmentCount}
+	} else {
+		run.Final = aistream.FinalDelivery{Delivery: "inline", SegmentCount: 0}
+	}
+	return run.AIWithMessage(aistream.AIKindFinal, message)
+}
+
+func FinalSegments(run aistream.Run) []aistream.FinalSegment {
+	return ProjectFinal(run).Segments
 }
 
 func previewContent(run aistream.Run) *event.MessageEventContent {
@@ -48,10 +67,18 @@ func previewContent(run aistream.Run) *event.MessageEventContent {
 	return content
 }
 
-func CarrierContent(carrier aistream.Carrier, targetEventID id.EventID) (*event.MessageEventContent, map[string]any) {
+func CarrierContent(run aistream.Run, carrier aistream.Carrier, targetEventID id.EventID) (*event.MessageEventContent, map[string]any) {
 	content := format.TextToContent("")
 	content.SetRelatesTo(&event.RelatesTo{Type: event.RelReference, EventID: targetEventID})
-	return &content, aistream.CarrierContent(carrier.Envelopes)
+	return &content, aistream.CarrierContent(run, carrier.Envelopes)
+}
+
+func FinalSegmentContent(run aistream.Run, segment aistream.FinalSegment, targetEventID id.EventID) (*event.MessageEventContent, map[string]any) {
+	content := format.TextToContent("")
+	content.SetRelatesTo(&event.RelatesTo{Type: event.RelReference, EventID: targetEventID})
+	return &content, map[string]any{
+		aistream.BeeperAIKey: run.AISegment(segment.Message, segment.Metadata),
+	}
 }
 
 func ApprovalContent(ctx aistream.ApprovalContext, choices []aistream.ApprovalChoice) (*event.MessageEventContent, map[string]any) {
@@ -65,7 +92,7 @@ func ApprovalContent(ctx aistream.ApprovalContext, choices []aistream.ApprovalCh
 		content.SetRelatesTo(&event.RelatesTo{Type: ApprovalRelationType, EventID: id.EventID(ctx.TargetEvent)})
 	}
 	extra := map[string]any{
-		"com.beeper.ai.approval": aistream.NewApprovalNotice(ctx, choices).Map(),
+		aistream.BeeperAIApprovalKey: aistream.NewApprovalNotice(ctx, choices).Map(),
 	}
 	return &content, extra
 }

@@ -44,12 +44,30 @@ func Anchor(portalKey networkid.PortalKey, sender networkid.UserID, run aistream
 }
 
 func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, carrier aistream.Carrier, targetEventID id.EventID, index int, timestamp time.Time) *simplevent.PreConvertedMessage {
-	content, extra := aimatrix.CarrierContent(carrier, targetEventID)
+	content, extra := aimatrix.CarrierContent(run, carrier, targetEventID)
 	return &simplevent.PreConvertedMessage{
 		EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, timestamp),
 		Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
 		ID:        networkid.MessageID(aistream.StreamTxnID(run.RunID, index)),
 	}
+}
+
+func FinalSegments(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
+	return FinalSegmentMessages(portalKey, sender, run, aimatrix.FinalSegments(run), targetEventID, timestamp)
+}
+
+func FinalSegmentMessages(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, segments []aistream.FinalSegment, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
+	out := make([]*simplevent.PreConvertedMessage, 0, len(segments))
+	for i, segment := range segments {
+		content, extra := aimatrix.FinalSegmentContent(run, segment, targetEventID)
+		segmentTimestamp := timestamp.Add(time.Duration(i) * time.Nanosecond)
+		out = append(out, &simplevent.PreConvertedMessage{
+			EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, segmentTimestamp),
+			Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
+			ID:        networkid.MessageID(aistream.FinalSegmentTxnID(run.RunID, segment.Metadata.Index)),
+		})
+	}
+	return out
 }
 
 func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx aistream.ApprovalContext, timestamp time.Time) *simplevent.PreConvertedMessage {
@@ -63,24 +81,12 @@ func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx 
 	}
 }
 
-func ApprovalOptionReaction(portalKey networkid.PortalKey, sender networkid.UserID, ctx aistream.ApprovalContext, choice aistream.ApprovalChoice, timestamp time.Time) *simplevent.Reaction {
-	return &simplevent.Reaction{
-		EventMeta:     eventMeta(bridgev2.RemoteEventReaction, portalKey, sender, timestamp),
-		TargetMessage: networkid.MessageID(ctx.ID),
-		EmojiID:       networkid.EmojiID(choice.Key),
-		Emoji:         choice.Alias,
-		ExtraContent: map[string]any{
-			"com.beeper.ai.approval_option": map[string]any{
-				"approvalId": ctx.ID,
-				"toolCallId": ctx.ToolCallID,
-				"choice":     choice.Key,
-			},
-		},
-	}
-}
-
 func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, messageID networkid.MessageID, run aistream.Run, timestamp time.Time) *simplevent.Message[*aistream.Run] {
 	finalContent, finalExtra := aimatrix.FinalContent(run)
+	return FinalMetadataEditWithContent(portalKey, sender, messageID, run, finalContent, finalExtra, timestamp)
+}
+
+func FinalMetadataEditWithContent(portalKey networkid.PortalKey, sender networkid.UserID, messageID networkid.MessageID, run aistream.Run, finalContent *event.MessageEventContent, finalExtra map[string]any, timestamp time.Time) *simplevent.Message[*aistream.Run] {
 	return &simplevent.Message[*aistream.Run]{
 		EventMeta:     eventMeta(bridgev2.RemoteEventEdit, portalKey, sender, timestamp),
 		Data:          &run,
@@ -98,7 +104,6 @@ func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, m
 					Extra:   finalExtra,
 					TopLevelExtra: map[string]any{
 						"com.beeper.dont_render_edited": true,
-						"com.beeper.stream":             nil,
 					},
 				}},
 			}, nil

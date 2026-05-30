@@ -2,6 +2,8 @@ package aistream
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -9,24 +11,19 @@ import (
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
 )
 
-func TestPackRunSplitsOver64KBAndReconstructs(t *testing.T) {
+func TestPackRunDoesNotSplitOrTruncateBySize(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Start()
 	writer.Text(strings.Repeat("a", 70*1024))
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(carriers) < 2 {
-		t.Fatalf("expected multiple carriers for over-64KB output, got %d", len(carriers))
-	}
-	for i, carrier := range carriers {
-		if size := JSONSize(CarrierContent(carrier.Envelopes)); size > CarrierBudgetBytes {
-			t.Fatalf("carrier %d is %d bytes, budget %d", i, size, CarrierBudgetBytes)
-		}
+	if len(carriers) != 1 {
+		t.Fatalf("stream packing should not split by size, got %d carriers", len(carriers))
 	}
 	if got := ReconstructText(carriers); got != strings.Repeat("a", 70*1024) {
 		t.Fatalf("reconstructed text length = %d", len(got))
@@ -40,11 +37,11 @@ func TestPackRunDoesNotPutFinalizationTotalsOnStreamEnvelopes(t *testing.T) {
 	writer.Text("hello")
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(CarrierContent(carriers[0].Envelopes))
+	raw, err := json.Marshal(CarrierContent(*run, carriers[0].Envelopes))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +50,35 @@ func TestPackRunDoesNotPutFinalizationTotalsOnStreamEnvelopes(t *testing.T) {
 	}
 }
 
-func TestFinalSnapshotSplitsIntoBaseAndContinuationParts(t *testing.T) {
+func TestPackRunByTimeFromSeqSplitsOnlyByCadence(t *testing.T) {
+	now := time.Unix(10, 0)
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", now)
+	writer := NewWriter(run, func() time.Time { return now })
+	writer.Start()
+	now = now.Add(250 * time.Millisecond)
+	writer.Text("a")
+	now = now.Add(250 * time.Millisecond)
+	writer.Text("b")
+	now = now.Add(2 * time.Second)
+	writer.Text("c")
+	writer.Finish(agui.FinishReasonStop)
+
+	carriers, err := PackRunByTimeFromSeq(*run, 7, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(carriers) != 2 {
+		t.Fatalf("expected cadence split only, got %d carriers", len(carriers))
+	}
+	if carriers[0].Envelopes[0].Seq != 7 || carriers[1].Envelopes[0].Seq != 11 {
+		t.Fatalf("bad sequence continuity: %#v", carriers)
+	}
+	if got := ReconstructText(carriers); got != "abc" {
+		t.Fatalf("bad reconstructed text %q", got)
+	}
+}
+
+func TestStreamSnapshotUsesCanonicalMessagesWithoutSizeCompaction(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Start()
@@ -64,92 +89,46 @@ func TestFinalSnapshotSplitsIntoBaseAndContinuationParts(t *testing.T) {
 	writer.ToolEnd("tool-1", "fetch", `{"url":"https://example.com"}`, map[string]any{"ok": true})
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var baseSnapshots, continuations int
-	var baseText string
-	var reconstructedText strings.Builder
-	var sawMetadata bool
-	for i, carrier := range carriers {
-		if size := JSONSize(CarrierContent(carrier.Envelopes)); size > CarrierBudgetBytes {
-			t.Fatalf("carrier %d is %d bytes, budget %d", i, size, CarrierBudgetBytes)
-		}
+	var snapshots int
+	var sawAssistant bool
+	var sawReasoning bool
+	var sawToolResult bool
+	for _, carrier := range carriers {
 		for _, env := range carrier.Envelopes {
-			switch env.Part["type"] {
+			switch env.Event.Type() {
 			case agui.EventMessagesSnapshot:
-				baseSnapshots++
-				messages, ok := env.Part["messages"].([]any)
-				if !ok || len(messages) != 1 {
-					t.Fatalf("bad final base snapshot: %#v", env.Part["messages"])
+				snapshots++
+				messages, ok := env.Event.Get("messages").([]agui.Message)
+				if !ok || len(messages) == 0 {
+					t.Fatalf("bad final snapshot: %#v", env.Event.Get("messages"))
 				}
-				message, ok := messages[0].(map[string]any)
-				if !ok {
-					t.Fatalf("bad final base snapshot message: %#v", messages[0])
-				}
-				metadata, ok := message["metadata"].(map[string]any)
-				if ok && metadata["runId"] == "run-1" {
-					sawMetadata = true
-				}
-				for _, part := range testFinalParts(t, message["parts"]) {
-					if part["type"] == "text" {
-						baseText += part["content"].(string)
-					}
-				}
-			case agui.EventCustom:
-				if env.Part["name"] != FinalPartsCustomName {
-					continue
-				}
-				continuations++
-				value := env.Part["value"].(map[string]any)
-				if value["messageId"] != run.MessageID || value["runId"] != run.RunID {
-					t.Fatalf("bad continuation relation data: %#v", value)
-				}
-				if _, ok := value["metadata"]; ok {
-					t.Fatalf("continuation must not duplicate message metadata: %#v", value)
-				}
-				for _, part := range testFinalParts(t, value["parts"]) {
-					if part["type"] == "text" {
-						reconstructedText.WriteString(part["content"].(string))
+				for _, message := range messages {
+					switch message.Role {
+					case agui.RoleAssistant:
+						sawAssistant = true
+						content, _ := message.Content.(string)
+						if len(content) != 70*1024 {
+							t.Fatalf("stream snapshot assistant content was compacted: %d bytes", len(content))
+						}
+					case "reasoning":
+						sawReasoning = true
+						content, _ := message.Content.(string)
+						if len(content) != 12*1024 {
+							t.Fatalf("stream snapshot reasoning content was compacted: %d bytes", len(content))
+						}
+					case agui.RoleTool:
+						sawToolResult = true
 					}
 				}
 			}
 		}
 	}
-	if baseSnapshots != 1 || continuations == 0 || !sawMetadata {
-		t.Fatalf("expected one metadata base snapshot and continuations, base=%d continuations=%d metadata=%v", baseSnapshots, continuations, sawMetadata)
-	}
-	if baseText == "" {
-		t.Fatal("base final snapshot must keep visible text in the primary event")
-	}
-	if !strings.Contains(run.Text(), reconstructedText.String()) {
-		t.Fatalf("unexpected continuation text reconstruction length=%d", reconstructedText.Len())
-	}
-}
-
-func testFinalParts(t *testing.T, value any) []map[string]any {
-	t.Helper()
-	switch parts := value.(type) {
-	case []agui.MessagePart:
-		out := make([]map[string]any, 0, len(parts))
-		for _, part := range parts {
-			out = append(out, map[string]any(part))
-		}
-		return out
-	case []any:
-		out := make([]map[string]any, 0, len(parts))
-		for _, rawPart := range parts {
-			part, ok := rawPart.(map[string]any)
-			if !ok {
-				t.Fatalf("bad final part: %#v", rawPart)
-			}
-			out = append(out, part)
-		}
-		return out
-	default:
-		t.Fatalf("bad final parts: %#v", value)
-		return nil
+	if snapshots != 1 || !sawAssistant || !sawReasoning || !sawToolResult {
+		t.Fatalf("expected canonical snapshot with assistant/reasoning/tool messages, snapshots=%d assistant=%v reasoning=%v tool=%v", snapshots, sawAssistant, sawReasoning, sawToolResult)
 	}
 }
 
@@ -165,18 +144,18 @@ func TestPackRunUsesDeltaEventsInsteadOfAccumulatedText(t *testing.T) {
 	writer.Text("def")
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(carriers) != 1 {
-		t.Fatalf("under-budget run should be packed into one carrier, got %d", len(carriers))
+		t.Fatalf("untimed stream packing should produce one carrier, got %d", len(carriers))
 	}
 	var deltas []string
 	for _, carrier := range carriers {
 		for _, env := range carrier.Envelopes {
-			if env.Part["type"] == agui.EventTextMessageContent {
-				deltas = append(deltas, env.Part["delta"].(string))
+			if env.Event.Type() == agui.EventTextMessageContent {
+				deltas = append(deltas, env.Event.Get("delta").(string))
 			}
 		}
 	}
@@ -185,56 +164,184 @@ func TestPackRunUsesDeltaEventsInsteadOfAccumulatedText(t *testing.T) {
 	}
 }
 
-func TestRawEventIsTruncatedBeforePacking(t *testing.T) {
+func TestWriterKeepsReasoningMessagesSeparate(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
-	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
-	run.Events = append(run.Events, builder.Custom("com.beeper.debug", map[string]any{"ok": true}))
-	run.Events[0]["rawEvent"] = strings.Repeat("x", CarrierBudgetBytes)
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Thinking("first thought")
+	writer.Thinking("second thought")
+	writer.Text("answer")
+	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
-	if err != nil {
-		t.Fatal(err)
+	var reasoning []string
+	for _, message := range run.Messages(true) {
+		if message.Role == "reasoning" {
+			reasoning = append(reasoning, message.Content.(string))
+		}
 	}
-	part := carriers[0].Envelopes[0].Part
-	if part["rawEventTruncated"] != true {
-		t.Fatalf("expected rawEventTruncated marker, got %#v", part)
+	if strings.Join(reasoning, "|") != "first thought|second thought" {
+		t.Fatalf("reasoning messages were not preserved individually: %#v", reasoning)
 	}
-	if size := JSONSize(CarrierContent(carriers[0].Envelopes)); size > CarrierBudgetBytes {
-		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	var thinkingParts []string
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			thinkingParts = append(thinkingParts, part["content"].(string))
+		}
+	}
+	if strings.Join(thinkingParts, "|") != "first thought|second thought" {
+		t.Fatalf("thinking parts were not preserved individually: %#v", uiMessage.Parts)
 	}
 }
 
-func TestRawAGUIEventIsTruncatedBeforePacking(t *testing.T) {
+func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.ReasoningMessageStart("reasoning-1"),
+		builder.ReasoningMessageContent("reasoning-1", "checked calendar"),
+		builder.ToolCallStart("msg-run-1", "tool-1", "fetch", nil),
+		builder.ToolCallEnd("tool-1", "fetch", map[string]any{"query": "events"}, agui.ToolStateInputComplete),
+		builder.ToolCallResult("tool-tool-1", "tool-1", `{"ok":true}`, agui.ToolResultStateComplete, agui.RoleTool),
+		builder.ReasoningMessageContent("reasoning-1", "checked issues"),
+		builder.ReasoningMessageEnd("reasoning-1"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	var reasoning []string
+	for _, message := range run.Messages(true) {
+		if message.Role == "reasoning" {
+			reasoning = append(reasoning, message.Content.(string))
+		}
+	}
+	if strings.Join(reasoning, "|") != "checked calendar|checked issues" {
+		t.Fatalf("interleaved reasoning messages were not preserved individually: %#v", reasoning)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	var thinkingParts []string
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			thinkingParts = append(thinkingParts, part["content"].(string))
+			if part["state"] != agui.PartStateDone {
+				t.Fatalf("terminal thinking part should be done, got %#v", part)
+			}
+		}
+	}
+	if strings.Join(thinkingParts, "|") != "checked calendar|checked issues" {
+		t.Fatalf("interleaved thinking parts were not preserved individually: %#v", uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessagePreservesInterleavedTextAndToolOrder(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.TextMessageContent(run.MessageID, "first text"),
+		builder.ToolCallStart(run.MessageID, "tool-1", "fetch", nil),
+		builder.ToolCallEnd("tool-1", "fetch", map[string]any{"query": "events"}, agui.ToolStateInputComplete),
+		builder.ToolCallResult("tool-tool-1", "tool-1", `{"ok":true}`, agui.ToolResultStateComplete, agui.RoleTool),
+		builder.TextMessageContent(run.MessageID, "second text"),
+		builder.ReasoningMessageContent(run.MessageID+"-reasoning", "checked another thing"),
+		builder.TextMessageContent(run.MessageID, "third text"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		switch part["type"] {
+		case "text", "thinking":
+			got = append(got, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["toolCallId"]))
+		}
+	}
+	want := []string{
+		"text:first text",
+		"tool-call:tool-1",
+		"text:second text",
+		"thinking:checked another thing",
+		"text:third text",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
+func TestPackRunPreservesLargeOpaqueStreamEvents(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Events = append(run.Events, builder.Custom("com.beeper.debug", map[string]any{"ok": true}))
+	run.Events[0].Set("rawEvent", strings.Repeat("x", FinalMessageBudgetBytes))
+
+	carriers, err := PackRun(*run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := carriers[0].Envelopes[0].Event
+	if part.Get("rawEventTruncated") != nil {
+		t.Fatalf("stream packing must not truncate rawEvent: %#v", part)
+	}
+	if got, _ := part.Get("rawEvent").(string); len(got) != FinalMessageBudgetBytes {
+		t.Fatalf("rawEvent length = %d", len(got))
+	}
+}
+
+func TestPackRunPreservesLargeRawAGUIEvent(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events, builder.Raw(map[string]any{
 		"type": "response.large",
-		"data": strings.Repeat("x", CarrierBudgetBytes),
+		"data": strings.Repeat("x", FinalMessageBudgetBytes),
 	}, "openai"))
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	part := carriers[0].Envelopes[0].Part
-	if part["rawEventTruncated"] != true {
-		t.Fatalf("expected raw event truncation marker, got %#v", part)
+	part := carriers[0].Envelopes[0].Event
+	if part.Get("rawEventTruncated") != nil {
+		t.Fatalf("stream packing must not truncate raw AG-UI event: %#v", part)
 	}
-	if size := JSONSize(CarrierContent(carriers[0].Envelopes)); size > CarrierBudgetBytes {
-		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
+	raw, ok := part.Get("event").(map[string]any)
+	if !ok {
+		t.Fatalf("missing raw event payload: %#v", part)
+	}
+	if got, _ := raw["data"].(string); len(got) != FinalMessageBudgetBytes {
+		t.Fatalf("raw event data length = %d", len(got))
 	}
 }
 
-func TestPackRunRejectsOversizedNonTextEvent(t *testing.T) {
+func TestPackRunPreservesLargeCustomEvent(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events, builder.Custom("com.beeper.large", map[string]any{
-		"value": strings.Repeat("x", CarrierBudgetBytes),
+		"value": strings.Repeat("x", FinalMessageBudgetBytes),
 	}))
 
-	_, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
-	if err == nil {
-		t.Fatal("expected oversized non-text event to fail packing")
+	carriers, err := PackRun(*run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := carriers[0].Envelopes[0].Event
+	value, ok := part.Get("value").(map[string]any)
+	if !ok {
+		t.Fatalf("missing custom value: %#v", part)
+	}
+	if got, _ := value["value"].(string); len(got) != FinalMessageBudgetBytes {
+		t.Fatalf("custom value length = %d", len(got))
 	}
 }
 
@@ -243,15 +350,15 @@ func TestValidateRejectsLegacyOrInvalidToolResultShape(t *testing.T) {
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events,
 		builder.RunStarted("thread-1", "run-1"),
-		builder.ToolCallStart("msg-run-1", "tool-1", "fetch", nil, nil),
-		builder.ToolCallEnd("tool-1", "fetch", nil, map[string]any{"ok": true}, agui.ToolStateInputComplete),
+		builder.ToolCallStart("msg-run-1", "tool-1", "fetch", nil),
+		agui.NewEvent(map[string]any{"type": agui.EventToolCallEnd, "toolCallId": "tool-1", "result": `{"ok":true}`, "state": agui.ToolStateInputComplete}),
 	)
 	if err := run.Validate(); err == nil {
-		t.Fatal("expected validation error for non-string TOOL_CALL_END.result")
+		t.Fatal("expected validation error for legacy TOOL_CALL_END.result")
 	}
 }
 
-func TestFinalUIMessageCarriesToolCallMetadata(t *testing.T) {
+func TestFinalBeeperAIMessageCarriesToolCallMetadata(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStartWithMetadata("tool-1", "calendar.get_events", 0, nil, map[string]any{
@@ -259,7 +366,7 @@ func TestFinalUIMessageCarriesToolCallMetadata(t *testing.T) {
 		"iconUrl":     "mxc://beeper.com/calendar",
 	})
 
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
 		t.Fatalf("expected one part, got %#v", message.Parts)
 	}
@@ -269,7 +376,7 @@ func TestFinalUIMessageCarriesToolCallMetadata(t *testing.T) {
 	}
 }
 
-func TestFinalUIMessageCarriesParsedToolOutputs(t *testing.T) {
+func TestFinalBeeperAIMessageCarriesParsedToolOutputs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStart("tool-1", "fetch", 0, nil)
@@ -278,7 +385,7 @@ func TestFinalUIMessageCarriesParsedToolOutputs(t *testing.T) {
 	writer.ToolStart("tool-2", "files", 1, nil)
 	writer.ToolError("tool-2", "files", map[string]any{"path": "/tmp/nope"}, "missing")
 
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 2 {
 		t.Fatalf("expected two tool parts, got %#v", message.Parts)
 	}
@@ -292,13 +399,13 @@ func TestFinalUIMessageCarriesParsedToolOutputs(t *testing.T) {
 	}
 }
 
-func TestFinalUIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
+func TestFinalBeeperAIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStart("tool-1", "fetch", 0, nil)
 	writer.ToolResult("tool-1", `{"ok":true}`, agui.ToolResultStateComplete)
 
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
 		t.Fatalf("expected tool result to be folded into one tool-call part, got %#v", message.Parts)
 	}
@@ -311,14 +418,14 @@ func TestFinalUIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
 	}
 }
 
-func TestFinalUIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
+func TestFinalBeeperAIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStart("tool-1", "summarize", 0, nil)
 	writer.ToolStart("tool-2", "calendar", 1, nil)
 	writer.Finish(agui.FinishReasonStop)
 
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 2 {
 		t.Fatalf("expected two tool parts, got %#v", message.Parts)
 	}
@@ -333,7 +440,7 @@ func TestFinalUIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	}
 }
 
-func TestFinalUIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
+func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Custom("com.beeper.source", map[string]any{
@@ -351,7 +458,7 @@ func TestFinalUIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
 		"mediaType": "application/octet-stream",
 	})
 
-	message := run.FinalUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 3 {
 		t.Fatalf("expected artifact parts, got %#v", message.Parts)
 	}
@@ -393,62 +500,254 @@ func TestApprovalResolverMatchesEmojiKeysAndAliases(t *testing.T) {
 	}
 }
 
-func TestApprovalRequestedValueOwnsStreamPayloadShape(t *testing.T) {
+func TestApprovalInterruptOwnsStreamPayloadShape(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	run.MessageID = "msg-run-1"
-	approval := agui.ToolApproval{ID: "approval-1", NeedsApproval: true}
+	approval := ToolApproval{ID: "approval-1", NeedsApproval: true}
 
-	value := NewApprovalRequestedValue(*run, "tool-1", "fetch", map[string]any{"url": "https://example.com"}, approval).Map()
+	interrupt := NewApprovalInterrupt(*run, "tool-1", "fetch", map[string]any{"url": "https://example.com"}, approval, map[string]any{"displayName": "Fetch"})
 
-	if value["threadId"] != "thread-1" || value["runId"] != "run-1" || value["messageId"] != "msg-run-1" {
-		t.Fatalf("bad run identifiers: %#v", value)
+	if interrupt.ID != "approval-1" || interrupt.Reason != agui.InterruptReasonToolCall || interrupt.ToolCallID != "tool-1" {
+		t.Fatalf("bad interrupt identifiers: %#v", interrupt)
 	}
-	if value["toolCallId"] != "tool-1" || value["toolName"] != "fetch" {
-		t.Fatalf("bad tool identifiers: %#v", value)
+	if interrupt.Message == "" || interrupt.ResponseSchema["type"] != "object" {
+		t.Fatalf("bad interrupt schema/message: %#v", interrupt)
 	}
-	if value["approvalMessageId"] != "approval-1" {
-		t.Fatalf("missing approval message id: %#v", value)
+	if interrupt.Metadata["threadId"] != "thread-1" || interrupt.Metadata["runId"] != "run-1" || interrupt.Metadata["messageId"] != "msg-run-1" {
+		t.Fatalf("bad run metadata: %#v", interrupt.Metadata)
 	}
-	if _, ok := value["approvalEventId"]; ok {
-		t.Fatalf("approval event id should only be added after Matrix send: %#v", value)
+	if interrupt.Metadata["toolName"] != "fetch" || interrupt.Metadata["approvalMessageId"] != "approval-1" {
+		t.Fatalf("bad tool metadata: %#v", interrupt.Metadata)
 	}
-	choices, ok := value["choices"].([]ApprovalChoice)
+	choices, ok := interrupt.Metadata["choices"].([]ApprovalChoice)
 	if !ok || len(choices) != len(DefaultApprovalChoices()) || choices[0].Key != ApprovalChoiceApprove {
-		t.Fatalf("bad approval choices: %#v", value["choices"])
+		t.Fatalf("bad approval choices: %#v", interrupt.Metadata["choices"])
 	}
-	if ApprovalIDFromRequestedValue(value) != "approval-1" {
-		t.Fatalf("approval id resolver failed for value: %#v", value)
+	if nested, ok := interrupt.Metadata["metadata"].(map[string]any); !ok || nested["displayName"] != "Fetch" {
+		t.Fatalf("bad nested metadata: %#v", interrupt.Metadata["metadata"])
 	}
-	if !SetApprovalRequestedEventID(value, "$approval") || value["approvalEventId"] != "$approval" {
-		t.Fatalf("failed to annotate approval event id: %#v", value)
+	if _, ok := interrupt.Metadata["approvalEventId"]; ok {
+		t.Fatalf("approval event id should only be added after Matrix send: %#v", interrupt.Metadata)
+	}
+	if !SetApprovalInterruptEventID(&interrupt, "$approval") || interrupt.Metadata["approvalEventId"] != "$approval" {
+		t.Fatalf("failed to annotate approval event id: %#v", interrupt.Metadata)
 	}
 }
 
-func TestRunMetadataOwnsMatrixPayloadShape(t *testing.T) {
+func TestApprovalResponseSchemaMatchesPayloadType(t *testing.T) {
+	typedSchema := NewApprovalResponseJSONSchema()
+	if typedSchema.Type != agui.JSONSchemaTypeObject || typedSchema.Properties.Approved["type"] != agui.JSONSchemaTypeBoolean {
+		t.Fatalf("bad typed approval response schema: %#v", typedSchema)
+	}
+	schema := ApprovalResponseSchema()
+	props := jsonSchemaProperties(t, schema["properties"])
+	if props == nil {
+		t.Fatalf("approval schema properties = %#v, want object", schema["properties"])
+	}
+	payloadFields := jsonTaggedFieldNames(t, ApprovalResponsePayload{})
+	if len(props) != len(payloadFields) {
+		t.Fatalf("schema properties = %#v, want fields %#v", props, payloadFields)
+	}
+	for field := range payloadFields {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("schema missing payload field %q: %#v", field, props)
+		}
+	}
+	if _, ok := props["fields"]; ok {
+		t.Fatalf("approval response schema should use editedArgs, not legacy fields: %#v", props)
+	}
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "approved" {
+		t.Fatalf("approval schema required = %#v, want [approved]", schema["required"])
+	}
+}
+
+func jsonSchemaProperties(t *testing.T, value any) map[string]any {
+	t.Helper()
+	switch props := value.(type) {
+	case agui.JSONSchemaProperties:
+		out := make(map[string]any, len(props))
+		for key, schema := range props {
+			out[key] = schema
+		}
+		return out
+	case map[string]any:
+		return props
+	default:
+		return nil
+	}
+}
+
+func TestApprovalHelpersOwnResumeAndToolResultShapes(t *testing.T) {
+	response := ToolApprovalResponse{
+		ID:         "approval-1",
+		Approved:   true,
+		Always:     true,
+		EditedArgs: map[string]any{"command": "pwd"},
+		Metadata:   map[string]any{"source": "test"},
+	}
+
+	resume := NewApprovalResumeEntry("approval-1", response)
+	if resume.InterruptID != "approval-1" || resume.Status != agui.ResumeStatusResolved {
+		t.Fatalf("bad resume entry: %#v", resume)
+	}
+	payload, ok := resume.Payload.(ApprovalResponsePayload)
+	if !ok || !payload.Approved || !payload.Always || payload.EditedArgs["command"] != "pwd" {
+		t.Fatalf("bad resume payload: %#v", resume.Payload)
+	}
+	roundTrip, ok := ApprovalResponseFromPayload("approval-1", payload)
+	if !ok || !roundTrip.Approved || !roundTrip.Always || roundTrip.EditedArgs["command"] != "pwd" {
+		t.Fatalf("bad resume response round trip: %#v ok=%v", roundTrip, ok)
+	}
+
+	result := ApprovalToolResultFromResponse(response)
+	if result.ApprovalID != "approval-1" || !result.Approved || result.State != agui.ToolResultStateComplete || result.Status != "success" {
+		t.Fatalf("bad approval tool result: %#v", result)
+	}
+	parsed, ok := ParseApprovalToolResult(asString(jsonString(result)))
+	if !ok || parsed.ApprovalID != "approval-1" || parsed.EditedArgs["command"] != "pwd" {
+		t.Fatalf("bad parsed approval tool result: %#v ok=%v", parsed, ok)
+	}
+
+	denied := DeniedApprovalToolResult("approval-2", "")
+	if denied.ApprovalID != "approval-2" || denied.Approved || denied.State != agui.ToolResultStateError || denied.Reason != "denied" {
+		t.Fatalf("bad denied approval result: %#v", denied)
+	}
+}
+
+func jsonTaggedFieldNames(t *testing.T, value any) map[string]struct{} {
+	t.Helper()
+	typ := reflect.TypeOf(value)
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		t.Fatalf("expected struct type, got %s", typ.Kind())
+	}
+	fields := make(map[string]struct{}, typ.NumField())
+	for i := range typ.NumField() {
+		tag := typ.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		fields[name] = struct{}{}
+	}
+	return fields
+}
+
+func TestBeeperAIOwnsMatrixPayloadShape(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
 	run.MessageID = "msg-run-1"
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
 	run.Usage = agui.Usage{PromptTokens: 1, CompletionTokens: 2, ReasoningTokens: 4, TotalTokens: 7}
 	run.Preview = Preview{Text: "hello", Truncated: false}
 
-	metadata := run.Metadata()
+	payload := run.AI(AIKindFinal)
 
-	if metadata["schema"] != "com.beeper.ai.run.v1" || metadata["protocol"] != "ag-ui" {
-		t.Fatalf("bad protocol metadata: %#v", metadata)
+	if payload.Schema != BeeperAISchema || payload.Protocol != "ag-ui" || payload.Kind != AIKindFinal {
+		t.Fatalf("bad AI payload protocol: %#v", payload)
 	}
-	if metadata["threadId"] != "thread-1" || metadata["runId"] != "run-1" || metadata["messageId"] != "msg-run-1" {
-		t.Fatalf("bad run identifiers: %#v", metadata)
+	if payload.ThreadID != "thread-1" || payload.RunID != "run-1" || payload.MessageID != "msg-run-1" {
+		t.Fatalf("bad run identifiers: %#v", payload)
 	}
-	agent, ok := metadata["agent"].(map[string]any)
-	if !ok || agent["id"] != "agent-1" || agent["displayName"] != "Agent" {
-		t.Fatalf("bad agent metadata: %#v", metadata["agent"])
+	if payload.Agent.ID != "agent-1" || payload.Agent.DisplayName != "Agent" {
+		t.Fatalf("bad agent metadata: %#v", payload.Agent)
 	}
-	usage, ok := metadata["usage"].(map[string]any)
-	if !ok || usage["promptTokens"] != 1 || usage["completionTokens"] != 2 || usage["reasoningTokens"] != 4 || usage["totalTokens"] != 7 {
-		t.Fatalf("bad usage metadata: %#v", metadata["usage"])
+	if payload.Terminal == nil {
+		t.Fatalf("missing terminal payload: %#v", payload)
 	}
-	usageDetails, ok := metadata["usageDetails"].(map[string]any)
-	if !ok || usageDetails["reasoningTokens"] != 4 {
-		t.Fatalf("usage details should always be present: %#v", metadata)
+	if payload.Terminal.State != "complete" || payload.Terminal.FinishReason != agui.FinishReasonStop {
+		t.Fatalf("bad terminal state: %#v", payload.Terminal)
+	}
+	if payload.Terminal.Usage != run.Usage {
+		t.Fatalf("bad terminal usage: %#v", payload.Terminal.Usage)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"metadata"`) || strings.Contains(string(encoded), `"status"`) || strings.Contains(string(encoded), `"usageDetails"`) {
+		t.Fatalf("payload includes removed sidecar fields: %s", encoded)
+	}
+}
+
+func TestMessagesSnapshotSurvivesJSONRoundTrip(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.MessagesSnapshot([]agui.Message{
+		{ID: "reasoning-1", Role: "reasoning", Content: "thought"},
+		{ID: run.MessageID, Role: agui.RoleAssistant, Content: "answer"},
+	})
+	raw, err := json.Marshal(run.Events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTripped agui.Event
+	if err := json.Unmarshal(raw, &roundTripped); err != nil {
+		t.Fatal(err)
+	}
+	run.Events = []agui.Event{roundTripped}
+
+	if got := run.Text(); got != "answer" {
+		t.Fatalf("round-tripped snapshot was not used for text: %q", got)
+	}
+	if messages := run.Messages(true); len(messages) != 2 || messages[0].Role != "reasoning" || messages[1].Content != "answer" {
+		t.Fatalf("bad round-tripped snapshot messages: %#v", messages)
+	}
+	if messages := run.Messages(false); len(messages) != 1 || messages[0].Role != agui.RoleAssistant {
+		t.Fatalf("reasoning filter failed for round-tripped snapshot: %#v", messages)
+	}
+}
+
+func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	message := UIMessage{
+		ID:   run.MessageID,
+		Role: "assistant",
+		Parts: []MessagePart{
+			{"type": "text", "id": "part-1", "content": strings.Repeat("a", 400)},
+			{"type": "text", "id": "part-2", "content": strings.Repeat("b", 400)},
+			{"type": "text", "id": "part-3", "content": strings.Repeat("c", 400)},
+		},
+	}
+	maxMetadata := FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(message.Parts), Count: len(message.Parts)}
+	budget := finalSegmentPayloadSize(*run, message, message.Parts[:2], maxMetadata)
+	if finalSegmentPayloadSize(*run, message, message.Parts, maxMetadata) <= budget {
+		t.Fatal("test budget should require more than one segment")
+	}
+
+	segments := packFinalSegments(*run, message, message.Parts, budget)
+	assignFinalSegmentMetadata(*run, segments)
+
+	if len(segments) != 2 {
+		t.Fatalf("expected two packed segments, got %d: %#v", len(segments), segments)
+	}
+	if len(segments[0].Message.Parts) != 2 || len(segments[1].Message.Parts) != 1 {
+		t.Fatalf("segments were not packed to budget: %#v", segments)
+	}
+	if segments[0].Metadata.Count != 2 || segments[1].Metadata.Count != 2 || segments[1].Metadata.Index != 1 {
+		t.Fatalf("bad segment metadata: %#v %#v", segments[0].Metadata, segments[1].Metadata)
+	}
+}
+
+func TestApprovalResponseClearsResolvedInterrupt(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	approval := ToolApproval{ID: "approval-1", NeedsApproval: true}
+	writer.ToolApprovalRequested("tool-1", "shell", map[string]any{}, approval)
+	if len(run.Interrupts) != 1 {
+		t.Fatalf("expected pending interrupt: %#v", run.Interrupts)
+	}
+	writer.ToolApprovalResponded("tool-1", "shell", map[string]any{}, ToolApprovalResponse{ID: approval.ID, Approved: true})
+	if len(run.Interrupts) != 0 {
+		t.Fatalf("approval response left stale interrupts: %#v", run.Interrupts)
+	}
+	writer.ToolApprovalRequested("tool-2", "fetch", map[string]any{}, ToolApproval{ID: "approval-2", NeedsApproval: true})
+	writer.ToolDenied("tool-2", "fetch", map[string]any{}, "approval-2", "denied")
+	if len(run.Interrupts) != 0 {
+		t.Fatalf("approval denial left stale interrupts: %#v", run.Interrupts)
 	}
 }
 
@@ -463,18 +762,15 @@ func TestFinishWithUsageCarriesProviderUsageToTerminalEvents(t *testing.T) {
 	if run.Usage != usage {
 		t.Fatalf("run usage was not preserved: %#v", run.Usage)
 	}
-	var snapshotUsage, finishedUsage agui.Usage
+	var finishedUsage agui.Usage
 	for _, evt := range run.Events {
-		switch evt["type"] {
-		case agui.EventMessagesSnapshot:
-			messages := evt["messages"].([]agui.UIMessage)
-			snapshotUsage = messages[0].Metadata["usage"].(agui.Usage)
+		switch evt.Type() {
 		case agui.EventRunFinished:
-			finishedUsage = evt["usage"].(agui.Usage)
+			finishedUsage = evt.Get("usage").(agui.Usage)
 		}
 	}
-	if snapshotUsage != usage || finishedUsage != usage {
-		t.Fatalf("terminal events lost usage: snapshot=%#v finished=%#v", snapshotUsage, finishedUsage)
+	if finishedUsage != usage {
+		t.Fatalf("terminal event lost usage: finished=%#v", finishedUsage)
 	}
 }
 
@@ -523,5 +819,33 @@ func TestCleanupKeepsSelectedUserReactionAndRemovesBridgeOptions(t *testing.T) {
 	got := strings.Join(cleanup.RedactReactionEvents, ",")
 	if !strings.Contains(got, "$bridge-allow") || !strings.Contains(got, "$bridge-deny") || !strings.Contains(got, "$user-deny") {
 		t.Fatalf("bad cleanup redactions: %#v", cleanup.RedactReactionEvents)
+	}
+}
+
+func TestApprovalQueueKeepsOneActiveInterruptAndTimeouts(t *testing.T) {
+	queue := NewApprovalQueue(ApprovalTimeout{After: time.Minute})
+	queue.AddAll([]ApprovalPrompt{
+		{ID: "approval-1", ToolCallID: "tool-1", ToolName: "shell"},
+		{ID: "approval-2", ToolCallID: "tool-2", ToolName: "fetch"},
+	})
+
+	active, ok := queue.Active()
+	if !ok || active.ID != "approval-1" {
+		t.Fatalf("bad active approval: %#v ok=%v", active, ok)
+	}
+	if pending := queue.Pending(); len(pending) != 1 || pending[0].ID != "approval-2" {
+		t.Fatalf("bad queued approvals: %#v", pending)
+	}
+	resolved, response, ok := queue.TimeoutActive()
+	if !ok || resolved.ID != "approval-1" || response.ID != "approval-1" || response.Approved || response.Reason != "timed_out" {
+		t.Fatalf("bad timeout resolution: prompt=%#v response=%#v ok=%v", resolved, response, ok)
+	}
+	active, ok = queue.Active()
+	if !ok || active.ID != "approval-2" {
+		t.Fatalf("queue did not promote next approval: %#v ok=%v", active, ok)
+	}
+	result := TimedOutApprovalToolResult("approval-1")
+	if result.Status != "timed_out" || result.State != agui.ToolResultStateError || result.Approved {
+		t.Fatalf("bad timed-out tool result: %#v", result)
 	}
 }

@@ -15,9 +15,9 @@ var (
 var aiConnector = &connector.Connector{}
 
 var m = mxmain.BridgeMain{
-	Name:        "mautrix-ai",
+	Name:        "ai",
 	URL:         "https://github.com/beeper/ai-bridge",
-	Description: "A Matrix-AI bridge.",
+	Description: "A Beeper AI bridge.",
 	Version:     "0.1.0",
 	Connector:   aiConnector,
 }
@@ -25,7 +25,7 @@ var m = mxmain.BridgeMain{
 func main() {
 	m.PostInit = func() {
 		aiConnector.AppServiceToken = m.Config.AppService.ASToken
-		aiConnector.HomeserverDomain = m.Config.Homeserver.Domain
+		aiConnector.HomeserverURL = m.Config.Homeserver.Address
 	}
 	m.InitVersion(Tag, Commit, BuildTime)
 	m.Run()
