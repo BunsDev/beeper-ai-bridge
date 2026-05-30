@@ -2,6 +2,7 @@ package sessiontitle
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
@@ -70,13 +71,27 @@ func assistantText(message ai.Message) string {
 }
 
 func contentBlocks(content any) []ai.ContentBlock {
-	if blocks, ok := content.([]ai.ContentBlock); ok {
+	switch value := content.(type) {
+	case []ai.ContentBlock:
+		return value
+	case []any:
+		blocks := make([]ai.ContentBlock, 0, len(value))
+		for _, item := range value {
+			raw, _ := json.Marshal(item)
+			var block ai.ContentBlock
+			if json.Unmarshal(raw, &block) == nil {
+				blocks = append(blocks, block)
+			}
+		}
+		return blocks
+	case string:
+		return []ai.ContentBlock{{Type: "text", Text: value}}
+	default:
+		raw, _ := json.Marshal(value)
+		var blocks []ai.ContentBlock
+		_ = json.Unmarshal(raw, &blocks)
 		return blocks
 	}
-	if text, ok := content.(string); ok {
-		return []ai.ContentBlock{{Type: "text", Text: text}}
-	}
-	return nil
 }
 
 func trimPrompt(value string) string {

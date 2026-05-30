@@ -344,6 +344,9 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	if err != nil || title == "" {
 		return
 	}
+	if _, err = agentSession.AppendSessionName(ctx, title); err != nil {
+		return
+	}
 	meta.AutoTitlePending = false
 	if err = portal.Save(ctx); err != nil {
 		return
@@ -836,22 +839,20 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		messageID := aiid.AssistantMessageID(runID)
 		run := aistream.NewRun(runID, meta.SessionID, provider.ID+"/"+model.ID, string(aiid.AssistantUserID()), "AI", time.Now())
 		run.MessageID = string(messageID)
-		eventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(
-			portal.MXID,
-			portal.PortalKey,
-			messageID,
-			aiid.PartID("text"),
-		)
 		descriptor, err := publisher.NewDescriptor(ctx, portal.MXID, aiid.StreamType)
 		if err != nil {
-			cl.logStreamError(err, portal.MXID, eventID, run, "Failed to create AI stream descriptor")
+			cl.logStreamError(err, portal.MXID, "", run, "Failed to create AI stream descriptor")
 			return hookStreamError(err)
 		}
-		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Created AI stream descriptor", func(evt *zerolog.Event) {
+		cl.logStreamDebug(ctx, portal.MXID, "", run, "Created AI stream descriptor", func(evt *zerolog.Event) {
 			evt.Str("stream_type", descriptor.Type).Str("descriptor_user_id", string(descriptor.UserID))
 		})
 		assistantEvent, metadata := cl.assistantEvent(ctx, portal.PortalKey, messageID, provider.ID, model.ID, runID, descriptor, *run)
-		cl.UserLogin.QueueRemoteEvent(assistantEvent)
+		eventID, err := cl.queueAssistantStreamAnchor(ctx, portal, assistantEvent, messageID)
+		if err != nil {
+			cl.logStreamError(err, portal.MXID, "", run, "Failed to queue AI stream anchor")
+			return hookStreamError(err)
+		}
 		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Queued AI stream anchor")
 		if err := publisher.Register(ctx, portal.MXID, eventID, descriptor); err != nil {
 			cl.logStreamError(err, portal.MXID, eventID, run, "Failed to register AI stream publisher")
@@ -876,6 +877,50 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		return cl.streamPublisherWithEnd(publisher, portal.MXID, eventID, run, func() {
 			publisher.Unregister(portal.MXID, eventID)
 		}, onSecondVisibleChunk...)(ctx, model, llmContext, options)
+	}
+}
+
+func (cl *Client) queueAssistantStreamAnchor(ctx context.Context, portal *bridgev2.Portal, assistantEvent *simplevent.PreConvertedMessage, messageID networkid.MessageID) (id.EventID, error) {
+	if cl == nil || cl.UserLogin == nil || portal == nil || assistantEvent == nil {
+		return "", fmt.Errorf("missing stream anchor context")
+	}
+	result := cl.UserLogin.QueueRemoteEvent(assistantEvent)
+	if !result.Success {
+		if result.Error != nil {
+			return "", result.Error
+		}
+		return "", fmt.Errorf("failed to queue stream anchor")
+	}
+	if result.EventID != "" {
+		return result.EventID, nil
+	}
+	return cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 5*time.Second)
+}
+
+func (cl *Client) waitForMessageEventID(ctx context.Context, portal *bridgev2.Portal, messageID networkid.MessageID, partID networkid.PartID, timeout time.Duration) (id.EventID, error) {
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || cl.Main.Bridge.DB == nil || cl.Main.Bridge.DB.Message == nil || portal == nil {
+		return "", fmt.Errorf("missing message store for stream anchor")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		message, err := cl.Main.Bridge.DB.Message.GetPartByID(ctx, portal.Receiver, messageID, partID)
+		if err == nil && message != nil && message.MXID != "" {
+			return message.MXID, nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("timed out waiting for stream anchor event ID: %w", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 
