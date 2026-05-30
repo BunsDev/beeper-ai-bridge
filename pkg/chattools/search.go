@@ -69,6 +69,12 @@ func Search(ctx context.Context, query string, limit int, request SearchRequestO
 	if client == nil {
 		client = &http.Client{Timeout: options.Timeout}
 	}
+	log := toolHTTPLog(ctx, "web_search", http.MethodPost, options.Endpoint).
+		With().
+		Int("query_length", len([]rune(query))).
+		Int("limit", limit).
+		Logger()
+	ctx = log.WithContext(ctx)
 	payload, _ := json.Marshal(searchPayload(query, limit, request))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.Endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -78,16 +84,21 @@ func Search(ctx context.Context, query string, limit int, request SearchRequestO
 	if options.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+options.APIKey)
 	}
+	log.Trace().Msg("Sending AI tool HTTP request")
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("AI tool HTTP request failed")
 		return SearchResult{}, err
 	}
 	defer resp.Body.Close()
+	logToolHTTPResponse(log, resp, time.Since(started), "Received AI tool HTTP response")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return SearchResult{}, fmt.Errorf("search failed with HTTP %d", resp.StatusCode)
 	}
 	var body searchResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&body); err != nil {
+		log.Err(err).Msg("Failed to parse AI tool HTTP response")
 		return SearchResult{}, err
 	}
 	result := body.result()
@@ -97,6 +108,11 @@ func Search(ctx context.Context, query string, limit int, request SearchRequestO
 	if len(result.Results) > limit {
 		result.Results = result.Results[:limit]
 	}
+	log.Debug().
+		Str("request_id", result.RequestID).
+		Str("resolved_search_type", result.ResolvedSearchType).
+		Int("result_count", len(result.Results)).
+		Msg("Parsed AI tool search result")
 	return result, nil
 }
 

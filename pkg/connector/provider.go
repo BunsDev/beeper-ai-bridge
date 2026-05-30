@@ -12,6 +12,7 @@ import (
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
 )
 
 const aiServicesAppserviceTokenPrefix = "as::"
@@ -31,27 +32,58 @@ func (c *Connector) ModelForProvider(provider aiid.ProviderConfig, modelID strin
 }
 
 func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
+	logCtx := zerolog.Ctx(ctx).With().
+		Str("action", "ai_model_resolution").
+		Str("requested_model", roomConfig.ModelID)
+	if cl != nil && cl.UserLogin != nil {
+		logCtx = logCtx.Str("login_id", string(cl.UserLogin.ID))
+	}
+	log := logCtx.Logger()
+	ctx = log.WithContext(ctx)
 	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
 	if err != nil {
+		log.Err(err).Msg("Failed to resolve AI provider")
 		return aiid.ProviderConfig{}, "", err
 	}
 	if provider.ID != aiid.DefaultProvider {
+		log.Debug().
+			Str("provider_id", provider.ID).
+			Str("provider", string(provider.Provider)).
+			Str("model_id", modelID).
+			Msg("Resolved AI provider")
 		return provider, modelID, nil
 	}
 	provider, err = cl.providerWithCatalogModelsStrict(ctx, provider)
 	if err != nil {
+		log.Err(err).Str("provider_id", provider.ID).Msg("Failed to load default AI provider model catalog")
 		return aiid.ProviderConfig{}, "", err
 	}
 	if len(provider.Models) == 0 {
-		return aiid.ProviderConfig{}, "", fmt.Errorf("Beeper AI model catalog is unavailable")
+		err := fmt.Errorf("Beeper AI model catalog is unavailable")
+		log.Err(err).Str("provider_id", provider.ID).Msg("Default AI provider model catalog is empty")
+		return aiid.ProviderConfig{}, "", err
 	}
 	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
+		log.Debug().
+			Str("provider_id", provider.ID).
+			Str("provider", string(provider.Provider)).
+			Str("model_id", resolvedModelID).
+			Int("model_count", len(provider.Models)).
+			Msg("Resolved AI provider")
 		return provider, resolvedModelID, nil
 	}
 	if roomConfig.ModelID == "" {
+		log.Debug().
+			Str("provider_id", provider.ID).
+			Str("provider", string(provider.Provider)).
+			Str("model_id", provider.Models[0].ID).
+			Int("model_count", len(provider.Models)).
+			Msg("Resolved AI provider to catalog default model")
 		return provider, provider.Models[0].ID, nil
 	}
-	return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, provider.ID)
+	err = fmt.Errorf("model %s is not available for provider %s", modelID, provider.ID)
+	log.Err(err).Str("provider_id", provider.ID).Str("model_id", modelID).Msg("AI model is unavailable for provider")
+	return aiid.ProviderConfig{}, "", err
 }
 
 func modelForProviderConfig(provider aiid.ProviderConfig, modelID string) ai.Model {
@@ -105,21 +137,35 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {
 	return func(ctx context.Context, model ai.Model) (*harness.AgentHarnessAuth, error) {
+		logCtx := zerolog.Ctx(ctx).With().
+			Str("action", "ai_provider_auth").
+			Str("provider_id", provider.ID).
+			Str("provider", string(provider.Provider)).
+			Str("model_id", model.ID)
+		if cl != nil && cl.UserLogin != nil {
+			logCtx = logCtx.Str("login_id", string(cl.UserLogin.ID))
+		}
+		log := logCtx.Logger()
+		ctx = log.WithContext(ctx)
 		var err error
 		currentProvider := provider
 		currentProvider, err = cl.refreshProviderIfNeeded(ctx, currentProvider)
 		if err != nil {
+			log.Err(err).Msg("Failed to refresh AI provider credentials")
 			return nil, err
 		}
 		apiKey := resolveConfiguredAPIKey(currentProvider.APIKey)
 		if currentProvider.ID == aiid.DefaultProvider {
 			apiKey, err = cl.defaultProviderBearerToken()
 			if err != nil {
+				log.Err(err).Msg("Failed to build default AI provider token")
 				return nil, err
 			}
 		}
 		if apiKey == "" {
-			return nil, fmt.Errorf("missing API key for provider %s", currentProvider.ID)
+			err = fmt.Errorf("missing API key for provider %s", currentProvider.ID)
+			log.Err(err).Msg("Missing AI provider credentials")
+			return nil, err
 		}
 		return &harness.AgentHarnessAuth{
 			APIKey:  apiKey,
@@ -173,14 +219,22 @@ func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.Pro
 			}
 		}
 	}
+	log := zerolog.Ctx(ctx).With().
+		Str("action", "ai_provider_auth").
+		Str("provider_id", provider.ID).
+		Time("expires_at", time.UnixMilli(provider.ExpiresAtMS)).
+		Logger()
+	log.Debug().Msg("Refreshing AI provider credentials")
 	credentials, err := refreshChatGPTCredentials(ctx, provider.RefreshToken)
 	if err != nil {
+		log.Err(err).Msg("Failed to refresh AI provider credentials")
 		return provider, err
 	}
 	provider.APIKey = credentials.AccessToken
 	provider.RefreshToken = credentials.RefreshToken
 	provider.ExpiresAtMS = credentials.ExpiresAtMS
 	cl.saveProviderConfig(ctx, provider)
+	log.Debug().Time("expires_at", time.UnixMilli(provider.ExpiresAtMS)).Msg("Refreshed AI provider credentials")
 	return provider, nil
 }
 

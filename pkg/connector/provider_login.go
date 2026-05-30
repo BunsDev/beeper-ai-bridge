@@ -209,6 +209,14 @@ func (cl *ProviderLoginClient) providerAvailable(ctx context.Context) bool {
 
 func (cl *ProviderLoginClient) sendBridgeState(state status.BridgeStateEvent) {
 	if cl != nil && cl.UserLogin != nil && cl.UserLogin.BridgeState != nil {
+		parentID, providerID, _ := aiid.ParseProviderLoginID(cl.UserLogin.ID)
+		cl.UserLogin.Log.Debug().
+			Str("action", "ai_provider_bridge_state").
+			Str("login_id", string(cl.UserLogin.ID)).
+			Str("parent_login_id", string(parentID)).
+			Str("provider_id", providerID).
+			Str("state_event", string(state)).
+			Msg("Sending AI provider bridge state")
 		cl.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: state})
 	}
 }

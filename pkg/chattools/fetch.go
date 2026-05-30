@@ -15,6 +15,7 @@ import (
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/rs/zerolog"
 )
 
 func FetchTool(options FetchOptions) agent.AgentTool[any] {
@@ -67,6 +68,14 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 		if err == nil {
 			return result, nil
 		}
+		zerolog.Ctx(ctx).Warn().
+			Err(err).
+			Str("action", "ai_tool_http").
+			Str("tool", "fetch").
+			Str("fetch_method", "exa").
+			Str("target_url", parsed.Redacted()).
+			Str("target_host", parsed.Host).
+			Msg("Falling back to direct fetch after Exa fetch failed")
 	}
 	return fetchDirect(ctx, rawURL, parsed, options)
 }
@@ -76,18 +85,30 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 	if client == nil {
 		client = &http.Client{Timeout: options.Timeout}
 	}
+	log := toolHTTPLog(ctx, "fetch", http.MethodGet, parsed.String()).
+		With().
+		Str("fetch_method", "direct").
+		Str("target_url", parsed.Redacted()).
+		Str("target_host", parsed.Host).
+		Logger()
+	ctx = log.WithContext(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return FetchResult{}, err
 	}
 	req.Header.Set("User-Agent", "beeper-ai-bridge/1.0")
+	log.Trace().Msg("Sending AI tool HTTP request")
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("AI tool HTTP request failed")
 		return FetchResult{}, err
 	}
 	defer resp.Body.Close()
+	logToolHTTPResponse(log, resp, time.Since(started), "Received AI tool HTTP response")
 	body, err := io.ReadAll(io.LimitReader(resp.Body, options.MaxBytes+1))
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("Failed to read AI tool HTTP response")
 		return FetchResult{}, err
 	}
 	truncated := int64(len(body)) > options.MaxBytes
@@ -124,6 +145,14 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	if client == nil {
 		client = &http.Client{Timeout: options.Timeout}
 	}
+	target, _ := url.Parse(rawURL)
+	log := toolHTTPLog(ctx, "fetch", http.MethodPost, options.ExaEndpoint).
+		With().
+		Str("fetch_method", "exa").
+		Str("target_url", target.Redacted()).
+		Str("target_host", target.Host).
+		Logger()
+	ctx = log.WithContext(ctx)
 	payload, _ := json.Marshal(map[string]any{
 		"urls": []string{rawURL},
 		"text": map[string]any{
@@ -139,16 +168,21 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	if options.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+options.APIKey)
 	}
+	log.Trace().Msg("Sending AI tool HTTP request")
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("AI tool HTTP request failed")
 		return FetchResult{}, err
 	}
 	defer resp.Body.Close()
+	logToolHTTPResponse(log, resp, time.Since(started), "Received AI tool HTTP response")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return FetchResult{}, fmt.Errorf("fetch contents failed with HTTP %d", resp.StatusCode)
 	}
 	var body contentsResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&body); err != nil {
+		log.Err(err).Msg("Failed to parse AI tool HTTP response")
 		return FetchResult{}, err
 	}
 	result := FetchResult{
@@ -170,6 +204,11 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 				result.Status = 502
 			}
 			result.Error = status.Error.Tag
+			log.Error().
+				Int("status_code", result.Status).
+				Str("request_id", body.RequestID).
+				Str("error_tag", status.Error.Tag).
+				Msg("AI tool fetch provider returned item error")
 			return result, fmt.Errorf("fetch contents failed: %s", firstNonEmpty(status.Error.Tag, status.Status))
 		}
 	}
@@ -196,6 +235,10 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 		result.Text = string(runes[:options.MaxChars])
 		result.Truncated = true
 	}
+	log.Debug().
+		Str("request_id", body.RequestID).
+		Bool("truncated", result.Truncated).
+		Msg("Parsed AI tool fetch result")
 	return result, nil
 }
 
@@ -270,4 +313,30 @@ type contentsStatusEntry struct {
 type contentsStatusError struct {
 	Tag            string `json:"tag"`
 	HTTPStatusCode int    `json:"httpStatusCode"`
+}
+
+func toolHTTPLog(ctx context.Context, tool string, method string, rawURL string) zerolog.Logger {
+	logCtx := zerolog.Ctx(ctx).With().
+		Str("action", "ai_tool_http").
+		Str("tool", tool).
+		Str("method", method).
+		Str("url", rawURL)
+	if parsed, err := url.Parse(rawURL); err == nil {
+		logCtx = logCtx.Str("host", parsed.Host).Str("path", parsed.EscapedPath())
+	}
+	return logCtx.Logger()
+}
+
+func logToolHTTPResponse(log zerolog.Logger, resp *http.Response, duration time.Duration, message string) {
+	logEvent := log.Debug()
+	if resp.StatusCode >= 400 {
+		logEvent = log.Error()
+	}
+	logEvent.
+		Dur("duration", duration).
+		Int("status_code", resp.StatusCode).
+		Str("status", resp.Status).
+		Int64("response_content_length", resp.ContentLength).
+		Str("response_content_type", resp.Header.Get("Content-Type")).
+		Msg(message)
 }

@@ -11,6 +11,7 @@ import (
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/status"
@@ -77,10 +78,18 @@ type DefaultProviderLogin struct {
 var _ bridgev2.LoginProcess = (*DefaultProviderLogin)(nil)
 
 func (l *DefaultProviderLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	log := providerLoginLog(ctx, loginFlowDefaultProvider, aiid.DefaultProvider)
+	ctx = log.WithContext(ctx)
 	login, err := l.Main.EnsureDefaultLogin(ctx, l.User)
 	if err != nil {
+		log.Err(err).Msg("Failed to ensure default AI provider login")
 		return nil, err
 	}
+	if err = l.Main.connectUserLogin(ctx, login); err != nil {
+		log.Err(err).Str("login_id", string(login.ID)).Msg("Failed to connect default AI provider login")
+		return nil, err
+	}
+	log.Debug().Str("login_id", string(login.ID)).Msg("Default AI provider login ready")
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       loginStepDefault,
@@ -104,6 +113,7 @@ type CustomProviderLogin struct {
 var _ bridgev2.LoginProcessUserInput = (*CustomProviderLogin)(nil)
 
 func (l *CustomProviderLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	providerLoginLog(ctx, string(l.config.API), "").Debug().Msg("Prompting for provider login config")
 	return l.providerConfigStep(), nil
 }
 
@@ -131,13 +141,20 @@ func (l *CustomProviderLogin) submitProviderConfig(ctx context.Context, input ma
 	providerID := strings.TrimSpace(input["provider_id"])
 	baseURL := normalizeResponsesBaseURL(strings.TrimSpace(input["base_url"]))
 	apiKey := strings.TrimSpace(input["api_key"])
+	log := providerLoginLog(ctx, string(l.config.API), providerID)
+	log = providerLoginURLFields(log, baseURL)
+	ctx = log.WithContext(ctx)
 	if providerID == "" || baseURL == "" || apiKey == "" {
-		return nil, fmt.Errorf("provider_id, base_url and api_key are required")
+		err := fmt.Errorf("provider_id, base_url and api_key are required")
+		log.Err(err).Msg("Provider login config rejected")
+		return nil, err
 	}
 	models, err := fetchProviderModels(ctx, l.config.API, providerID, baseURL, apiKey)
 	if err != nil {
+		log.Err(err).Msg("Failed to fetch provider models during login")
 		return nil, err
 	}
+	log.Debug().Int("model_count", len(models)).Msg("Fetched provider models during login")
 	l.config.ProviderID = providerID
 	l.config.BaseURL = baseURL
 	l.config.APIKey = apiKey
@@ -158,11 +175,20 @@ func (l *CustomProviderLogin) submitProviderConfig(ctx context.Context, input ma
 
 func (l *CustomProviderLogin) submitDefaultModel(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	modelID := strings.TrimSpace(input["default_model"])
+	log := providerLoginLog(ctx, string(l.config.API), l.config.ProviderID).
+		With().
+		Str("model_id", modelID).
+		Logger()
+	ctx = log.WithContext(ctx)
 	if modelID == "" {
-		return nil, fmt.Errorf("default_model is required")
+		err := fmt.Errorf("default_model is required")
+		log.Err(err).Msg("Provider default model rejected")
+		return nil, err
 	}
 	if !providerHasModel(aiid.ProviderConfig{Models: l.config.Models}, modelID) {
-		return nil, fmt.Errorf("model %s was not returned by provider %s", modelID, l.config.ProviderID)
+		err := fmt.Errorf("model %s was not returned by provider %s", modelID, l.config.ProviderID)
+		log.Err(err).Msg("Provider default model rejected")
+		return nil, err
 	}
 	displayName := providerDisplayName(l.config.ProviderID)
 	provider := aiid.ProviderConfig{
@@ -177,8 +203,11 @@ func (l *CustomProviderLogin) submitDefaultModel(ctx context.Context, input map[
 	}
 	login, err := l.Main.UpsertProviderLogin(ctx, l.User, provider)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create provider login: %w", err)
+		err = fmt.Errorf("failed to create provider login: %w", err)
+		log.Err(err).Msg("Failed to create provider login")
+		return nil, err
 	}
+	log.Debug().Str("login_id", string(login.ID)).Msg("Provider login added")
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       loginStepComplete,
@@ -254,11 +283,35 @@ func fetchProviderModels(ctx context.Context, api ai.Api, providerID string, bas
 		req.Header.Set("Authorization", "Bearer "+resolveConfiguredAPIKey(apiKey))
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
+	log := zerolog.Ctx(ctx).With().
+		Str("action", "ai_provider_models_http").
+		Str("provider_id", providerID).
+		Str("api", string(api)).
+		Str("method", http.MethodGet).
+		Str("url", modelURL).
+		Logger()
+	if parsed, parseErr := url.Parse(modelURL); parseErr == nil {
+		log = log.With().Str("host", parsed.Host).Str("path", parsed.EscapedPath()).Logger()
+	}
+	ctx = log.WithContext(ctx)
+	log.Trace().Msg("Sending provider models HTTP request")
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("Provider models HTTP request failed")
 		return nil, fmt.Errorf("failed to fetch models: %w", err)
 	}
 	defer resp.Body.Close()
+	logEvent := log.Debug()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logEvent = log.Error()
+	}
+	logEvent.Dur("duration", time.Since(started)).
+		Int("status_code", resp.StatusCode).
+		Str("status", resp.Status).
+		Int64("response_content_length", resp.ContentLength).
+		Str("response_content_type", resp.Header.Get("Content-Type")).
+		Msg("Received provider models HTTP response")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("failed to fetch models: provider returned HTTP %d", resp.StatusCode)
 	}
@@ -301,15 +354,25 @@ func fetchProviderModels(ctx context.Context, api ai.Api, providerID string, bas
 	if len(models) == 0 {
 		return nil, fmt.Errorf("provider returned no models")
 	}
+	log.Debug().Int("model_count", len(models)).Msg("Parsed provider models")
 	return models, nil
 }
 
 func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User, provider aiid.ProviderConfig) (*bridgev2.UserLogin, error) {
+	log := providerLoginLog(ctx, "upsert", provider.ID).
+		With().
+		Str("provider", string(provider.Provider)).
+		Str("api", string(provider.API)).
+		Str("default_model", provider.DefaultModel).
+		Logger()
+	ctx = log.WithContext(ctx)
 	mainLogin, err := c.EnsureDefaultLogin(ctx, user)
 	if err != nil {
+		log.Err(err).Msg("Failed to ensure parent AI login for provider")
 		return nil, err
 	}
 	if err = c.addProviderToLogin(ctx, mainLogin, provider); err != nil {
+		log.Err(err).Str("parent_login_id", string(mainLogin.ID)).Msg("Failed to save provider on parent AI login")
 		return nil, err
 	}
 	loginID := aiid.ProviderLoginID(mainLogin.ID, provider.ID)
@@ -318,11 +381,14 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 		cached.RemoteProfile.Name = provider.DisplayName
 		cached.Metadata = &aiid.UserLoginMetadata{}
 		if err = cached.Save(ctx); err != nil {
+			log.Err(err).Str("login_id", string(cached.ID)).Msg("Failed to save cached provider login")
 			return nil, err
 		}
-		if err = c.connectProviderLogin(ctx, cached); err != nil {
+		if err = c.connectUserLogin(ctx, cached); err != nil {
+			log.Err(err).Str("login_id", string(cached.ID)).Msg("Failed to connect cached provider login")
 			return nil, err
 		}
+		log.Debug().Str("login_id", string(cached.ID)).Str("parent_login_id", string(mainLogin.ID)).Msg("Updated provider login")
 		return cached, nil
 	}
 	login, err := user.NewLogin(ctx, &database.UserLogin{
@@ -334,11 +400,14 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 		Metadata: &aiid.UserLoginMetadata{},
 	}, &bridgev2.NewLoginParams{})
 	if err != nil {
+		log.Err(err).Str("login_id", string(loginID)).Msg("Failed to create provider login")
 		return nil, err
 	}
-	if err = c.connectProviderLogin(ctx, login); err != nil {
+	if err = c.connectUserLogin(ctx, login); err != nil {
+		log.Err(err).Str("login_id", string(login.ID)).Msg("Failed to connect provider login")
 		return nil, err
 	}
+	log.Debug().Str("login_id", string(login.ID)).Str("parent_login_id", string(mainLogin.ID)).Msg("Created provider login")
 	return login, nil
 }
 
@@ -358,7 +427,7 @@ func (c *Connector) addProviderToLogin(ctx context.Context, login *bridgev2.User
 	return login.Save(ctx)
 }
 
-func (c *Connector) connectProviderLogin(ctx context.Context, login *bridgev2.UserLogin) error {
+func (c *Connector) connectUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	if login == nil {
 		return nil
 	}
@@ -446,4 +515,25 @@ func configuredModelProvider(providerID string, provider ai.Provider) ai.Provide
 		return ai.Provider(providerID)
 	}
 	return provider
+}
+
+func providerLoginLog(ctx context.Context, flowID string, providerID string) zerolog.Logger {
+	logCtx := zerolog.Ctx(ctx).With().
+		Str("action", "ai_provider_login").
+		Str("flow_id", flowID)
+	if providerID != "" {
+		logCtx = logCtx.Str("provider_id", providerID)
+	}
+	return logCtx.Logger()
+}
+
+func providerLoginURLFields(log zerolog.Logger, rawURL string) zerolog.Logger {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return log
+	}
+	return log.With().
+		Str("base_url_host", parsed.Host).
+		Str("base_url_path", parsed.EscapedPath()).
+		Logger()
 }

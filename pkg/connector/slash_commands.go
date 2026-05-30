@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 )
 
@@ -112,6 +113,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	}
 	if err := def.run(cl, ctx, msg.Portal, roomConfig, cmd.arg, responder); err != nil {
 		if def.noticeErrors {
+			cl.logAISlashCommandError(ctx, msg, cmd, err, "AI slash command rejected")
 			if noticeErr := responder.Reply(ctx, err.Error()); noticeErr != nil {
 				return nil, true, noticeErr
 			}
@@ -120,6 +122,33 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 		return nil, true, err
 	}
 	return cl.commandHandledResponse(msg, cmd.name), true, nil
+}
+
+func (cl *Client) logAISlashCommandError(ctx context.Context, msg *bridgev2.MatrixMessage, cmd aiSlashCommand, err error, message string) {
+	logCtx := zerolog.Ctx(ctx).With().
+		Str("action", "ai_slash_command").
+		Str("command", cmd.name).
+		Bool("arg_present", cmd.arg != "")
+	if cl != nil && cl.UserLogin != nil {
+		logCtx = logCtx.Str("login_id", string(cl.UserLogin.ID))
+	}
+	log := logCtx.Logger()
+	event := log.Error().Err(err)
+	if msg != nil {
+		if msg.Portal != nil {
+			event = event.
+				Str("portal_id", string(msg.Portal.ID)).
+				Str("portal_receiver", string(msg.Portal.Receiver)).
+				Str("portal_mxid", string(msg.Portal.MXID))
+		}
+		if msg.Event != nil {
+			event = event.
+				Str("event_id", string(msg.Event.ID)).
+				Str("event_type", string(msg.Event.Type.Type)).
+				Str("sender", string(msg.Event.Sender))
+		}
+	}
+	event.Msg(message)
 }
 
 func aiSlashCommandByName(name string) (aiSlashCommandDefinition, bool) {

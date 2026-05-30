@@ -91,10 +91,21 @@ func (c *Connector) handleBridgeAICommand(ce *commands.Event) {
 	}
 	err = def.run(cl, ce.Ctx, ce.Portal, roomConfig, arg, bridgeCommandResponder{ce: ce})
 	if err != nil {
+		logEvt := ce.Log.Err(err).
+			Str("action", "ai_bridge_command").
+			Str("command", def.name).
+			Bool("arg_present", arg != "")
+		if ce.Portal != nil {
+			logEvt = logEvt.
+				Str("portal_id", string(ce.Portal.ID)).
+				Str("portal_receiver", string(ce.Portal.Receiver)).
+				Str("portal_mxid", string(ce.Portal.MXID))
+		}
 		if def.noticeErrors {
+			logEvt.Msg("AI bridge command rejected")
 			ce.Reply(err.Error())
 		} else {
-			ce.Log.Err(err).Msg("AI command failed")
+			logEvt.Msg("AI bridge command failed")
 			ce.Reply("AI command failed: %v", err)
 		}
 	}

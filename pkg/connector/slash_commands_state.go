@@ -7,6 +7,7 @@ import (
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 )
 
@@ -19,15 +20,18 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 		if !config.modelStatePresent {
 			return config, nil, false, err
 		}
+		cl.logAIRoomSettingsError(ctx, msg, err, "AI room settings rejected")
 		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err)); noticeErr != nil {
 			return config, nil, false, noticeErr
 		}
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
 	if config.ThinkingLevel != "" && !validRoomReasoningLevel(config.ThinkingLevel) {
+		err = fmt.Errorf("reasoning level %q is invalid", config.ThinkingLevel)
 		if !config.modelStatePresent {
-			return config, nil, false, fmt.Errorf("reasoning level %q is invalid", config.ThinkingLevel)
+			return config, nil, false, err
 		}
+		cl.logAIRoomSettingsError(ctx, msg, err, "AI room settings rejected")
 		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: reasoning level %q is invalid.", config.ThinkingLevel)); noticeErr != nil {
 			return config, nil, false, noticeErr
 		}
@@ -37,6 +41,7 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 		if !config.modelStatePresent {
 			return config, nil, false, err
 		}
+		cl.logAIRoomSettingsError(ctx, msg, err, "AI room settings rejected")
 		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err)); noticeErr != nil {
 			return config, nil, false, noticeErr
 		}
@@ -56,6 +61,30 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 	config.ProviderID = provider.ID
 	config.ModelID = model.ID
 	return config, nil, false, nil
+}
+
+func (cl *Client) logAIRoomSettingsError(ctx context.Context, msg *bridgev2.MatrixMessage, err error, message string) {
+	logCtx := zerolog.Ctx(ctx).With().Str("action", "ai_room_settings")
+	if cl != nil && cl.UserLogin != nil {
+		logCtx = logCtx.Str("login_id", string(cl.UserLogin.ID))
+	}
+	log := logCtx.Logger()
+	event := log.Error().Err(err)
+	if msg != nil {
+		if msg.Portal != nil {
+			event = event.
+				Str("portal_id", string(msg.Portal.ID)).
+				Str("portal_receiver", string(msg.Portal.Receiver)).
+				Str("portal_mxid", string(msg.Portal.MXID))
+		}
+		if msg.Event != nil {
+			event = event.
+				Str("event_id", string(msg.Event.ID)).
+				Str("event_type", string(msg.Event.Type.Type)).
+				Str("sender", string(msg.Event.Sender))
+		}
+	}
+	event.Msg(message)
 }
 
 func (cl *Client) refreshRoomCapabilities(ctx context.Context, portal *bridgev2.Portal) {

@@ -9,6 +9,7 @@ import (
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
+	"github.com/rs/zerolog"
 )
 
 type AgentEventSink func(context.Context, AgentEvent) error
@@ -502,6 +503,13 @@ func prepareToolCall(ctx context.Context, currentContext *AgentContext, assistan
 func runToolCall(ctx context.Context, currentContext *AgentContext, assistantMessage ai.Message, toolCall AgentToolCall, config AgentLoopConfig, emit AgentEventSink) (AgentToolResult[any], bool) {
 	prepared, immediate, ok := prepareToolCall(ctx, currentContext, assistantMessage, toolCall, config)
 	if ok {
+		if immediate.IsError {
+			zerolog.Ctx(ctx).Warn().
+				Str("action", "ai_tool_execution").
+				Str("tool", toolCall.Name).
+				Str("tool_call_id", toolCall.ID).
+				Msg("AI tool call rejected before execution")
+		}
 		return immediate.Result, immediate.IsError
 	}
 	return runPreparedToolCall(ctx, currentContext, assistantMessage, prepared, config, emit)
@@ -509,6 +517,14 @@ func runToolCall(ctx context.Context, currentContext *AgentContext, assistantMes
 
 func runPreparedToolCall(ctx context.Context, currentContext *AgentContext, assistantMessage ai.Message, prepared preparedToolCall, config AgentLoopConfig, emit AgentEventSink) (AgentToolResult[any], bool) {
 	toolCall := prepared.ToolCall
+	log := zerolog.Ctx(ctx).With().
+		Str("action", "ai_tool_execution").
+		Str("tool", toolCall.Name).
+		Str("tool_call_id", toolCall.ID).
+		Logger()
+	ctx = log.WithContext(ctx)
+	started := time.Now()
+	log.Debug().Msg("Starting AI tool call")
 	var updateErr error
 	var updateErrMu sync.Mutex
 	result, err := prepared.Tool.Execute(ctx, toolCall.ID, prepared.Args, func(partialResult AgentToolResult[any]) {
@@ -536,6 +552,7 @@ func runPreparedToolCall(ctx context.Context, currentContext *AgentContext, assi
 	if config.AfterToolCall != nil {
 		after, err := config.AfterToolCall(ctx, AfterToolCallContext{AssistantMessage: assistantMessage, ToolCall: toolCall, Args: prepared.Args, Result: result, IsError: isError, Context: *currentContext})
 		if err != nil {
+			log.Err(err).Dur("duration", time.Since(started)).Msg("AI tool result hook failed")
 			return createErrorToolResult(err.Error()), true
 		}
 		if after != nil {
@@ -553,6 +570,15 @@ func runPreparedToolCall(ctx context.Context, currentContext *AgentContext, assi
 			}
 		}
 	}
+	logEvent := log.Debug()
+	if isError {
+		logEvent = log.Error()
+	}
+	logEvent.
+		Dur("duration", time.Since(started)).
+		Bool("is_error", isError).
+		Bool("terminate", result.Terminate).
+		Msg("Finished AI tool call")
 	return result, isError
 }
 

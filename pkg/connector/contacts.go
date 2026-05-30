@@ -147,11 +147,18 @@ func (cl *Client) providerForModelContacts(ctx context.Context, provider aiid.Pr
 	}
 	refreshed, err := cl.providerWithCatalogModelsStrict(ctx, provider)
 	if err != nil {
-		zerolog.Ctx(ctx).Warn().Err(err).Str("provider_id", provider.ID).Msg("Skipping provider contacts after model catalog fetch failed")
+		zerolog.Ctx(ctx).Warn().
+			Err(err).
+			Str("action", "ai_model_catalog").
+			Str("provider_id", provider.ID).
+			Msg("Skipping provider contacts after model catalog fetch failed")
 		return refreshed, false
 	}
 	if len(refreshed.Models) == 0 {
-		zerolog.Ctx(ctx).Warn().Str("provider_id", provider.ID).Msg("Skipping provider contacts because model catalog is empty")
+		zerolog.Ctx(ctx).Warn().
+			Str("action", "ai_model_catalog").
+			Str("provider_id", provider.ID).
+			Msg("Skipping provider contacts because model catalog is empty")
 		return refreshed, false
 	}
 	return refreshed, true
@@ -170,6 +177,11 @@ func (cl *Client) providerWithCatalogModelsStrict(ctx context.Context, provider 
 	}
 	if len(models) > 0 {
 		provider.Models = models
+		zerolog.Ctx(ctx).Debug().
+			Str("action", "ai_model_catalog").
+			Str("provider_id", provider.ID).
+			Int("model_count", len(models)).
+			Msg("Loaded AI Services model catalog")
 	}
 	return provider, nil
 }

@@ -40,12 +40,12 @@ func TestProviderLoginUsesParentGhostIdentity(t *testing.T) {
 	}
 }
 
-func TestConnectProviderLoginConnectsExistingProviderAccount(t *testing.T) {
+func TestConnectUserLoginConnectsExistingAccount(t *testing.T) {
 	fake := &fakeNetworkAPI{}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: "provider-login"}, Client: fake}
-	(&Connector{}).connectProviderLogin(t.Context(), login)
+	(&Connector{}).connectUserLogin(t.Context(), login)
 	if !fake.connected {
-		t.Fatalf("expected existing provider client to be connected")
+		t.Fatalf("expected existing client to be connected")
 	}
 }
 

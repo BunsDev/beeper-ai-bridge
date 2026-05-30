@@ -10,6 +10,7 @@ import (
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/rs/zerolog"
 )
 
 type AgentHarnessStreamOptions struct {
@@ -751,17 +752,27 @@ func (h *AgentHarness) loopConfig(ctx context.Context) agent.AgentLoopConfig {
 
 func (h *AgentHarness) createStreamFn() agent.StreamFn {
 	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		log := zerolog.Ctx(ctx).With().
+			Str("action", "ai_agent_provider").
+			Str("provider", string(model.Provider)).
+			Str("model_id", model.ID).
+			Logger()
+		ctx = log.WithContext(ctx)
 		snapshot := h.GetStreamOptions()
 		snapshot.Transport = options.Transport
 		snapshot.MaxRetryDelayMs = options.MaxRetryDelayMs
 		snapshot.CacheRetention = options.CacheRetention
 		metadata, err := h.session.GetMetadata(ctx)
 		if err != nil {
+			log.Err(err).Msg("Failed to load AI session metadata before provider request")
 			return hookErrorStream(model, err)
 		}
+		log = log.With().Str("session_id", metadata.ID).Logger()
+		ctx = log.WithContext(ctx)
 		if h.getAPIKeyAndHeaders != nil {
 			auth, err := h.getAPIKeyAndHeaders(ctx, model)
 			if err != nil {
+				log.Err(err).Msg("Failed to load AI provider auth")
 				return hookErrorStream(model, err)
 			}
 			if auth != nil {
@@ -772,10 +783,17 @@ func (h *AgentHarness) createStreamFn() agent.StreamFn {
 			}
 		}
 		if result, err := h.emitHook(ctx, AgentHarnessEvent{Type: "before_provider_request", Model: &model, StreamOptions: snapshot, SessionID: metadata.ID}); err != nil {
+			log.Err(err).Msg("AI provider request hook failed")
 			return hookErrorStream(model, err)
 		} else if patch, ok := result.(BeforeProviderRequestResult); ok {
 			snapshot = mergeStreamOptions(snapshot, patch.StreamOptions)
 		}
+		log.Debug().
+			Str("transport", string(snapshot.Transport)).
+			Str("cache_retention", string(snapshot.CacheRetention)).
+			Bool("has_headers", len(snapshot.Headers) > 0).
+			Bool("has_metadata", len(snapshot.Metadata) > 0).
+			Msg("Starting AI provider stream")
 		options.Transport = snapshot.Transport
 		options.MaxRetryDelayMs = snapshot.MaxRetryDelayMs
 		options.CacheRetention = snapshot.CacheRetention
@@ -798,6 +816,7 @@ func (h *AgentHarness) createStreamFn() agent.StreamFn {
 			}
 			result, err := h.emitHook(ctx, AgentHarnessEvent{Type: "before_provider_payload", Model: &payloadModel, Payload: payload})
 			if err != nil {
+				log.Err(err).Str("payload_model_id", payloadModel.ID).Str("payload_provider", string(payloadModel.Provider)).Msg("AI provider payload hook failed")
 				return nil, false, err
 			}
 			if patch, ok := result.(BeforeProviderPayloadResult); ok {
@@ -809,10 +828,27 @@ func (h *AgentHarness) createStreamFn() agent.StreamFn {
 		options.OnResponse = func(response ai.ProviderResponse, responseModel ai.Model) error {
 			if previousOnResponse != nil {
 				if err := previousOnResponse(response, responseModel); err != nil {
+					log.Err(err).
+						Str("response_model_id", responseModel.ID).
+						Str("response_provider", string(responseModel.Provider)).
+						Int("status_code", response.Status).
+						Msg("AI provider response callback failed")
 					return err
 				}
 			}
+			log.Debug().
+				Str("response_model_id", responseModel.ID).
+				Str("response_provider", string(responseModel.Provider)).
+				Int("status_code", response.Status).
+				Msg("Received AI provider response")
 			_, err := h.emitHook(ctx, AgentHarnessEvent{Type: "after_provider_response", Model: &responseModel, ProviderResponse: response})
+			if err != nil {
+				log.Err(err).
+					Str("response_model_id", responseModel.ID).
+					Str("response_provider", string(responseModel.Provider)).
+					Int("status_code", response.Status).
+					Msg("AI provider response hook failed")
+			}
 			return err
 		}
 		return h.streamFn(ctx, model, llmContext, options)

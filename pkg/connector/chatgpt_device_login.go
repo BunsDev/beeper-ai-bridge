@@ -15,6 +15,7 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/ai/providers"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 )
 
@@ -47,11 +48,20 @@ type ChatGPTDeviceLogin struct {
 var _ bridgev2.LoginProcessDisplayAndWait = (*ChatGPTDeviceLogin)(nil)
 
 func (l *ChatGPTDeviceLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	log := chatGPTProviderLoginLog(ctx)
+	ctx = log.WithContext(ctx)
+	log.Debug().Msg("Starting ChatGPT device login")
 	device, err := startChatGPTDeviceAuth(ctx)
 	if err != nil {
+		log.Err(err).Msg("Failed to start ChatGPT device login")
 		return nil, err
 	}
 	l.device = device
+	log.Debug().
+		Dur("interval", device.Interval).
+		Dur("expires_in", device.ExpiresIn).
+		Str("verification_uri", device.VerificationURI).
+		Msg("ChatGPT device login ready for user verification")
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeDisplayAndWait,
 		StepID:       chatGPTDeviceLoginStepID,
@@ -63,6 +73,8 @@ func (l *ChatGPTDeviceLogin) Start(ctx context.Context) (*bridgev2.LoginStep, er
 }
 
 func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
+	log := chatGPTProviderLoginLog(ctx)
+	ctx = log.WithContext(ctx)
 	waitCtx, cancel := context.WithCancel(ctx)
 	l.setCancel(cancel)
 	defer func() {
@@ -71,20 +83,26 @@ func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, err
 	}()
 	token, err := pollChatGPTDeviceAuth(waitCtx, l.device)
 	if err != nil {
+		log.Err(err).Msg("ChatGPT device login polling failed")
 		return nil, err
 	}
 	credentials, err := exchangeChatGPTAuthorizationCode(ctx, token.AuthorizationCode, token.CodeVerifier, chatGPTDeviceRedirectURI)
 	if err != nil {
+		log.Err(err).Msg("ChatGPT device login token exchange failed")
 		return nil, err
 	}
 	provider, err := chatGPTCodexProvider(credentials)
 	if err != nil {
+		log.Err(err).Msg("Failed to build ChatGPT provider config")
 		return nil, err
 	}
 	login, err := l.Main.UpsertProviderLogin(ctx, l.User, provider)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ChatGPT provider login: %w", err)
+		err = fmt.Errorf("failed to create ChatGPT provider login: %w", err)
+		log.Err(err).Msg("Failed to create ChatGPT provider login")
+		return nil, err
 	}
+	log.Debug().Str("login_id", string(login.ID)).Msg("ChatGPT provider login added")
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       loginStepComplete,
@@ -138,11 +156,17 @@ func startChatGPTDeviceAuth(ctx context.Context) (chatGPTDeviceAuthInfo, error) 
 		return chatGPTDeviceAuthInfo{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	log := chatGPTHTTPLog(ctx, "start_device_auth", req)
+	ctx = log.WithContext(ctx)
+	log.Trace().Msg("Sending ChatGPT auth HTTP request")
+	started := time.Now()
 	resp, err := chatGPTHTTPClient.Do(req)
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("ChatGPT auth HTTP request failed")
 		return chatGPTDeviceAuthInfo{}, fmt.Errorf("failed to start ChatGPT device login: %w", err)
 	}
 	defer resp.Body.Close()
+	logChatGPTHTTPResponse(log, resp, time.Since(started), "Received ChatGPT auth HTTP response")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		text, _ := io.ReadAll(resp.Body)
 		return chatGPTDeviceAuthInfo{}, fmt.Errorf("ChatGPT device login failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(text)))
@@ -234,14 +258,19 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 		return chatGPTDeviceToken{}, false, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	log := chatGPTHTTPLog(ctx, "poll_device_auth", req)
+	log.Trace().Msg("Sending ChatGPT auth HTTP request")
+	started := time.Now()
 	resp, err := chatGPTHTTPClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return chatGPTDeviceToken{}, false, false, ctx.Err()
 		}
+		log.Err(err).Dur("duration", time.Since(started)).Msg("ChatGPT auth HTTP request failed")
 		return chatGPTDeviceToken{}, false, false, fmt.Errorf("failed to poll ChatGPT device login: %w", err)
 	}
 	defer resp.Body.Close()
+	logChatGPTHTTPResponse(log, resp, time.Since(started), "Received ChatGPT auth HTTP response")
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var body struct {
 			AuthorizationCode string `json:"authorization_code"`
@@ -258,11 +287,14 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 	responseText, _ := io.ReadAll(resp.Body)
 	errorCode := chatGPTErrorCode(string(responseText))
 	if errorCode == "deviceauth_authorization_pending" {
+		log.Trace().Str("error_code", errorCode).Msg("ChatGPT device login is pending")
 		return chatGPTDeviceToken{}, true, false, nil
 	}
 	if errorCode == "slow_down" {
+		log.Debug().Str("error_code", errorCode).Msg("ChatGPT device login poll slowed down")
 		return chatGPTDeviceToken{}, true, true, nil
 	}
+	log.Error().Str("error_code", errorCode).Msg("ChatGPT device login failed")
 	return chatGPTDeviceToken{}, false, false, fmt.Errorf("ChatGPT device login failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseText)))
 }
 
@@ -310,11 +342,16 @@ func requestChatGPTToken(ctx context.Context, form url.Values, operation string,
 		return chatGPTCredentials{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	log := chatGPTHTTPLog(ctx, operation+"_token", req)
+	log.Trace().Msg("Sending ChatGPT auth HTTP request")
+	started := time.Now()
 	resp, err := chatGPTHTTPClient.Do(req)
 	if err != nil {
+		log.Err(err).Dur("duration", time.Since(started)).Msg("ChatGPT auth HTTP request failed")
 		return chatGPTCredentials{}, fmt.Errorf("ChatGPT token %s failed: %w", operation, err)
 	}
 	defer resp.Body.Close()
+	logChatGPTHTTPResponse(log, resp, time.Since(started), "Received ChatGPT auth HTTP response")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		text, _ := io.ReadAll(resp.Body)
 		return chatGPTCredentials{}, fmt.Errorf("ChatGPT token %s failed with HTTP %d: %s", operation, resp.StatusCode, strings.TrimSpace(string(text)))
@@ -374,4 +411,38 @@ func defaultChatGPTCodexModel() string {
 		return models[0].ID
 	}
 	return "gpt-5-codex"
+}
+
+func chatGPTProviderLoginLog(ctx context.Context) zerolog.Logger {
+	return zerolog.Ctx(ctx).With().
+		Str("action", "ai_provider_login").
+		Str("flow_id", loginFlowChatGPTDevice).
+		Str("provider_id", chatGPTProviderID).
+		Logger()
+}
+
+func chatGPTHTTPLog(ctx context.Context, operation string, req *http.Request) zerolog.Logger {
+	logCtx := zerolog.Ctx(ctx).With().
+		Str("action", "ai_provider_auth_http").
+		Str("provider_id", chatGPTProviderID).
+		Str("operation", operation).
+		Str("method", req.Method).
+		Str("url", req.URL.String()).
+		Str("host", req.URL.Host).
+		Str("path", req.URL.EscapedPath())
+	return logCtx.Logger()
+}
+
+func logChatGPTHTTPResponse(log zerolog.Logger, resp *http.Response, duration time.Duration, message string) {
+	logEvent := log.Debug()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logEvent = log.Error()
+	}
+	logEvent.
+		Dur("duration", duration).
+		Int("status_code", resp.StatusCode).
+		Str("status", resp.Status).
+		Int64("response_content_length", resp.ContentLength).
+		Str("response_content_type", resp.Header.Get("Content-Type")).
+		Msg(message)
 }

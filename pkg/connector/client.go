@@ -133,6 +133,11 @@ func (cl *Client) LogoutRemote(ctx context.Context) {
 
 func (cl *Client) sendBridgeState(state status.BridgeStateEvent) {
 	if cl != nil && cl.UserLogin != nil && cl.UserLogin.BridgeState != nil {
+		cl.UserLogin.Log.Debug().
+			Str("action", "ai_bridge_state").
+			Str("login_id", string(cl.UserLogin.ID)).
+			Str("state_event", string(state)).
+			Msg("Sending AI bridge state")
 		cl.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: state})
 	}
 }
@@ -1012,7 +1017,9 @@ func (cl *Client) logMatrixMessageError(msg *bridgev2.MatrixMessage, err error, 
 	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil {
 		return
 	}
-	event := cl.Main.Bridge.Log.Error().Err(err)
+	event := cl.Main.Bridge.Log.Error().
+		Err(err).
+		Str("action", "ai_matrix_message")
 	if msg != nil {
 		if msg.Portal != nil {
 			event = event.
@@ -1153,6 +1160,7 @@ func (cl *Client) logStreamError(err error, roomID id.RoomID, eventID id.EventID
 	}
 	event := cl.Main.Bridge.Log.Error().
 		Err(err).
+		Str("action", "ai_stream").
 		Str("room_id", string(roomID)).
 		Str("event_id", string(eventID))
 	if run != nil {
@@ -1173,6 +1181,7 @@ func (cl *Client) logStreamDebug(ctx context.Context, roomID id.RoomID, eventID 
 		return
 	}
 	event := cl.Main.Bridge.Log.Debug().
+		Str("action", "ai_stream").
 		Str("room_id", string(roomID)).
 		Str("event_id", string(eventID))
 	if run != nil {
