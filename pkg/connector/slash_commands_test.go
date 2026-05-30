@@ -84,8 +84,30 @@ func TestCurrentCommandResponseText(t *testing.T) {
 	if got := displayReasoningLevel(""); got != "off" {
 		t.Fatalf("empty reasoning level = %q, want off", got)
 	}
+	model := ai.Model{ID: "anthropic/claude-opus-4.5", Reasoning: true}
+	status := reasoningStatusText("", "beeper/anthropic/claude-opus-4.5", model)
+	if !strings.Contains(status, "Current reasoning is `off` for `beeper/anthropic/claude-opus-4.5`.") {
+		t.Fatalf("reasoning status is missing current value:\n%s", status)
+	}
+	if !strings.Contains(status, "Options: `off`, `minimal`, `low`, `medium`, `high`.") {
+		t.Fatalf("reasoning status is missing supported options:\n%s", status)
+	}
+	modelStatus := canonicalTestClient().modelStatusText("beeper/gpt-5.5", "off", aiid.ProviderConfig{
+		ID:     "beeper",
+		Models: []ai.Model{{ID: "gpt-5.5"}, {ID: "openai/gpt-5.5"}},
+	})
+	if !strings.Contains(modelStatus, "Current model is `beeper/gpt-5.5`. Current reasoning is `off`.") {
+		t.Fatalf("model status is missing current value:\n%s", modelStatus)
+	}
+	if !strings.Contains(modelStatus, "Options: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`, `openrouter/openai/gpt-5`.") {
+		t.Fatalf("model status is missing available options:\n%s", modelStatus)
+	}
 	if got := currentSystemPromptText(RoomConfig{}); got != "No additional system prompt is set." {
 		t.Fatalf("empty system prompt text = %q", got)
+	}
+	promptStatus := systemPromptStatusText(RoomConfig{})
+	if !strings.Contains(promptStatus, "Options: `/system-prompt <prompt>`, `/system-prompt clear`.") {
+		t.Fatalf("system prompt status is missing options:\n%s", promptStatus)
 	}
 	prompt := currentSystemPromptText(RoomConfig{AdditionalPrompt: "be terse"})
 	if !strings.Contains(prompt, "Current system prompt:") || !strings.Contains(prompt, "```\nbe terse\n```") {
