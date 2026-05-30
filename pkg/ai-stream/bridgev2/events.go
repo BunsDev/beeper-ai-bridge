@@ -45,8 +45,9 @@ func Anchor(portalKey networkid.PortalKey, sender networkid.UserID, run aistream
 
 func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, carrier aistream.Carrier, targetEventID id.EventID, index int, timestamp time.Time) *simplevent.PreConvertedMessage {
 	content, extra := aimatrix.CarrierContent(run, carrier, targetEventID)
+	carrierTimestamp := timestamp.Add(time.Duration(index) * time.Nanosecond)
 	return &simplevent.PreConvertedMessage{
-		EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, timestamp),
+		EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, carrierTimestamp),
 		Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
 		ID:        networkid.MessageID(aistream.StreamTxnID(run.RunID, index)),
 	}

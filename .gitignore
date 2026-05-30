@@ -28,6 +28,7 @@ coverage.out
 
 # OS/editor noise
 .DS_Store
+.clawpatch/
 *.swp
 *.swo
 *~

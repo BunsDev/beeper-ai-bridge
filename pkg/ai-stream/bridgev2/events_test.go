@@ -109,6 +109,41 @@ func TestFinalMetadataEditUsesCompactAnchorContent(t *testing.T) {
 	}
 }
 
+func TestCarriersUseMonotonicStreamOrder(t *testing.T) {
+	now := time.Unix(10, 0)
+	run := aistream.NewRun("run-1", "thread-1", "", "ai", "AI", now)
+	carrier := aistream.Carrier{Envelopes: []aistream.Envelope{{
+		Seq: 1,
+		Event: agui.NewEvent(map[string]any{
+			"type":      "TEXT_MESSAGE_CONTENT",
+			"messageId": run.MessageID,
+			"delta":     "hello",
+		}),
+	}}}
+
+	first := Carrier(
+		networkid.PortalKey{ID: "portal-1"},
+		networkid.UserID("ai"),
+		*run,
+		carrier,
+		id.EventID("$anchor"),
+		1,
+		now,
+	)
+	second := Carrier(
+		networkid.PortalKey{ID: "portal-1"},
+		networkid.UserID("ai"),
+		*run,
+		carrier,
+		id.EventID("$anchor"),
+		2,
+		now,
+	)
+	if second.StreamOrder <= first.StreamOrder {
+		t.Fatalf("carrier stream order did not increase: %d <= %d", second.StreamOrder, first.StreamOrder)
+	}
+}
+
 func TestFinalSegmentsUseMonotonicStreamOrder(t *testing.T) {
 	now := time.Unix(10, 0)
 	run := aistream.NewRun("run-1", "thread-1", "", "ai", "AI", now)
