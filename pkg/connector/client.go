@@ -193,7 +193,7 @@ func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*br
 		disappear = &disappearSetting
 	}
 	roomType := database.RoomTypeDM
-	return &bridgev2.ChatInfo{Name: &name, Topic: topic, Avatar: defaultAIAssistantAvatar(), Type: &roomType, Members: aiChatMembers(), Disappear: disappear}, nil
+	return &bridgev2.ChatInfo{Name: &name, Topic: topic, Avatar: defaultAIAssistantAvatar(), Type: &roomType, Members: aiChatMembers(), Disappear: disappear, ExcludeChangesFromTimeline: true}, nil
 }
 
 func (cl *Client) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
@@ -224,12 +224,13 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 	return &bridgev2.CreateChatResponse{
 		PortalKey: aiid.PortalKey(params.RoomID, cl.UserLogin.ID),
 		PortalInfo: &bridgev2.ChatInfo{
-			Name:      &name,
-			Topic:     topic,
-			Avatar:    defaultAIAssistantAvatar(),
-			Type:      &roomType,
-			Members:   aiChatMembers(),
-			Disappear: disappear,
+			Name:                       &name,
+			Topic:                      topic,
+			Avatar:                     defaultAIAssistantAvatar(),
+			Type:                       &roomType,
+			Members:                    aiChatMembers(),
+			Disappear:                  disappear,
+			ExcludeChangesFromTimeline: true,
 		},
 	}, nil
 }

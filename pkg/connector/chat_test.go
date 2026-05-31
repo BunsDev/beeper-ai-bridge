@@ -56,6 +56,9 @@ func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
 	if response.PortalInfo.Avatar == nil || response.PortalInfo.Avatar.MXC != id.ContentURIString(defaultAIAssistantAvatarMXC) {
 		t.Fatalf("expected default AI room avatar, got %#v", response.PortalInfo.Avatar)
 	}
+	if !response.PortalInfo.ExcludeChangesFromTimeline {
+		t.Fatalf("expected synthetic AI room metadata changes to be excluded from timeline")
+	}
 }
 
 func TestCreateGroupRequiresExistingMatrixRoom(t *testing.T) {
@@ -84,6 +87,9 @@ func TestGetChatInfoUsesDefaultTitleAndDMType(t *testing.T) {
 	}
 	if info.Avatar == nil || info.Avatar.MXC != id.ContentURIString(defaultAIAssistantAvatarMXC) {
 		t.Fatalf("expected default AI room avatar, got %#v", info.Avatar)
+	}
+	if !info.ExcludeChangesFromTimeline {
+		t.Fatalf("expected synthetic AI room metadata changes to be excluded from timeline")
 	}
 }
 
@@ -116,6 +122,9 @@ func TestGetChatInfoIncludesStoredRoomInfo(t *testing.T) {
 	}
 	if info.Disappear == nil || info.Disappear.Type != event.DisappearingTypeAfterSend || info.Disappear.Timer != time.Hour {
 		t.Fatalf("unexpected disappearing setting %#v", info.Disappear)
+	}
+	if !info.ExcludeChangesFromTimeline {
+		t.Fatalf("expected synthetic AI room metadata changes to be excluded from timeline")
 	}
 }
 
