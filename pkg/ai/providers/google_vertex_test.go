@@ -39,6 +39,21 @@ func TestGoogleVertexParamsRequestImageResponseModalities(t *testing.T) {
 	}
 }
 
+func TestGoogleVertexImageModelsOmitThinkingConfig(t *testing.T) {
+	params := BuildGoogleVertexParams(
+		ai.Model{ID: "google/gemini-3-pro-image-preview", Reasoning: true, Output: []string{"image", "text"}},
+		ai.Context{Messages: []ai.Message{{Role: "user", Content: "draw Amsterdam"}}},
+		GoogleVertexOptions{Thinking: &GoogleThinkingOptions{Enabled: true, Level: googleThinkingHigh}},
+	)
+	config, ok := params["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected generation config, got %#v", params)
+	}
+	if _, ok := config["thinkingConfig"]; ok {
+		t.Fatalf("image-output Gemini models must not send thinkingConfig, got %#v", config)
+	}
+}
+
 func TestGoogleVertexStreamStateAddsInlineDataImagePart(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	output := newAssistant(ai.Model{ID: "google/gemini-3.1-flash-image-preview"})

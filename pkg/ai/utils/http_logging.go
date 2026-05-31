@@ -121,7 +121,9 @@ func IsAIServicesRequest(req *http.Request) bool {
 	return strings.Contains(host, "ai-services.") ||
 		strings.Contains(path, "/proxy/") ||
 		strings.HasSuffix(path, "/models") ||
-		path == "/models"
+		path == "/models" ||
+		strings.HasSuffix(path, "/limits") ||
+		path == "/limits"
 }
 
 func requestHeader(header http.Header, names ...string) string {

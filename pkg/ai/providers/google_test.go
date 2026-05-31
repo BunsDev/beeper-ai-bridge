@@ -26,13 +26,9 @@ func TestGoogleBeeperProxyEndpointStripsCatalogProviderPrefix(t *testing.T) {
 	}
 }
 
-func TestGoogleProviderIsRegistered(t *testing.T) {
-	provider, ok := ai.GetAPIProvider(ai.ApiGoogleGenerativeAI)
-	if !ok {
-		t.Fatal("expected google-generative-ai provider")
-	}
-	if provider.API != ai.ApiGoogleGenerativeAI || provider.Stream == nil || provider.StreamSimple == nil {
-		t.Fatalf("unexpected google provider %#v", provider)
+func TestGoogleProviderIsNotRegistered(t *testing.T) {
+	if provider, ok := ai.GetAPIProvider(ai.ApiGoogleGenerativeAI); ok {
+		t.Fatalf("google-generative-ai should not be registered for Beeper runtime, got %#v", provider)
 	}
 }
 

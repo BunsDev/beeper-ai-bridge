@@ -19,9 +19,6 @@ func RegisterBuiltInAPIProviders() {
 	ai.RegisterAPIProviderWithSource(ai.APIProvider{API: ai.ApiOpenAICodexResponses, Stream: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.StreamOptions) *ai.AssistantMessageEventStream {
 		return StreamOpenAICodexResponses(ctx, model, llmContext, OpenAICodexResponsesOptions{OpenAIResponsesOptions: OpenAIResponsesOptions{StreamOptions: options}})
 	}, StreamSimple: StreamSimpleOpenAICodexResponses}, "builtins")
-	ai.RegisterAPIProviderWithSource(ai.APIProvider{API: ai.ApiGoogleGenerativeAI, Stream: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.StreamOptions) *ai.AssistantMessageEventStream {
-		return StreamGoogle(ctx, model, llmContext, GoogleOptions{StreamOptions: options})
-	}, StreamSimple: StreamSimpleGoogle}, "builtins")
 	ai.RegisterAPIProviderWithSource(ai.APIProvider{API: ai.ApiGoogleVertex, Stream: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.StreamOptions) *ai.AssistantMessageEventStream {
 		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{StreamOptions: options})
 	}, StreamSimple: StreamSimpleGoogleVertex}, "builtins")

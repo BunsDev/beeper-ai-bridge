@@ -2,10 +2,14 @@ package connector
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -32,6 +36,7 @@ func TestParseAISlashCommand(t *testing.T) {
 		{body: "/compact focus on decisions", name: "compact", arg: "focus on decisions", ok: true},
 		{body: "/abort", name: "abort", ok: true},
 		{body: "/session", name: "session", ok: true},
+		{body: "/limits", name: "limits", ok: true},
 		{body: "/unknown nope", ok: false},
 		{body: "hello /model gpt-5", ok: false},
 	}
@@ -82,6 +87,11 @@ func TestAISlashCommandHelpForSpecificCommand(t *testing.T) {
 	}
 	if strings.Contains(help, "/reasoning") {
 		t.Fatalf("specific help included the full catalog:\n%s", help)
+	}
+
+	help = aiSlashCommandHelp("/limits")
+	if strings.Contains(strings.ToLower(help), "raw") {
+		t.Fatalf("limits help advertised raw debugging mode:\n%s", help)
 	}
 }
 
@@ -241,6 +251,162 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 	text = formatSessionCommandInfo(sessionCommandInfo{RoomProvider: "beeper", RoomModel: "beeper/gpt-5.5", RoomReasoning: "off"})
 	if !strings.Contains(text, "No AI session has been started in this room yet.") {
 		t.Fatalf("empty session info missing no-session text:\n%s", text)
+	}
+}
+
+func TestAIServicesLimitsURLStripsProviderProxyPaths(t *testing.T) {
+	tests := map[string]string{
+		"https://ai-services.beeper.com/proxy/openai/v1":          "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/proxy/openrouter/v1":      "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/proxy/anthropic":          "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/proxy/vertex":             "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/proxy/a8c/v1":             "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/proxy/_/v1/responses":     "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/dev/proxy/openai/v1":      "https://ai-services.beeper.com/dev/limits",
+		"https://ai-services.beeper.com/dev/proxy/openrouter/v1/": "https://ai-services.beeper.com/dev/limits",
+	}
+	for input, want := range tests {
+		got, err := aiServicesLimitsURL(input)
+		if err != nil {
+			t.Fatalf("aiServicesLimitsURL(%q) returned error: %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("aiServicesLimitsURL(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/limits" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		auth := r.Header.Get("Authorization")
+		payload, ok := strings.CutPrefix(auth, "Bearer "+aiServicesAppserviceTokenPrefix)
+		if !ok {
+			t.Fatalf("expected appservice bearer token, got %q", auth)
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var token aiServicesAppserviceToken
+		if err = json.Unmarshal(decoded, &token); err != nil {
+			t.Fatal(err)
+		}
+		if token.ASToken != "as-token" || token.Username != "alice" {
+			t.Fatalf("unexpected appservice token %#v", token)
+		}
+		_, _ = w.Write([]byte(`{"windows":{"llm":{"day":{"percentage_left":90,"limit":1000,"used":100,"remaining":900,"reset_at":1893456000000},"week":{"percentage_left":100,"limit":7000,"used":0,"remaining":7000,"reset_at":1893974400000},"month":{"percentage_left":100,"limit":30000,"used":0,"remaining":30000,"reset_at":1896134400000}}}}`))
+	}))
+	defer server.Close()
+
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	client := &Client{
+		Main: &Connector{AppServiceToken: "as-token"},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@alice:beeper.test",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				provider.ID: provider,
+			}},
+		}},
+	}
+	limits, err := client.fetchAIServicesLimits(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.Windows.LLM.Day.Limit != 1000 || limits.Windows.LLM.Day.Used != 100 {
+		t.Fatalf("unexpected limits %#v", limits.Windows.LLM.Day)
+	}
+}
+
+func TestFormatLimitsCommandInfo(t *testing.T) {
+	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
+	reset := now.Add(26*time.Hour + 3*time.Minute).UnixMilli()
+	text := formatLimitsCommandInfo(aiServicesLimitsResponse{Windows: aiServicesLimitCategories{
+		LLM: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 75, Limit: 1000, Used: 250, Remaining: 750, ResetAtMS: reset},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: -1, Used: 1234, Remaining: -1, ResetAtMS: reset},
+			Month: aiServicesLimitWindow{PercentageLeft: 0, Limit: 30000, Used: 30000, Remaining: 0, ResetAtMS: reset},
+		},
+		WebTools: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 99, Limit: 200000, Used: 1, Remaining: 199999, ResetAtMS: reset},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: 1000000, Used: 0, Remaining: 1000000, ResetAtMS: reset},
+			Month: aiServicesLimitWindow{PercentageLeft: 100, Limit: 4000000, Used: 0, Remaining: 4000000, ResetAtMS: reset},
+		},
+	}}, now)
+	for _, want := range []string{
+		"AI limits:",
+		"LLM tokens: you have `75%` of the daily limit left, you have `100%` of the weekly limit left, and you are out of the monthly limit.",
+		"Web tools: you have `99%` of the daily limit left, you have `100%` of the weekly limit left, and you have `100%` of the monthly limit left.",
+		"Everything resets in 1 day 2 hours 3 minutes.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("limits info missing %q:\n%s", want, text)
+		}
+	}
+	for _, notWant := range []string{"`250`", "`1,000`", "`199,999`", "2030-01-01T00:00:00Z"} {
+		if strings.Contains(text, notWant) {
+			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
+		}
+	}
+}
+
+func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) {
+	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
+	text := formatLimitsCommandInfo(aiServicesLimitsResponse{Windows: aiServicesLimitCategories{
+		LLM: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 75, ResetAtMS: now.Add(25*time.Hour + 3*time.Minute).UnixMilli()},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, ResetAtMS: now.Add(7 * 24 * time.Hour).UnixMilli()},
+			Month: aiServicesLimitWindow{PercentageLeft: 0, ResetAtMS: now.Add(31 * 24 * time.Hour).UnixMilli()},
+		},
+	}}, now)
+	for _, want := range []string{
+		"you have `75%` of the daily limit left and it resets in 1 day 1 hour 3 minutes",
+		"you have `100%` of the weekly limit left and it resets in 7 days",
+		"you are out of the monthly limit and it resets in 31 days",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("limits info missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Everything resets") {
+		t.Fatalf("limits info collapsed different reset times:\n%s", text)
+	}
+}
+
+func TestFormatResetInDoesNotRoundUp(t *testing.T) {
+	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
+	tests := map[time.Duration]string{
+		45 * time.Second: "less than 1 minute",
+		23*time.Hour + 59*time.Minute + 59*time.Second: "23 hours 59 minutes",
+		24*time.Hour + 59*time.Minute:                  "1 day 59 minutes",
+		26*time.Hour + 3*time.Minute:                   "1 day 2 hours 3 minutes",
+	}
+	for duration, want := range tests {
+		if got := formatResetIn(now.Add(duration), now); got != want {
+			t.Fatalf("formatResetIn(%s) = %q, want %q", duration, got, want)
+		}
+	}
+}
+
+func TestFormatRawLimitsCommandInfoShowsExactUsage(t *testing.T) {
+	resetAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	text := formatRawLimitsCommandInfo(aiServicesLimitsResponse{Windows: aiServicesLimitCategories{
+		LLM: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 75, Limit: 1000, Used: 250, Remaining: 750, ResetAtMS: resetAt.UnixMilli()},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: -1, Used: 1234, Remaining: -1, ResetAtMS: resetAt.UnixMilli()},
+			Month: aiServicesLimitWindow{PercentageLeft: 0, Limit: 30000, Used: 30000, Remaining: 0, ResetAtMS: resetAt.UnixMilli()},
+		},
+	}}, time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC))
+	for _, want := range []string{
+		"AI limits raw:",
+		"percentage_left=`75`, limit=`1,000`, used=`250`, remaining=`750`, reset_at=`1893456000000` (`2030-01-01T00:00:00Z`, in 1 day)",
+		"percentage_left=`100`, limit=`-1`, used=`1,234`, remaining=`-1`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("raw limits info missing %q:\n%s", want, text)
+		}
 	}
 }
 

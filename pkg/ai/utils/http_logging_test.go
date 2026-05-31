@@ -56,3 +56,13 @@ func TestAIServicesLoggingTransportLogsMetadataWithoutBodies(t *testing.T) {
 		}
 	}
 }
+
+func TestIsAIServicesRequestIncludesLimits(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://example.test/dev/limits", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsAIServicesRequest(req) {
+		t.Fatal("expected /limits to be logged as an AI Services request")
+	}
+}

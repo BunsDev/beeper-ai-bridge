@@ -44,14 +44,15 @@ func StreamSimpleGoogleVertex(ctx context.Context, model ai.Model, llmContext ai
 	if options.Reasoning == nil {
 		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{
 			StreamOptions: base,
-			Thinking:      &GoogleThinkingOptions{Enabled: false},
 		})
 	}
 	clamped := ai.ClampThinkingLevel(model, ai.ModelThinkingLevel(*options.Reasoning))
-	effort := ai.ThinkingLevel(clamped)
 	if clamped == ai.ModelThinkingLevelOff {
-		effort = ai.ThinkingLevelHigh
+		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{
+			StreamOptions: base,
+		})
 	}
+	effort := ai.ThinkingLevel(clamped)
 	geminiModel := model
 	if isGoogleGemini3ProModel(geminiModel) || isGoogleGemini3FlashModel(geminiModel) {
 		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{
@@ -131,7 +132,7 @@ func BuildGoogleVertexParams(model ai.Model, llmContext ai.Context, options Goog
 	if modalities := googleResponseModalities(model); len(modalities) > 0 {
 		config["responseModalities"] = modalities
 	}
-	if options.Thinking != nil && model.Reasoning {
+	if options.Thinking != nil && model.Reasoning && !modelOutputsImage(model) {
 		if options.Thinking.Enabled {
 			thinking := map[string]any{"includeThoughts": true}
 			if options.Thinking.Level != "" {

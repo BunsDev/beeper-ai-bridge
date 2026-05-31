@@ -542,9 +542,9 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 		model.Provider = ai.ProviderOpenAI
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openai", true)
 	case "wpcom_google":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderGoogle
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "google", true)
+		model.API = ai.ApiGoogleVertex
+		model.Provider = ai.ProviderGoogleVertex
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "vertex", false)
 	case "wpcom_xai":
 		model.API = ai.ApiOpenAIResponses
 		model.Provider = ai.ProviderXAI
@@ -569,15 +569,17 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 }
 
 func (entry aiServicesModelEntry) compat() map[string]any {
-	if entry.Metadata == nil {
-		return nil
-	}
 	compat := map[string]any{}
-	if entry.Metadata.ProviderLogoURL != "" {
-		compat["provider_logo_url"] = entry.Metadata.ProviderLogoURL
+	if entry.Metadata != nil {
+		if entry.Metadata.ProviderLogoURL != "" {
+			compat["provider_logo_url"] = entry.Metadata.ProviderLogoURL
+		}
+		if entry.Metadata.Family != "" {
+			compat["family"] = entry.Metadata.Family
+		}
 	}
-	if entry.Metadata.Family != "" {
-		compat["family"] = entry.Metadata.Family
+	if entry.Capabilities != nil && entry.Capabilities.Tools != nil {
+		compat["tools_supported"] = entry.Capabilities.Tools.Supported
 	}
 	if len(compat) == 0 {
 		return nil

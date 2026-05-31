@@ -15,6 +15,9 @@ import (
 )
 
 func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt) []agent.AgentTool[any] {
+	if !modelSupportsAgentTools(model) {
+		return nil
+	}
 	roomID := ""
 	roomTitle := ""
 	if msg != nil && msg.Portal != nil {
@@ -53,6 +56,26 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		}
 	}
 	return chattools.Tools(info, fetch, search)
+}
+
+func modelSupportsAgentTools(model ai.Model) bool {
+	if model.Provider == ai.ProviderGoogleVertex && modelHasOutputModality(model, "image") {
+		return false
+	}
+	if model.Compat == nil {
+		return true
+	}
+	supported, ok := model.Compat["tools_supported"].(bool)
+	return !ok || supported
+}
+
+func modelHasOutputModality(model ai.Model, modality string) bool {
+	for _, output := range model.Output {
+		if output == modality {
+			return true
+		}
+	}
+	return false
 }
 
 func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderConfig) chattools.SearchOptions {

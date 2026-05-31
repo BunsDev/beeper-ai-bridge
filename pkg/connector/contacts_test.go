@@ -213,6 +213,9 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	if len(models[0].BuiltInTools) != 1 || models[0].BuiltInTools[0] != "image_generation" {
 		t.Fatalf("expected AI Services built-in tools, got %#v", models[0].BuiltInTools)
 	}
+	if supported, ok := models[0].Compat["tools_supported"].(bool); !ok || !supported {
+		t.Fatalf("expected AI Services tool support metadata, got %#v", models[0].Compat)
+	}
 	if models[1].DefaultThinkingLevel != ai.ModelThinkingLevelLow || roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelOff) {
 		t.Fatalf("expected MiniMax reasoning to default to low and reject off, got %#v", models[1])
 	}
@@ -313,9 +316,10 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
-			{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
-			{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","provider":{"id":"wpcom_vertex","model_id":"gemini-3.1-pro-preview","api":"openai-responses"}},
-			{"id":"x-ai/grok-4.20","name":"Grok 4.20","provider":{"id":"wpcom_xai","model_id":"x-ai/grok-4.20","api":"openai-responses"}},
+				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
+				{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","provider":{"id":"wpcom_vertex","model_id":"gemini-3.1-pro-preview","api":"openai-responses"}},
+				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","provider":{"id":"wpcom_google","model_id":"gemini-2.5-flash","api":"openai-responses"}},
+				{"id":"x-ai/grok-4.20","name":"Grok 4.20","provider":{"id":"wpcom_xai","model_id":"x-ai/grok-4.20","api":"openai-responses"}},
 			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","provider":{"id":"wpcom_groq","model_id":"groq/qwen/qwen3-32b","api":"openai-responses"}},
 			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","provider":{"id":"wpcom_a8c","model_id":"gpt-oss-120b","api":"openai-completions"}},
 			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-responses"}}
@@ -350,6 +354,9 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	}
 	if got := byID["google/gemini-3.1-pro-preview"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
 		t.Fatalf("unexpected Google route %#v", got)
+	}
+	if got := byID["google/gemini-2.5-flash"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
+		t.Fatalf("unexpected legacy Google route %#v", got)
 	}
 	if got := byID["x-ai/grok-4.20"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderXAI || got.BaseURL != server.URL+"/proxy/xai/v1" {
 		t.Fatalf("unexpected xAI route %#v", got)

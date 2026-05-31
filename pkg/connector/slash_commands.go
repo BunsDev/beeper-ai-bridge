@@ -88,6 +88,13 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 			noticeErrors:    true,
 			run:             runSessionCommand,
 		},
+		{
+			name:         "limits",
+			usage:        "/limits",
+			description:  "Show your current AI Services usage limits.",
+			noticeErrors: true,
+			run:          runLimitsCommand,
+		},
 	}
 }
 
