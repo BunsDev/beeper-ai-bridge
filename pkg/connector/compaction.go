@@ -14,17 +14,17 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-func (cl *Client) runAutoCompaction(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, agentHarness *harness.AgentHarness, agentSession *session.Session, model ai.Model, assistantMessage ai.Message) {
+func (cl *Client) runAutoCompaction(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, agentHarness *harness.AgentHarness, agentSession *session.Session, model ai.Model, assistantMessage ai.Message) (autocompact.Result, bool) {
 	runner := autocompact.Runner{Harness: agentHarness, Session: agentSession, Model: model, Settings: cl.Main.Config.Compaction.Settings()}
 	reason, ok, err := runner.ShouldCompact(ctx, assistantMessage)
 	if err != nil || !ok {
-		return
+		return autocompact.Result{}, false
 	}
 	_ = publisher.Publish(ctx, roomID, eventID, map[string]any{"op": "compaction_start", "reason": reason})
 	result, err := runner.CheckAndCompact(ctx, assistantMessage)
 	if err != nil {
 		_ = publisher.Publish(ctx, roomID, eventID, map[string]any{"op": "compaction_error", "reason": reason, "message": err.Error()})
-		return
+		return autocompact.Result{Reason: reason}, false
 	}
 	_ = publisher.Publish(ctx, roomID, eventID, map[string]any{
 		"op":                  "compaction_done",
@@ -33,6 +33,7 @@ func (cl *Client) runAutoCompaction(ctx context.Context, publisher bridgev2.Beep
 		"first_kept_entry_id": result.Compaction.FirstKeptEntryID,
 		"tokens_before":       result.Compaction.TokensBefore,
 	})
+	return result, true
 }
 
 func runCompactCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal, roomConfig RoomConfig, arg string, responder aiCommandResponder) error {

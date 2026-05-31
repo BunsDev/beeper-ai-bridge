@@ -182,6 +182,10 @@ type PromptEntryID struct {
 	Role string
 }
 
+type ContinueOptions struct {
+	DropTrailingAssistantError bool
+}
+
 type BeforeAgentStartResult struct {
 	Messages     []agent.AgentMessage
 	SystemPrompt string
@@ -339,6 +343,47 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, attach
 	if err := h.flushPendingSessionWrites(runCtx); err != nil {
 		return PromptResult{}, err
 	}
+	return h.promptResultFromMessages(newMessages)
+}
+
+func (h *AgentHarness) ContinueWithResult(ctx context.Context, options ...ContinueOptions) (PromptResult, error) {
+	if h.phase != "idle" {
+		return PromptResult{}, errors.New("AgentHarness is busy")
+	}
+	h.phase = "turn"
+	h.promptEntryIDs = nil
+	runCtx, finish := h.startRun(ctx)
+	defer func() {
+		h.phase = "idle"
+		h.promptEntryIDs = nil
+		finish()
+	}()
+	turnContext, err := h.createContext(runCtx)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	if len(options) > 0 && options[0].DropTrailingAssistantError {
+		turnContext.Messages = dropTrailingAssistantError(turnContext.Messages)
+	}
+	newMessages, err := agent.RunAgentLoopContinue(runCtx, turnContext, h.loopConfig(runCtx), h.handleAgentEvent, h.createStreamFn())
+	if err != nil {
+		if flushErr := h.flushPendingSessionWrites(runCtx); flushErr != nil {
+			return PromptResult{}, flushErr
+		}
+		return PromptResult{}, err
+	}
+	if err := h.flushPendingSessionWrites(runCtx); err != nil {
+		return PromptResult{}, err
+	}
+	return h.promptResultFromMessages(newMessages)
+}
+
+func (h *AgentHarness) Continue(ctx context.Context, options ...ContinueOptions) (agent.AgentMessage, error) {
+	result, err := h.ContinueWithResult(ctx, options...)
+	return result.Message, err
+}
+
+func (h *AgentHarness) promptResultFromMessages(newMessages []agent.AgentMessage) (PromptResult, error) {
 	result := PromptResult{EntryIDs: append([]PromptEntryID{}, h.promptEntryIDs...)}
 	for _, entry := range result.EntryIDs {
 		switch entry.Role {
@@ -354,7 +399,18 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, attach
 			return result, nil
 		}
 	}
-	return PromptResult{}, errors.New("AgentHarness prompt completed without an assistant message")
+	return PromptResult{}, errors.New("AgentHarness run completed without an assistant message")
+}
+
+func dropTrailingAssistantError(messages []agent.AgentMessage) []agent.AgentMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	last := messages[len(messages)-1]
+	if last.Role == "assistant" && last.StopReason == ai.StopReasonError {
+		return messages[:len(messages)-1]
+	}
+	return messages
 }
 
 func (h *AgentHarness) AppendMessage(ctx context.Context, message agent.AgentMessage) error {

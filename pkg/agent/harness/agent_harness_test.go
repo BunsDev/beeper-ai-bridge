@@ -78,6 +78,51 @@ func TestAgentHarnessPromptPersistsMessagesToSQLiteSession(t *testing.T) {
 	}
 }
 
+func TestAgentHarnessContinueCanDropTrailingAssistantError(t *testing.T) {
+	ctx := context.Background()
+	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	sess := session.NewSession(storage)
+	if _, err := sess.AppendMessage(ctx, agent.AgentMessage{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: "too much context"}}, Timestamp: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendMessage(ctx, agent.AgentMessage{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: ""}}, StopReason: ai.StopReasonError, ErrorMessage: "context length exceeded", Timestamp: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	var captured []ai.Message
+	harness, err := NewAgentHarness(AgentHarnessOptions{
+		Session: sess,
+		Model:   harnessTestModel(),
+		StreamFn: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+			captured = append([]ai.Message{}, llmContext.Messages...)
+			stream := ai.NewAssistantMessageEventStream()
+			go func() {
+				output := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "recovered"}}, API: model.API, Provider: model.Provider, Model: model.ID, StopReason: ai.StopReasonStop, Timestamp: time.Now().UnixMilli()}
+				stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &output})
+			}()
+			return stream
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := harness.ContinueWithResult(ctx, ContinueOptions{DropTrailingAssistantError: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Message.StopReason != ai.StopReasonStop || textFromContent(result.Message.Content) != "recovered" {
+		t.Fatalf("unexpected continuation result %#v", result.Message)
+	}
+	if len(captured) != 1 || captured[0].Role != "user" {
+		t.Fatalf("expected trailing assistant error to be removed from retry context, got %#v", captured)
+	}
+}
+
 func TestAgentHarnessNextTurnAndSetters(t *testing.T) {
 	ctx := context.Background()
 	storage, err := session.CreateSQLiteSessionStorage(ctx, filepath.Join(t.TempDir(), "sessions.db"), "session-1", "")

@@ -20,6 +20,7 @@ import (
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	agent "github.com/beeper/ai-bridge/pkg/agent"
+	"github.com/beeper/ai-bridge/pkg/agent/autocompact"
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	"github.com/beeper/ai-bridge/pkg/agent/sessiontitle"
@@ -27,6 +28,7 @@ import (
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	aibridgev2 "github.com/beeper/ai-bridge/pkg/ai-stream/bridgev2"
 	aimatrix "github.com/beeper/ai-bridge/pkg/ai-stream/matrix"
+	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
 	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
@@ -506,29 +508,55 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 		active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
 		return
 	}
-	assistantMessage := promptResult.Message
-	if promptResult.AssistantEntryID == "" {
-		err := fmt.Errorf("prompt did not create expected assistant session entry")
-		active.failAll(ctx, cl, err)
-		active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
-		return
-	}
-	if assistantMessage.StopReason == ai.StopReasonError {
-		err := errors.New(assistantMessage.ErrorMessage)
-		if assistantMessage.ErrorMessage == "" {
-			err = errors.New("AI failed to respond")
+	overflowRecoveryAttempted := false
+	for {
+		assistantMessage := promptResult.Message
+		if promptResult.AssistantEntryID == "" {
+			err := fmt.Errorf("prompt did not create expected assistant session entry")
+			active.failAll(ctx, cl, err)
+			active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
+			return
 		}
-		active.failConsumed(ctx, cl, err)
-	}
-	if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted {
-		if last := active.lastAssistant(); last != nil {
-			cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
+		if assistantMessage.StopReason == ai.StopReasonError && aiutils.IsContextOverflow(assistantMessage, model.ContextWindow) {
+			if overflowRecoveryAttempted {
+				err := errors.New("Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.")
+				active.failConsumed(ctx, cl, err)
+				break
+			}
+			overflowRecoveryAttempted = true
+			if last := active.lastAssistant(); last != nil {
+				result, compacted := cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
+				if compacted && result.Reason == autocompact.ReasonOverflow {
+					promptResult, err = agentHarness.ContinueWithResult(ctx, harness.ContinueOptions{DropTrailingAssistantError: true})
+					if err != nil {
+						cl.logMatrixMessageError(msg, err, "AI harness continuation failed")
+						active.failConsumed(ctx, cl, err)
+						active.failAll(ctx, cl, err)
+						active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
+						return
+					}
+					continue
+				}
+			}
 		}
-	}
-	portalMeta.LastRunID = active.lastRunID()
-	_ = msg.Portal.Save(ctx)
-	if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted && !assistantMessageHasToolCalls(assistantMessage) {
-		cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
+		if assistantMessage.StopReason == ai.StopReasonError {
+			err := errors.New(assistantMessage.ErrorMessage)
+			if assistantMessage.ErrorMessage == "" {
+				err = errors.New("AI failed to respond")
+			}
+			active.failConsumed(ctx, cl, err)
+		}
+		if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted {
+			if last := active.lastAssistant(); last != nil {
+				cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
+			}
+		}
+		portalMeta.LastRunID = active.lastRunID()
+		_ = msg.Portal.Save(ctx)
+		if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted && !assistantMessageHasToolCalls(assistantMessage) {
+			cl.generateSessionTitle(ctx, msg.Portal, portalMeta, agentSession, provider, model)
+		}
+		break
 	}
 }
 
