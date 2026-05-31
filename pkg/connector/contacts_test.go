@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,6 +221,35 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 }
 
+func TestAIServicesModelEntryReasoningDefaultsCanRequireReasoning(t *testing.T) {
+	var entry aiServicesModelEntry
+	if err := json.Unmarshal([]byte(`{"id":"deepseek/deepseek-r1-0528","name":"DeepSeek R1 (0528)","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["minimal","low","medium","high"],"level_map":{"off":null},"default_level":"minimal"}}}`), &entry); err != nil {
+		t.Fatal(err)
+	}
+	model := ai.Model{
+		ID:                   entry.ID,
+		Name:                 entry.Name,
+		Reasoning:            entry.reasoning(),
+		ThinkingLevelMap:     entry.thinkingLevelMap(),
+		DefaultThinkingLevel: entry.defaultThinkingLevel(),
+		Input:                entry.inputModalities(),
+		Output:               entry.outputModalities(),
+	}
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	if got := client.reasoningLevelForModel(model, RoomConfig{}); got != "minimal" {
+		t.Fatalf("expected catalog default reasoning, got %q", got)
+	}
+	if roomThinkingLevelSupported(model, ai.ModelThinkingLevelOff) {
+		t.Fatalf("expected off reasoning to be unsupported, got %#v", model.ThinkingLevelMap)
+	}
+	if err := client.validateReasoningLevel(model, RoomConfig{}); err != nil {
+		t.Fatalf("expected catalog default reasoning to validate: %v", err)
+	}
+	if err := client.validateReasoningLevel(model, RoomConfig{ThinkingLevel: "off"}); err == nil {
+		t.Fatalf("expected explicit off reasoning to be rejected")
+	}
+}
+
 func TestAIServicesCatalogModelsUseCatalogInputWhenModalitiesMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5"}]}`))
@@ -279,7 +309,7 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 			{"id":"x-ai/grok-4.20","name":"Grok 4.20","provider":{"id":"wpcom_xai","model_id":"x-ai/grok-4.20","api":"openai-responses"}},
 			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","provider":{"id":"wpcom_groq","model_id":"groq/qwen/qwen3-32b","api":"openai-responses"}},
 			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","provider":{"id":"wpcom_a8c","model_id":"gpt-oss-120b","api":"openai-completions"}},
-			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-responses"}}
+			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-responses"}}
 		]}`))
 	}))
 	defer server.Close()
@@ -323,6 +353,9 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	}
 	if got := byID["anthropic/claude-sonnet-4.5"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderOpenRouter || got.BaseURL != server.URL+"/proxy/openrouter/v1" {
 		t.Fatalf("unexpected OpenRouter route %#v", got)
+	}
+	if got := byID["anthropic/claude-sonnet-4.5"]; got.Compat["provider_logo_url"] != "/models/providers/anthropic.png" || got.Compat["provider_model_id"] != "anthropic/claude-sonnet-4.5" || got.Compat["family"] != "claude" {
+		t.Fatalf("expected AI Services catalog identity metadata, got %#v", got.Compat)
 	}
 }
 

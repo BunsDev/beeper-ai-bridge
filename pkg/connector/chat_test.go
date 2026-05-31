@@ -44,6 +44,9 @@ func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
 	if response.PortalInfo.Type == nil || *response.PortalInfo.Type != database.RoomTypeDM {
 		t.Fatalf("expected AI rooms to be DMs, got %#v", response.PortalInfo.Type)
 	}
+	if response.PortalInfo.Avatar == nil || response.PortalInfo.Avatar.MXC != id.ContentURIString(defaultAIAssistantAvatarMXC) {
+		t.Fatalf("expected default AI room avatar, got %#v", response.PortalInfo.Avatar)
+	}
 }
 
 func TestCreateGroupRequiresExistingMatrixRoom(t *testing.T) {
@@ -69,6 +72,9 @@ func TestGetChatInfoUsesDefaultTitleAndDMType(t *testing.T) {
 	}
 	if info.Type == nil || *info.Type != database.RoomTypeDM {
 		t.Fatalf("expected AI chat info to be DM, got %#v", info.Type)
+	}
+	if info.Avatar == nil || info.Avatar.MXC != id.ContentURIString(defaultAIAssistantAvatarMXC) {
+		t.Fatalf("expected default AI room avatar, got %#v", info.Avatar)
 	}
 }
 

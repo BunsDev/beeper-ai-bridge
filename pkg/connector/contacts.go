@@ -55,6 +55,13 @@ func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, crea
 }
 
 func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderConfig, model ai.Model) (*bridgev2.CreateChatResponse, error) {
+	roomConfig := RoomConfig{ProviderID: provider.ID, ModelID: model.ID}
+	resolvedProvider, resolvedModel, canonicalModel, err := cl.resolveCanonicalRoomModel(ctx, roomConfig)
+	if err != nil {
+		return nil, err
+	}
+	provider = resolvedProvider
+	model = resolvedModel
 	portalKey := newAIChatPortalKey(cl.UserLogin.ID)
 	portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
 	if err != nil {
@@ -63,7 +70,7 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	name := defaultConversationTitle(provider, model)
 	topic := modelRoomDescription(provider, model)
 	roomType := database.RoomTypeDM
-	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: modelAvatar(provider, model), Type: &roomType, Members: aiChatMembers()}
+	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: defaultAIAssistantAvatar(), Type: &roomType, Members: aiChatMembers()}
 	meta := portalMetadata(portal)
 	meta.AutoTitlePending = true
 	if portal.MXID == "" {
@@ -73,8 +80,8 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	} else if err = portal.Save(ctx); err != nil {
 		return nil, err
 	}
-	reasoning := cl.reasoningLevelForModel(model, RoomConfig{ProviderID: provider.ID, ModelID: model.ID})
-	if _, err = cl.writeRoomModelState(ctx, portal, provider, model, provider.ID+"/"+model.ID, reasoning); err != nil {
+	reasoning := cl.reasoningLevelForModel(model, roomConfig)
+	if _, err = cl.writeRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning); err != nil {
 		return nil, err
 	}
 	cl.refreshRoomCapabilities(ctx, portal)
@@ -423,6 +430,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			ContextWindow:        item.contextWindow(),
 			MaxTokens:            item.maxTokens(),
 			BuiltInTools:         item.builtInTools(),
+			Compat:               item.compat(),
 		}
 		model = item.applyProviderRoute(model, provider)
 		models = append(models, normalizeProviderModel(model, provider))
@@ -471,7 +479,11 @@ type aiServicesModelEntry struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	ContextLength int    `json:"context_length"`
-	Architecture  *struct {
+	Metadata      *struct {
+		Family          string `json:"family"`
+		ProviderLogoURL string `json:"provider_logo_url"`
+	} `json:"metadata"`
+	Architecture *struct {
 		InputModalities []string `json:"input_modalities"`
 	} `json:"architecture"`
 	TopProvider *struct {
@@ -510,6 +522,11 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 	if entry.Provider == nil || entry.Provider.ID == "" {
 		return model
 	}
+	if model.Compat == nil {
+		model.Compat = map[string]any{}
+	}
+	model.Compat["provider_id"] = entry.Provider.ID
+	model.Compat["provider_model_id"] = entry.Provider.ModelID
 	switch entry.Provider.ID {
 	case "wpcom_anthropic":
 		model.API = ai.ApiAnthropicMessages
@@ -548,6 +565,23 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openrouter", true)
 	}
 	return model
+}
+
+func (entry aiServicesModelEntry) compat() map[string]any {
+	if entry.Metadata == nil {
+		return nil
+	}
+	compat := map[string]any{}
+	if entry.Metadata.ProviderLogoURL != "" {
+		compat["provider_logo_url"] = entry.Metadata.ProviderLogoURL
+	}
+	if entry.Metadata.Family != "" {
+		compat["family"] = entry.Metadata.Family
+	}
+	if len(compat) == 0 {
+		return nil
+	}
+	return compat
 }
 
 func aiServicesProxyBaseURL(baseURL string, providerPath string, includeV1 bool) string {
@@ -724,6 +758,7 @@ func updateModelGhostInfo(ctx context.Context, br *bridgev2.Bridge, provider aii
 func modelContactWithExistingGhost(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
 	resp := modelContact(provider, model)
 	if ghost, err := existingModelGhost(ctx, br, provider, model); err == nil {
+		ghost.UpdateInfo(ctx, modelUserInfo(provider, model))
 		resp.Ghost = ghost
 	}
 	return resp

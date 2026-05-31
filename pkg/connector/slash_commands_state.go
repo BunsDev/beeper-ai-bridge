@@ -118,7 +118,7 @@ func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Port
 	topic := modelRoomDescription(provider, model)
 	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{
 		Topic:  &topic,
-		Avatar: modelAvatar(provider, model),
+		Avatar: defaultAIAssistantAvatar(),
 	}, cl.UserLogin, nil, time.Now())
 	return eventID, nil
 }
