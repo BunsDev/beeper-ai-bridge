@@ -8,10 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/beeper/ai-bridge/pkg/aidb"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
@@ -21,6 +17,11 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/mediaproxy"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/beeper/ai-bridge/pkg/aidb"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 type fakeMediaUploader struct {

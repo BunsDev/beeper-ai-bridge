@@ -6,9 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"maunium.net/go/mautrix/bridgev2"
+
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 func runModelCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal, roomConfig RoomConfig, arg string, responder aiCommandResponder) error {

@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 const (

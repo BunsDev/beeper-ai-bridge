@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
 )
 
 func TestPackRunDoesNotSplitOrTruncateBySize(t *testing.T) {

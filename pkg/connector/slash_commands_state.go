@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, config RoomConfig) (RoomConfig, *bridgev2.MatrixMessageResponse, bool, error) {

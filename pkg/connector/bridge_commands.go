@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
 var aiCommandHelpSection = commands.HelpSection{Name: "AI rooms", Order: 21}

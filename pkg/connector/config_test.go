@@ -3,8 +3,9 @@ package connector
 import (
 	"testing"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	"gopkg.in/yaml.v3"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness"
 )
 
 func TestConfigDefaultsCompaction(t *testing.T) {

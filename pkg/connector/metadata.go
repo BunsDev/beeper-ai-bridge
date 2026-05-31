@@ -1,8 +1,9 @@
 package connector
 
 import (
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2/database"
+
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func (c *Connector) GetDBMetaTypes() database.MetaTypes {

@@ -4,9 +4,10 @@ import (
 	_ "embed"
 	"strings"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	up "go.mau.fi/util/configupgrade"
 	"gopkg.in/yaml.v3"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness"
 )
 
 //go:embed example-config.yaml

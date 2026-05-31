@@ -18,7 +18,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
+	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/simplevent"
+	"maunium.net/go/mautrix/bridgev2/status"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
+
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/autocompact"
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
@@ -32,14 +41,6 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
-	"github.com/rs/zerolog"
-	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/database"
-	"maunium.net/go/mautrix/bridgev2/networkid"
-	"maunium.net/go/mautrix/bridgev2/simplevent"
-	"maunium.net/go/mautrix/bridgev2/status"
-	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/id"
 )
 
 type Client struct {

@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
+
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func TestParseAISlashCommand(t *testing.T) {

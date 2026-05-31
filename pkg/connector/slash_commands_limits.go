@@ -11,9 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"maunium.net/go/mautrix/bridgev2"
+
 	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
 	"github.com/beeper/ai-bridge/pkg/aiid"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 type aiServicesLimitsResponse struct {

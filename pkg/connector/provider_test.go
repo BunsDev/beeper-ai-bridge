@@ -9,15 +9,16 @@ import (
 	"strings"
 	"testing"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
-	"github.com/beeper/ai-bridge/pkg/aidb"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aidb"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func TestModelForProviderConstructsCustomModel(t *testing.T) {

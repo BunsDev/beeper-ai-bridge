@@ -7,17 +7,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
-	"github.com/beeper/ai-bridge/pkg/aiid"
-	"github.com/beeper/ai-bridge/pkg/msgconv"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
+
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/beeper/ai-bridge/pkg/msgconv"
 )
 
 func (cl *Client) sendCommandNotice(ctx context.Context, portal *bridgev2.Portal, text string) error {

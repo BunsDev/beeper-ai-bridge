@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"maunium.net/go/mautrix/event"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
 func AssistantText(message ai.Message) string {

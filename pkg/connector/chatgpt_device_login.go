@@ -12,11 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/bridgev2"
+
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/ai/providers"
 	"github.com/beeper/ai-bridge/pkg/aiid"
-	"github.com/rs/zerolog"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 const (

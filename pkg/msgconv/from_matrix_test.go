@@ -5,11 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 type fakeMediaDownloader struct {

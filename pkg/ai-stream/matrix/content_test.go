@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 )
 
 func TestAnchorContentUsesVisibleTextAndAIProfile(t *testing.T) {

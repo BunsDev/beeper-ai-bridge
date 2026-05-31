@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"maunium.net/go/mautrix/bridgev2"
+
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 func TestGetLoginFlowsIncludesChatGPTDeviceLogin(t *testing.T) {

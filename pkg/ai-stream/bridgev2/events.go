@@ -4,14 +4,15 @@ import (
 	"context"
 	"time"
 
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
-	aimatrix "github.com/beeper/ai-bridge/pkg/ai-stream/matrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	aimatrix "github.com/beeper/ai-bridge/pkg/ai-stream/matrix"
 )
 
 func eventMeta(eventType bridgev2.RemoteEventType, portalKey networkid.PortalKey, sender networkid.UserID, timestamp time.Time) simplevent.EventMeta {

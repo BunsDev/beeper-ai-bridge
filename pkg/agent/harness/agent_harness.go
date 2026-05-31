@@ -7,10 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/rs/zerolog"
 )
 
 type AgentHarnessStreamOptions struct {

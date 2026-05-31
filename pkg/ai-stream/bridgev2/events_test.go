@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 )
 
 func TestBridgeV2AIEvents(t *testing.T) {

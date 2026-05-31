@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session/upgrades"
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/util/dbutil"
 	_ "go.mau.fi/util/dbutil/litestream"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session/upgrades"
 )
 
 type SQLiteSessionStorage struct {

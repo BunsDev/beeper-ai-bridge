@@ -11,12 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/mediaproxy"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 var _ bridgev2.DirectMediableNetwork = (*Connector)(nil)

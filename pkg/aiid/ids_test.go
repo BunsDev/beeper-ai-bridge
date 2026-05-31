@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"maunium.net/go/mautrix/id"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
 func TestPortalAndAssistantIDsAreStable(t *testing.T) {

@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	"github.com/beeper/ai-bridge/pkg/aidb/upgrades"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	"github.com/beeper/ai-bridge/pkg/aidb/upgrades"
 )
 
 type Store struct {

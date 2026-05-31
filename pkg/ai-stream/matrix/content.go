@@ -5,10 +5,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
+
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 )
 
 const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")

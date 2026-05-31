@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
-	"github.com/rs/zerolog"
 )
 
 const aiServicesAppserviceTokenPrefix = "as::"

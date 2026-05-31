@@ -7,12 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"maunium.net/go/mautrix/bridgev2"
+
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/chattools"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 type chatToolsApprovalContext struct {

@@ -13,13 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
-	agent "github.com/beeper/ai-bridge/pkg/agent"
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
-	"github.com/beeper/ai-bridge/pkg/aidb"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
@@ -27,6 +20,14 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
+	agent "github.com/beeper/ai-bridge/pkg/agent"
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aidb"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {

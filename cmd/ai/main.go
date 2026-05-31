@@ -1,9 +1,10 @@
 package main
 
 import (
+	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
+
 	_ "github.com/beeper/ai-bridge/pkg/ai/providers"
 	"github.com/beeper/ai-bridge/pkg/connector"
-	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 )
 
 var (

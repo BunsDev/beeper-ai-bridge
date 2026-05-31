@@ -10,13 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/id"
+
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	aibridgev2 "github.com/beeper/ai-bridge/pkg/ai-stream/bridgev2"
 	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/chattools"
-	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/id"
 )
 
 const (

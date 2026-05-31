@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"time"
 
-	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/id"
+
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 type ActiveStreamRecord struct {

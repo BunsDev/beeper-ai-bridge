@@ -9,15 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 type modelContactsCache struct {

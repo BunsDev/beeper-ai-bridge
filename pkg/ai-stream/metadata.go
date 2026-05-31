@@ -3,7 +3,7 @@ package aistream
 import (
 	"fmt"
 
-	"github.com/beeper/ai-bridge/pkg/ag-ui"
+	agui "github.com/beeper/ai-bridge/pkg/ag-ui"
 )
 
 func (t Run) AI(kind string) BeeperAI {

@@ -7,9 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aiutils "github.com/beeper/ai-bridge/pkg/ai/utils"
-	"github.com/rs/zerolog"
 )
 
 type AgentEventSink func(context.Context, AgentEvent) error

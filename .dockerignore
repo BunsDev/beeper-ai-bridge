@@ -1,0 +1,22 @@
+# Exclude runtime state and local caches from build context
+/data/
+data/
+
+# Git and editor cruft
+.git
+.git/**
+.idea
+.vscode
+.github
+.github/**
+
+# Files not needed to compile or run the image
+README.md
+.pre-commit-config.yaml
+build.sh
+run.sh
+test.sh
+scripts
+scripts/**
+test
+test/**

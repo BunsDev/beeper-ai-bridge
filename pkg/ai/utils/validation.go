@@ -10,8 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
 var schemaValidatorCache sync.Map

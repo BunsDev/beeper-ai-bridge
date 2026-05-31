@@ -4,8 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
+
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func runSystemPromptCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal, roomConfig RoomConfig, arg string, responder aiCommandResponder) error {

@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"strings"
 
+	"maunium.net/go/mautrix/bridgev2"
+
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 type sessionCommandStats struct {

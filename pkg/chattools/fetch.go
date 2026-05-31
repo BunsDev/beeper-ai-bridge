@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/rs/zerolog"
 )
 
 func FetchTool(options FetchOptions) agent.AgentTool[any] {

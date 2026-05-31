@@ -10,8 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/beeper/ai-bridge/pkg/agent"
 	_ "github.com/mattn/go-sqlite3"
+
+	agent "github.com/beeper/ai-bridge/pkg/agent"
 )
 
 func TestSQLiteSessionStorageAppendsEntriesAndBuildsPath(t *testing.T) {

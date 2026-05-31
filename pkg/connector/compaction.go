@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/id"
+
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/autocompact"
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/id"
 )
 
 func (cl *Client) runAutoCompaction(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, agentHarness *harness.AgentHarness, agentSession *session.Session, model ai.Model, assistantMessage ai.Message) (autocompact.Result, bool) {
