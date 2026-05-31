@@ -71,7 +71,7 @@ func runSessionCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal,
 	}
 	info.SessionID = meta.SessionID
 
-	agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
+	agentSession, err := cl.Main.Store.OpenSession(ctx, cl.UserLogin.ID, session.SQLiteSessionMetadata{
 		SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
 	})
 	if errors.Is(err, sql.ErrNoRows) {

@@ -90,13 +90,17 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 }
 
 func modelForProviderConfig(provider aiid.ProviderConfig, modelID string) ai.Model {
+	input := []string{"text", "image"}
+	if provider.ID == aiid.DefaultProvider {
+		input = []string{"text"}
+	}
 	return ai.Model{
 		ID:            modelID,
 		Name:          modelID,
 		API:           provider.API,
 		Provider:      provider.Provider,
 		BaseURL:       provider.BaseURL,
-		Input:         []string{"text", "image"},
+		Input:         input,
 		ContextWindow: 128000,
 		MaxTokens:     32000,
 	}
@@ -120,21 +124,23 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if model.Name == "" {
 		model.Name = model.ID
 	}
-	if catalogModel, ok := ai.GetModel(model.Provider, model.ID); ok {
-		if len(model.Input) == 0 && len(catalogModel.Input) > 0 {
-			model.Input = append([]string(nil), catalogModel.Input...)
+	if provider.ID != aiid.DefaultProvider {
+		if catalogModel, ok := ai.GetModel(model.Provider, model.ID); ok {
+			if len(model.Input) == 0 && len(catalogModel.Input) > 0 {
+				model.Input = append([]string(nil), catalogModel.Input...)
+			}
+			if !model.Reasoning {
+				model.Reasoning = catalogModel.Reasoning
+			}
+			if len(model.ThinkingLevelMap) == 0 && len(catalogModel.ThinkingLevelMap) > 0 {
+				model.ThinkingLevelMap = catalogModel.ThinkingLevelMap
+			}
+			if model.DefaultThinkingLevel == "" {
+				model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
+			}
+		} else if len(model.Input) == 0 {
+			model.Input = catalogInputForProviderModel(model)
 		}
-		if !model.Reasoning {
-			model.Reasoning = catalogModel.Reasoning
-		}
-		if len(model.ThinkingLevelMap) == 0 && len(catalogModel.ThinkingLevelMap) > 0 {
-			model.ThinkingLevelMap = catalogModel.ThinkingLevelMap
-		}
-		if model.DefaultThinkingLevel == "" {
-			model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
-		}
-	} else if len(model.Input) == 0 {
-		model.Input = catalogInputForProviderModel(model)
 	}
 	if len(model.Input) == 0 {
 		model.Input = []string{"text"}

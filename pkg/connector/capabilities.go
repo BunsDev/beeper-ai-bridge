@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"encoding/base64"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -36,7 +35,7 @@ var roomCaps = &event.RoomFeatures{
 	MaxTextLength: 20000,
 	Reply:         event.CapLevelFullySupported,
 	Edit:          event.CapLevelRejected,
-	Delete:        event.CapLevelPartialSupport,
+	Delete:        event.CapLevelFullySupported,
 	DisappearingTimer: &event.DisappearingTimerCapability{
 		Types: []event.DisappearingType{
 			event.DisappearingTypeAfterSend,
@@ -46,32 +45,32 @@ var roomCaps = &event.RoomFeatures{
 	Reaction:            event.CapLevelUnsupported,
 	ReadReceipts:        false,
 	TypingNotifications: true,
+	DeleteChat:          true,
 }
+
+const roomFeaturesIDBase = "com.beeper.ai.capabilities.2026_05_31.delete"
 
 func roomFeaturesForModel(model ai.Model, supportsAIState bool) *event.RoomFeatures {
 	caps := roomCaps.Clone()
+	caps.ID = roomFeaturesIDBase
 	if !supportsAIState {
 		delete(caps.State, aiid.RoomToolsType)
 		delete(caps.State, aiid.RoomModelType)
 		delete(caps.State, aiid.RoomPromptType)
+	} else {
+		caps.ID += "+state"
 	}
 	if isImageModel(model) {
 		caps.File[event.MsgImage] = imageFileFeatures()
+		caps.ID += "+image"
 	}
 	if isAudioModel(model) {
 		audioFeatures := audioFileFeatures()
 		caps.File[event.MsgAudio] = audioFeatures
 		caps.File[event.CapMsgVoice] = audioFeatures.Clone()
+		caps.ID += "+audio"
 	}
-	setRoomFeaturesID(caps)
 	return caps
-}
-
-func setRoomFeaturesID(caps *event.RoomFeatures) {
-	if caps == nil {
-		return
-	}
-	caps.ID = "com.beeper.ai.capabilities." + base64.RawURLEncoding.EncodeToString(caps.Hash())
 }
 
 func imageFileFeatures() *event.FileFeatures {
@@ -80,7 +79,6 @@ func imageFileFeatures() *event.FileFeatures {
 			"image/png":  event.CapLevelFullySupported,
 			"image/jpeg": event.CapLevelFullySupported,
 			"image/webp": event.CapLevelFullySupported,
-			"image/gif":  event.CapLevelPartialSupport,
 		},
 		MaxSize:          20 * 1024 * 1024,
 		Caption:          event.CapLevelFullySupported,
@@ -144,7 +142,7 @@ func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 					Avatar:          bridgev2.GroupFieldCapability{Allowed: false},
 					Username:        bridgev2.GroupFieldCapability{Allowed: false},
 					Parent:          bridgev2.GroupFieldCapability{Allowed: false},
-					Disappear:       bridgev2.GroupFieldCapability{Allowed: false},
+					Disappear:       bridgev2.GroupFieldCapability{Allowed: true, DisappearSettings: roomCaps.DisappearingTimer},
 				},
 			},
 		},

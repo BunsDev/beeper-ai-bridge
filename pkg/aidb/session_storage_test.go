@@ -33,11 +33,11 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	}
 	defer db.Close()
 
-	store := NewStore(db, dbutil.ZeroLogger(zerolog.Nop()))
+	store := NewStore(db, networkid.BridgeID("bridge"), dbutil.ZeroLogger(zerolog.Nop()))
 	if err := store.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
-	agentSession, err := store.CreateSession(ctx, session.SQLiteSessionCreateOptions{ID: "session-1"})
+	agentSession, err := store.CreateSession(ctx, networkid.UserLoginID("login"), session.SQLiteSessionCreateOptions{ID: "session-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := store.OpenSession(ctx, session.SQLiteSessionMetadata{SessionMetadata: session.SessionMetadata{ID: "session-1"}})
+	opened, err := store.OpenSession(ctx, networkid.UserLoginID("login"), session.SQLiteSessionMetadata{SessionMetadata: session.SessionMetadata{ID: "session-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +73,13 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	if aiSessionCount != 1 {
 		t.Fatalf("expected one bridge session, got %d", aiSessionCount)
 	}
+	var loginSessionCount int
+	if err := db.QueryRow(ctx, `select count(*) from ai_session where bridge_id='bridge' and login_id='login'`).Scan(&loginSessionCount); err != nil {
+		t.Fatal(err)
+	}
+	if loginSessionCount != 1 {
+		t.Fatalf("expected one bridge/login-scoped session, got %d", loginSessionCount)
+	}
 	rows, err := db.Query(ctx, `select * from ai_session limit 0`)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +96,28 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	}
 	if _, err := db.Query(ctx, `select count(*) from sessions`); err == nil {
 		t.Fatalf("generic sessions table should not exist")
+	}
+	if _, err := store.OpenSession(ctx, networkid.UserLoginID("other-login"), session.SQLiteSessionMetadata{SessionMetadata: session.SessionMetadata{ID: "session-1"}}); err == nil {
+		t.Fatalf("expected session to be hidden from other logins")
+	}
+	if err := store.DeleteSession(ctx, networkid.UserLoginID("other-login"), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenSession(ctx, networkid.UserLoginID("login"), session.SQLiteSessionMetadata{SessionMetadata: session.SessionMetadata{ID: "session-1"}}); err != nil {
+		t.Fatalf("expected other login delete not to delete session: %v", err)
+	}
+	if err := store.DeleteSession(ctx, networkid.UserLoginID("login"), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenSession(ctx, networkid.UserLoginID("login"), session.SQLiteSessionMetadata{SessionMetadata: session.SessionMetadata{ID: "session-1"}}); err == nil {
+		t.Fatalf("expected deleted session to be gone")
+	}
+	var aiSessionEntryCount int
+	if err := db.QueryRow(ctx, `select count(*) from ai_session_entry where session_id='session-1'`).Scan(&aiSessionEntryCount); err != nil {
+		t.Fatal(err)
+	}
+	if aiSessionEntryCount != 0 {
+		t.Fatalf("expected deleted session entries to be gone, got %d", aiSessionEntryCount)
 	}
 }
 
@@ -113,7 +142,7 @@ func TestActiveStreamStorageRoundTripsAndDeletes(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewStore(db, dbutil.ZeroLogger(zerolog.Nop()))
+	store := NewStore(db, networkid.BridgeID("bridge"), dbutil.ZeroLogger(zerolog.Nop()))
 	if err := store.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +187,22 @@ func TestActiveStreamStorageRoundTripsAndDeletes(t *testing.T) {
 	if len(stale) != 1 || stale[0].RunID != record.RunID {
 		t.Fatalf("expected stale stream, got %#v", stale)
 	}
-	if err := store.DeleteActiveStream(ctx, record.RunID); err != nil {
+	if otherLogin, err := store.ListActiveStreams(ctx, "other-login"); err != nil {
+		t.Fatal(err)
+	} else if len(otherLogin) != 0 {
+		t.Fatalf("expected no active streams for other login, got %#v", otherLogin)
+	}
+	if err := store.DeleteActiveStream(ctx, "other-login", record.RunID); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.ListActiveStreams(ctx, "login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("expected other login delete not to delete active stream, got %#v", active)
+	}
+	if err := store.DeleteActiveStream(ctx, "login", record.RunID); err != nil {
 		t.Fatal(err)
 	}
 	active, err = store.ListActiveStreams(ctx, "login")

@@ -68,13 +68,13 @@ func TestModelForProviderPassesCustomOpenAIProviderModelIDDirectly(t *testing.T)
 	}
 }
 
-func TestModelForProviderFillsListedModelInputFromCatalog(t *testing.T) {
+func TestModelForProviderFillsCustomListedModelInputFromCatalog(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
-		ID:       aiid.DefaultProvider,
+		ID:       "custom-openai",
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
-		BaseURL:  "https://ai-services.beeper.com/proxy/openai/v1",
+		BaseURL:  "https://custom.test/v1",
 		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
@@ -83,13 +83,13 @@ func TestModelForProviderFillsListedModelInputFromCatalog(t *testing.T) {
 	}
 }
 
-func TestModelForProviderFillsPrefixedOpenAIInputFromCatalog(t *testing.T) {
+func TestModelForProviderFillsCustomPrefixedOpenAIInputFromCatalog(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
-		ID:       aiid.DefaultProvider,
+		ID:       "custom-openai",
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
-		BaseURL:  "https://ai-services.beeper.com/proxy/openai/v1",
+		BaseURL:  "https://custom.test/v1",
 		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
 	}
 	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
@@ -417,8 +417,12 @@ func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 	if !caps.Provisioning.ResolveIdentifier.ContactList || !caps.Provisioning.ResolveIdentifier.Search || !caps.Provisioning.ResolveIdentifier.CreateDM {
 		t.Fatalf("expected contact list/search/create DM capabilities, got %#v", caps.Provisioning.ResolveIdentifier)
 	}
+	groupCaps := caps.Provisioning.GroupCreation["ai"]
+	if !groupCaps.Disappear.Allowed || groupCaps.Disappear.DisappearSettings == nil {
+		t.Fatalf("expected initial disappearing timer support, got %#v", groupCaps.Disappear)
+	}
 	_, capVersion := conn.GetBridgeInfoVersion()
-	if capVersion < 3 {
+	if capVersion < 5 {
 		t.Fatalf("capability version must bump when provisioning capabilities change, got %d", capVersion)
 	}
 }
@@ -448,6 +452,18 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	}
 	if caps.Reaction != event.CapLevelUnsupported {
 		t.Fatalf("expected reactions to be unsupported, got %d", caps.Reaction)
+	}
+	if caps.State[event.StateRoomName.Type] == nil || caps.State[event.StateRoomName.Type].Level != event.CapLevelFullySupported {
+		t.Fatalf("expected room name support, got %#v", caps.State[event.StateRoomName.Type])
+	}
+	if caps.State[event.StateTopic.Type] == nil || caps.State[event.StateTopic.Type].Level != event.CapLevelFullySupported {
+		t.Fatalf("expected room topic support, got %#v", caps.State[event.StateTopic.Type])
+	}
+	if caps.State[event.StateBeeperDisappearingTimer.Type] == nil || caps.State[event.StateBeeperDisappearingTimer.Type].Level != event.CapLevelFullySupported {
+		t.Fatalf("expected disappearing timer support, got %#v", caps.State[event.StateBeeperDisappearingTimer.Type])
+	}
+	if !caps.DeleteChat {
+		t.Fatalf("expected delete chat support")
 	}
 	if !caps.TypingNotifications {
 		t.Fatalf("expected assistant typing notifications")
@@ -487,6 +503,9 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 	if visionCaps.File[event.MsgImage] == nil {
 		t.Fatalf("vision model should advertise image input")
 	}
+	if visionCaps.File[event.CapMsgGIF] != nil || visionCaps.File[event.MsgImage].MimeTypes["image/gif"] != event.CapLevelUnsupported {
+		t.Fatalf("vision model should not advertise GIF input, got gif=%#v image/gif=%d", visionCaps.File[event.CapMsgGIF], visionCaps.File[event.MsgImage].MimeTypes["image/gif"])
+	}
 	if visionCaps.File[event.MsgAudio] != nil {
 		t.Fatalf("vision-only model should not advertise audio input")
 	}
@@ -504,22 +523,22 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 	}
 }
 
-func TestRoomFeaturesUseStableValueDerivedIDs(t *testing.T) {
+func TestRoomFeaturesUseDeterministicIDs(t *testing.T) {
 	first := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, true)
 	second := roomFeaturesForModel(ai.Model{ID: "model-b", Input: []string{"text", "image"}}, true)
-	if first.ID == "" || second.ID == "" {
-		t.Fatalf("expected generated capability IDs, got %q and %q", first.ID, second.ID)
+	if first.ID != "com.beeper.ai.capabilities.2026_05_31.delete+state+image" {
+		t.Fatalf("expected deterministic image capability ID, got %q", first.ID)
 	}
 	if first.ID != second.ID {
 		t.Fatalf("same feature values should produce same ID, got %q and %q", first.ID, second.ID)
 	}
 	textOnly := roomFeaturesForModel(ai.Model{Input: []string{"text"}}, true)
-	if textOnly.ID == first.ID {
-		t.Fatalf("different feature values should produce different IDs, got %q", first.ID)
+	if textOnly.ID != "com.beeper.ai.capabilities.2026_05_31.delete+state" {
+		t.Fatalf("expected deterministic text capability ID, got %q", textOnly.ID)
 	}
 	withoutState := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, false)
-	if withoutState.ID == first.ID {
-		t.Fatalf("AI-state support should affect capability ID, got %q", first.ID)
+	if withoutState.ID != "com.beeper.ai.capabilities.2026_05_31.delete+image" {
+		t.Fatalf("expected deterministic image capability ID without AI state, got %q", withoutState.ID)
 	}
 }
 
@@ -727,20 +746,38 @@ func TestDefaultReasoningLevelClampsForMandatoryReasoningModel(t *testing.T) {
 	}
 }
 
-func TestNormalizeProviderModelInheritsCatalogReasoningMetadata(t *testing.T) {
+func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *testing.T) {
 	model := normalizeProviderModel(ai.Model{
-		ID:                   "minimax/minimax-m2.7",
-		Provider:             ai.ProviderOpenRouter,
-		Reasoning:            true,
-		DefaultThinkingLevel: ai.ModelThinkingLevelLow,
-		ThinkingLevelMap:     map[ai.ModelThinkingLevel]*string{ai.ModelThinkingLevelOff: nil},
+		ID:       "minimax/minimax-m2.7",
+		Provider: ai.ProviderOpenRouter,
 	}, aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
 		BaseURL:  "https://ai-services.test/proxy/openrouter/v1",
 	})
+	if model.Reasoning || model.DefaultThinkingLevel != "" || len(model.ThinkingLevelMap) != 0 {
+		t.Fatalf("expected default provider model to rely only on AI Services metadata, got %#v", model)
+	}
+	if len(model.Input) != 1 || model.Input[0] != "text" {
+		t.Fatalf("expected default provider missing input to fall back to text only, got %#v", model.Input)
+	}
+}
+
+func TestNormalizeProviderModelInheritsCustomProviderCatalogReasoningMetadata(t *testing.T) {
+	model := normalizeProviderModel(ai.Model{
+		ID:       "gpt-5.5",
+		Provider: ai.ProviderOpenAI,
+	}, aiid.ProviderConfig{
+		ID:       "custom-openai",
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  "https://custom.test/v1",
+	})
+	if !model.Reasoning || len(model.ThinkingLevelMap) == 0 {
+		t.Fatalf("expected custom provider model to inherit local catalog reasoning metadata, got %#v", model)
+	}
 	if roomThinkingLevelSupported(model, ai.ModelThinkingLevelOff) {
-		t.Fatalf("expected normalized MiniMax M2.7 catalog model to reject off reasoning")
+		t.Fatalf("expected normalized GPT-5.5 custom provider model to reject off reasoning")
 	}
 }

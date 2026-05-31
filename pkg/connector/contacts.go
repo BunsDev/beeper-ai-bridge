@@ -70,10 +70,11 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	name := defaultConversationTitle(provider, model)
 	topic := modelRoomDescription(provider, model)
 	roomType := database.RoomTypeDM
-	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: defaultAIAssistantAvatar(), Type: &roomType, Members: aiChatMembers()}
+	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: roomModelAvatar(provider, model), Type: &roomType, Members: aiChatMembers()}
 	meta := portalMetadata(portal)
 	meta.AutoTitlePending = true
-	if portal.MXID == "" {
+	created := portal.MXID == ""
+	if created {
 		if err = portal.CreateMatrixRoom(ctx, cl.UserLogin, info); err != nil {
 			return nil, err
 		}
@@ -81,7 +82,7 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 		return nil, err
 	}
 	reasoning := cl.reasoningLevelForModel(model, roomConfig)
-	if _, err = cl.writeRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning); err != nil {
+	if _, err = cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, applyRoomModelStateOptions{ForceAvatar: created}); err != nil {
 		return nil, err
 	}
 	cl.refreshRoomCapabilities(ctx, portal)

@@ -20,7 +20,7 @@ func TestConnectorGetNameMatchesDesktopMetadata(t *testing.T) {
 	if name.NetworkURL != "https://www.beeper.com/ai" {
 		t.Fatalf("unexpected network URL %q", name.NetworkURL)
 	}
-	if string(name.NetworkIcon) != "mxc://beeper.com/51a668657dd9e0132cc823ad9402c6c2d0fc3321" {
+	if string(name.NetworkIcon) != defaultAIAssistantAvatarMXC {
 		t.Fatalf("unexpected network icon %q", name.NetworkIcon)
 	}
 	if name.NetworkID != aiid.NetworkID || name.BeeperBridgeType != aiid.BeeperBridgeType {
@@ -36,7 +36,7 @@ func TestConnectorGetNameMatchesDesktopMetadata(t *testing.T) {
 
 func TestConnectorBridgeInfoVersions(t *testing.T) {
 	info, caps := (&Connector{}).GetBridgeInfoVersion()
-	if info != 1 || caps != 4 {
+	if info != 1 || caps != 5 {
 		t.Fatalf("unexpected bridge info versions info=%d caps=%d", info, caps)
 	}
 }

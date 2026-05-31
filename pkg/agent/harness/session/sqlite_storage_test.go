@@ -280,6 +280,21 @@ func TestSessionLabelsNamesMoveAndContext(t *testing.T) {
 	if len(context.Messages) != 1 || context.Messages[0].Content != "hi" {
 		t.Fatalf("unexpected messages %#v", context.Messages)
 	}
+	if _, err := session.AppendMessageDeletion(ctx, firstID); err != nil {
+		t.Fatal(err)
+	}
+	context, err = session.BuildContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.Messages) != 1 || context.Messages[0].Content != DeletedMessagePlaceholder {
+		t.Fatalf("expected deleted placeholder, got %#v", context.Messages)
+	}
+	if _, err := session.AppendMessageDeletion(ctx, "missing"); err == nil {
+		t.Fatalf("expected missing deletion target error")
+	} else if err.Error() != "Entry missing not found" {
+		t.Fatalf("unexpected missing deletion target error %v", err)
+	}
 
 	if _, err := session.MoveTo(ctx, &firstID, &MoveToSummary{Summary: "went down branch"}); err != nil {
 		t.Fatal(err)

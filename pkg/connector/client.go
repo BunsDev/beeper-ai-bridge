@@ -128,6 +128,7 @@ var _ bridgev2.RedactionHandlingNetworkAPI = (*Client)(nil)
 var _ bridgev2.RoomNameHandlingNetworkAPI = (*Client)(nil)
 var _ bridgev2.RoomTopicHandlingNetworkAPI = (*Client)(nil)
 var _ bridgev2.DisappearTimerChangingNetworkAPI = (*Client)(nil)
+var _ bridgev2.DeleteChatHandlingNetworkAPI = (*Client)(nil)
 var _ bridgev2.GroupCreatingNetworkAPI = (*Client)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*Client)(nil)
 var _ bridgev2.ContactListingNetworkAPI = (*Client)(nil)
@@ -212,15 +213,21 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 	if params.Topic != nil {
 		topic = &params.Topic.Topic
 	}
+	var disappear *database.DisappearingSetting
+	if params.Disappear != nil {
+		disappearSetting := database.DisappearingSettingFromEvent(params.Disappear)
+		disappear = &disappearSetting
+	}
 	roomType := database.RoomTypeDM
 	return &bridgev2.CreateChatResponse{
 		PortalKey: aiid.PortalKey(params.RoomID, cl.UserLogin.ID),
 		PortalInfo: &bridgev2.ChatInfo{
-			Name:    &name,
-			Topic:   topic,
-			Avatar:  defaultAIAssistantAvatar(),
-			Type:    &roomType,
-			Members: aiChatMembers(),
+			Name:      &name,
+			Topic:     topic,
+			Avatar:    defaultAIAssistantAvatar(),
+			Type:      &roomType,
+			Members:   aiChatMembers(),
+			Disappear: disappear,
 		},
 	}, nil
 }
@@ -694,6 +701,9 @@ func (cl *Client) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.M
 	if msg == nil || msg.Portal == nil {
 		return nil
 	}
+	if err := cl.appendDeletedSessionPlaceholder(ctx, msg.Portal, msg.TargetMessage); err != nil {
+		return err
+	}
 	active := cl.getActiveRun(msg.Portal.PortalKey)
 	if active == nil || !active.matchesRedactionTarget(msg.TargetMessage) {
 		return nil
@@ -707,6 +717,69 @@ func (cl *Client) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.M
 	return err
 }
 
+func (cl *Client) HandleMatrixDeleteChat(ctx context.Context, msg *bridgev2.MatrixDeleteChat) error {
+	if msg == nil || msg.Portal == nil {
+		return nil
+	}
+	active := cl.getActiveRun(msg.Portal.PortalKey)
+	if active != nil {
+		if h := cl.getActiveHarness(msg.Portal.PortalKey); h != nil {
+			_, _ = h.Abort(ctx)
+		}
+		active.failAll(ctx, cl, fmt.Errorf("AI run aborted"))
+	}
+	meta := portalMetadata(msg.Portal)
+	if meta.SessionID != "" {
+		if err := ai.CleanupSessionResources(meta.SessionID); err != nil {
+			return err
+		}
+		if cl != nil && cl.Main != nil && cl.Main.Store != nil {
+			if err := cl.Main.Store.DeleteSession(ctx, cl.UserLogin.ID, meta.SessionID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (cl *Client) appendDeletedSessionPlaceholder(ctx context.Context, portal *bridgev2.Portal, target *database.Message) error {
+	if cl == nil || cl.Main == nil || cl.Main.Store == nil || portal == nil || target == nil {
+		return nil
+	}
+	metadata, ok := target.Metadata.(*aiid.MessageMetadata)
+	if !ok || metadata.SessionEntryID == "" {
+		return nil
+	}
+	meta := portalMetadata(portal)
+	if meta.SessionID == "" {
+		return nil
+	}
+	agentSession, err := cl.Main.Store.OpenSession(ctx, cl.UserLogin.ID, session.SQLiteSessionMetadata{
+		SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if _, err = agentSession.AppendMessageDeletion(ctx, metadata.SessionEntryID); err != nil {
+		if isSessionNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func isSessionNotFound(err error) bool {
+	if errors.Is(err, session.ErrSessionEntryNotFound) {
+		return true
+	}
+	var sessionErr *session.SessionError
+	return errors.As(err, &sessionErr) && sessionErr.Code == session.SessionErrorNotFound
+}
+
 func (cl *Client) HandleMatrixRoomTopic(ctx context.Context, msg *bridgev2.MatrixRoomTopic) (bool, error) {
 	if msg == nil || msg.Portal == nil || msg.Content == nil {
 		return false, nil
@@ -716,7 +789,7 @@ func (cl *Client) HandleMatrixRoomTopic(ctx context.Context, msg *bridgev2.Matri
 	msg.Portal.TopicSet = topic != ""
 	meta := portalMetadata(msg.Portal)
 	if meta.SessionID != "" {
-		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
+		agentSession, err := cl.Main.Store.OpenSession(ctx, cl.UserLogin.ID, session.SQLiteSessionMetadata{
 			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
 		})
 		if err == nil {
@@ -738,7 +811,7 @@ func (cl *Client) HandleMatrixRoomName(ctx context.Context, msg *bridgev2.Matrix
 	meta := portalMetadata(msg.Portal)
 	meta.AutoTitlePending = false
 	if meta.SessionID != "" {
-		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
+		agentSession, err := cl.Main.Store.OpenSession(ctx, cl.UserLogin.ID, session.SQLiteSessionMetadata{
 			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
 		})
 		if err == nil {
@@ -1254,10 +1327,10 @@ func (cl *Client) persistActiveStream(ctx context.Context, portal *bridgev2.Port
 }
 
 func (cl *Client) deleteActiveStream(ctx context.Context, runID string) {
-	if cl == nil || cl.Main == nil || cl.Main.Store == nil || runID == "" {
+	if cl == nil || cl.Main == nil || cl.Main.Store == nil || cl.UserLogin == nil || runID == "" {
 		return
 	}
-	if err := cl.Main.Store.DeleteActiveStream(ctx, runID); err != nil && cl.Main.Bridge != nil {
+	if err := cl.Main.Store.DeleteActiveStream(ctx, cl.UserLogin.ID, runID); err != nil && cl.Main.Bridge != nil {
 		cl.Main.Bridge.Log.Warn().Err(err).Str("run_id", runID).Msg("Failed to delete AI active stream")
 	}
 }
@@ -1735,7 +1808,7 @@ func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal,
 		portal.Metadata = meta
 	}
 	if meta.SessionID != "" {
-		agentSession, err := cl.Main.Store.OpenSession(ctx, session.SQLiteSessionMetadata{
+		agentSession, err := cl.Main.Store.OpenSession(ctx, cl.UserLogin.ID, session.SQLiteSessionMetadata{
 			SessionMetadata: session.SessionMetadata{ID: meta.SessionID},
 		})
 		if err == nil {
@@ -1746,7 +1819,7 @@ func (cl *Client) sessionForPortal(ctx context.Context, portal *bridgev2.Portal,
 			return nil, err
 		}
 	}
-	agentSession, err := cl.Main.Store.CreateSession(ctx, session.SQLiteSessionCreateOptions{})
+	agentSession, err := cl.Main.Store.CreateSession(ctx, cl.UserLogin.ID, session.SQLiteSessionCreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -1935,7 +2008,7 @@ func (cl *Client) finishActiveStreamRecord(ctx context.Context, record aidb.Acti
 		cl.queueAssistantRunError(record.PortalKey, record.MessageID, record.ProviderID, record.ModelID, record.RunID, record.Run, &record.Metadata, err)
 		cl.sendActiveStreamRetriableStatus(ctx, record, err)
 	}
-	if err := cl.Main.Store.DeleteActiveStream(ctx, record.RunID); err != nil && cl.Main.Bridge != nil {
+	if err := cl.Main.Store.DeleteActiveStream(ctx, cl.UserLogin.ID, record.RunID); err != nil && cl.Main.Bridge != nil {
 		cl.Main.Bridge.Log.Warn().Err(err).Str("run_id", record.RunID).Msg("Failed to delete stale AI stream")
 	}
 }

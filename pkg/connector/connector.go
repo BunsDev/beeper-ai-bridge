@@ -34,7 +34,7 @@ func (c *Connector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
 		DisplayName:          "AI Chats",
 		NetworkURL:           "https://www.beeper.com/ai",
-		NetworkIcon:          "mxc://beeper.com/51a668657dd9e0132cc823ad9402c6c2d0fc3321",
+		NetworkIcon:          defaultAIAssistantAvatarMXC,
 		NetworkID:            aiid.NetworkID,
 		BeeperBridgeType:     aiid.BeeperBridgeType,
 		DefaultPort:          29344,
@@ -45,7 +45,7 @@ func (c *Connector) GetName() bridgev2.BridgeName {
 func (c *Connector) Init(bridge *bridgev2.Bridge) {
 	c.Config.ApplyDefaults()
 	c.Bridge = bridge
-	c.Store = aidb.NewStore(bridge.DB.Database, dbutil.ZeroLogger(bridge.Log.With().Str("db_section", "ai").Logger()))
+	c.Store = aidb.NewStore(bridge.DB.Database, bridge.ID, dbutil.ZeroLogger(bridge.Log.With().Str("db_section", "ai").Logger()))
 	c.registerAICommands()
 }
 
@@ -83,7 +83,7 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 }
 
 func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 4
+	return 1, 5
 }
 
 func (c *Connector) defaultProviderConfig(userMXID id.UserID) aiid.ProviderConfig {

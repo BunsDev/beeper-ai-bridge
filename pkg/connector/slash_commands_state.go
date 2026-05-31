@@ -103,7 +103,15 @@ func (cl *Client) resolveCanonicalRoomModel(ctx context.Context, config RoomConf
 	return provider, model, provider.ID + "/" + model.ID, nil
 }
 
+type applyRoomModelStateOptions struct {
+	ForceAvatar bool
+}
+
 func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string) (string, error) {
+	return cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, applyRoomModelStateOptions{})
+}
+
+func (cl *Client) applyRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string, opts applyRoomModelStateOptions) (string, error) {
 	content := map[string]any{"model": canonicalModel}
 	if reasoning != "" {
 		content["reasoning"] = reasoning
@@ -115,12 +123,22 @@ func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Port
 	if cl == nil || cl.UserLogin == nil || portal == nil {
 		return eventID, nil
 	}
+	cl.updateRoomModelInfo(ctx, portal, provider, model, opts)
+	return eventID, nil
+}
+
+func (cl *Client) updateRoomModelInfo(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, opts applyRoomModelStateOptions) {
+	if cl == nil || cl.UserLogin == nil || portal == nil {
+		return
+	}
+	if opts.ForceAvatar {
+		portal.AvatarSet = false
+	}
 	topic := modelRoomDescription(provider, model)
 	portal.UpdateInfo(ctx, &bridgev2.ChatInfo{
 		Topic:  &topic,
-		Avatar: defaultAIAssistantAvatar(),
+		Avatar: roomModelAvatar(provider, model),
 	}, cl.UserLogin, nil, time.Now())
-	return eventID, nil
 }
 
 func modelRoomDescription(provider aiid.ProviderConfig, model ai.Model) string {
@@ -129,6 +147,13 @@ func modelRoomDescription(provider aiid.ProviderConfig, model ai.Model) string {
 
 func modelWelcomeNoticeText(provider aiid.ProviderConfig, model ai.Model) string {
 	return "You are chatting with " + modelDisplayName(provider, model) + ". AI can make mistakes."
+}
+
+func roomModelAvatar(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Avatar {
+	if avatar := modelAvatar(provider, model); avatar != nil {
+		return avatar
+	}
+	return defaultAIAssistantAvatar()
 }
 
 func (cl *Client) writeAIRoomState(ctx context.Context, portal *bridgev2.Portal, stateType string, content map[string]any) (string, error) {

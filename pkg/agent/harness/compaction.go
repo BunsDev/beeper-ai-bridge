@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
@@ -272,6 +273,7 @@ type SessionEntry struct {
 	Display          bool
 	Details          map[string]any
 	FromHook         bool
+	TargetID         string
 }
 
 func ParseSessionEntries(rawEntries []json.RawMessage) ([]SessionEntry, error) {
@@ -303,7 +305,7 @@ func parseSessionEntry(raw json.RawMessage) (SessionEntry, error) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return SessionEntry{}, err
 	}
-	entry := SessionEntry{Type: stringValue(body["type"]), ID: stringValue(body["id"]), Timestamp: stringValue(body["timestamp"]), Summary: stringValue(body["summary"]), FirstKeptEntryID: stringValue(body["firstKeptEntryId"]), TokensBefore: intValue(body["tokensBefore"]), FromID: stringValue(body["fromId"]), CustomType: stringValue(body["customType"]), Content: body["content"], Display: boolValue(body["display"]), FromHook: boolValue(body["fromHook"])}
+	entry := SessionEntry{Type: stringValue(body["type"]), ID: stringValue(body["id"]), Timestamp: stringValue(body["timestamp"]), Summary: stringValue(body["summary"]), FirstKeptEntryID: stringValue(body["firstKeptEntryId"]), TokensBefore: intValue(body["tokensBefore"]), FromID: stringValue(body["fromId"]), CustomType: stringValue(body["customType"]), Content: body["content"], Display: boolValue(body["display"]), FromHook: boolValue(body["fromHook"]), TargetID: stringValue(body["targetId"])}
 	if parent, ok := body["parentId"].(string); ok {
 		entry.ParentID = &parent
 	}
@@ -349,6 +351,9 @@ func (e SessionEntry) rawJSON() json.RawMessage {
 	if e.FromHook {
 		body["fromHook"] = e.FromHook
 	}
+	if e.TargetID != "" {
+		body["targetId"] = e.TargetID
+	}
 	raw, _ := json.Marshal(body)
 	return raw
 }
@@ -370,9 +375,24 @@ func buildSessionContextLocal(rawEntries []json.RawMessage) ([]agent.AgentMessag
 	if err != nil {
 		return nil, err
 	}
+	deletedMessages := map[string]bool{}
+	for _, entry := range entries {
+		if entry.Type == "message_delete" && entry.TargetID != "" {
+			deletedMessages[entry.TargetID] = true
+		}
+	}
 	messages := []agent.AgentMessage{}
 	for _, entry := range entries {
 		if msg, ok := messageFromEntry(entry); ok {
+			if entry.Type == "message" && deletedMessages[entry.ID] {
+				msg.Content = session.DeletedMessagePlaceholder
+				msg.ToolCallID = ""
+				msg.ToolName = ""
+				msg.Details = nil
+				msg.IsError = false
+				msg.ErrorMessage = ""
+				msg.Diagnostics = nil
+			}
 			messages = append(messages, msg)
 		}
 	}

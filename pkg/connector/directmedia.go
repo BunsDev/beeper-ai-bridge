@@ -34,7 +34,10 @@ func (c *Connector) Download(ctx context.Context, mediaID networkid.MediaID, par
 	if metadata.SessionID == "" || metadata.EntryID == "" {
 		return nil, fmt.Errorf("AI media ID has no session entry")
 	}
-	agentSession, err := c.Store.OpenSession(ctx, sessionMetadata(metadata.SessionID))
+	if metadata.LoginID == "" {
+		return nil, fmt.Errorf("AI media ID has no login ID")
+	}
+	agentSession, err := c.Store.OpenSession(ctx, networkid.UserLoginID(metadata.LoginID), sessionMetadata(metadata.SessionID))
 	if err != nil {
 		return nil, err
 	}

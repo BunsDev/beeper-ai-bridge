@@ -56,10 +56,10 @@ func (s *Store) UpsertActiveStream(ctx context.Context, record ActiveStreamRecor
 	}
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO ai_active_stream (
-			run_id, login_id, portal_id, portal_receiver, room_id, event_id, message_id,
+			bridge_id, run_id, login_id, portal_id, portal_receiver, room_id, event_id, message_id,
 			provider_id, model_id, entry_id, run_json, metadata_json, status_info_json, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-		ON CONFLICT (run_id) DO UPDATE SET
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		ON CONFLICT (bridge_id, login_id, run_id) DO UPDATE SET
 			login_id=excluded.login_id,
 			portal_id=excluded.portal_id,
 			portal_receiver=excluded.portal_receiver,
@@ -73,15 +73,15 @@ func (s *Store) UpsertActiveStream(ctx context.Context, record ActiveStreamRecor
 			metadata_json=excluded.metadata_json,
 			status_info_json=excluded.status_info_json,
 			updated_at=excluded.updated_at
-	`, record.RunID, record.LoginID, record.PortalKey.ID, record.PortalKey.Receiver, record.RoomID, record.EventID, record.MessageID, record.ProviderID, record.ModelID, record.EntryID, string(runJSON), string(metadataJSON), string(statusInfoJSON), createdAt.UnixMilli(), now.UnixMilli())
+	`, s.bridgeID, record.RunID, record.LoginID, record.PortalKey.ID, record.PortalKey.Receiver, record.RoomID, record.EventID, record.MessageID, record.ProviderID, record.ModelID, record.EntryID, string(runJSON), string(metadataJSON), string(statusInfoJSON), createdAt.UnixMilli(), now.UnixMilli())
 	return err
 }
 
-func (s *Store) DeleteActiveStream(ctx context.Context, runID string) error {
+func (s *Store) DeleteActiveStream(ctx context.Context, loginID networkid.UserLoginID, runID string) error {
 	if runID == "" {
 		return nil
 	}
-	_, err := s.db.Exec(ctx, `DELETE FROM ai_active_stream WHERE run_id=$1`, runID)
+	_, err := s.db.Exec(ctx, `DELETE FROM ai_active_stream WHERE bridge_id=$1 AND login_id=$2 AND run_id=$3`, s.bridgeID, loginID, runID)
 	return err
 }
 
@@ -90,9 +90,9 @@ func (s *Store) ListStaleActiveStreams(ctx context.Context, loginID networkid.Us
 		SELECT run_id, login_id, portal_id, portal_receiver, room_id, event_id, message_id,
 		       provider_id, model_id, entry_id, run_json, metadata_json, status_info_json, created_at, updated_at
 		FROM ai_active_stream
-		WHERE login_id=$1 AND updated_at <= $2
+		WHERE bridge_id=$1 AND login_id=$2 AND updated_at <= $3
 		ORDER BY updated_at
-	`, loginID, cutoff.UnixMilli())
+	`, s.bridgeID, loginID, cutoff.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -113,9 +113,9 @@ func (s *Store) ListActiveStreams(ctx context.Context, loginID networkid.UserLog
 		SELECT run_id, login_id, portal_id, portal_receiver, room_id, event_id, message_id,
 		       provider_id, model_id, entry_id, run_json, metadata_json, status_info_json, created_at, updated_at
 		FROM ai_active_stream
-		WHERE login_id=$1
+		WHERE bridge_id=$1 AND login_id=$2
 		ORDER BY updated_at
-	`, loginID)
+	`, s.bridgeID, loginID)
 	if err != nil {
 		return nil, err
 	}

@@ -250,7 +250,7 @@ func TestAIServicesModelEntryReasoningDefaultsCanRequireReasoning(t *testing.T) 
 	}
 }
 
-func TestAIServicesCatalogModelsUseCatalogInputWhenModalitiesMissing(t *testing.T) {
+func TestAIServicesCatalogModelsDoNotUseBridgeCatalogWhenMetadataMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5"}]}`))
 	}))
@@ -273,8 +273,17 @@ func TestAIServicesCatalogModelsUseCatalogInputWhenModalitiesMissing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || !isImageModel(models[0]) {
-		t.Fatalf("expected GPT-5.5 catalog input fallback, got %#v", models)
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %#v", models)
+	}
+	if isImageModel(models[0]) {
+		t.Fatalf("expected missing AI Services input metadata to not inherit bridge catalog image support, got %#v", models[0].Input)
+	}
+	if models[0].Reasoning || models[0].DefaultThinkingLevel != "" || len(models[0].ThinkingLevelMap) != 0 {
+		t.Fatalf("expected missing AI Services reasoning metadata to not inherit bridge catalog reasoning support, got %#v", models[0])
+	}
+	if len(models[0].Input) != 1 || models[0].Input[0] != "text" {
+		t.Fatalf("expected missing AI Services input metadata to fall back to text only, got %#v", models[0].Input)
 	}
 }
 
