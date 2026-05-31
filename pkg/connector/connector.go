@@ -78,7 +78,6 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 		loggedIn:  true,
 	}
 	login.Client = client
-	client.failPersistedActiveStreams(ctx)
 	return nil
 }
 

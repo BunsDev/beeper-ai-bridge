@@ -11,15 +11,35 @@ import (
 
 var roomCaps = &event.RoomFeatures{
 	Formatting: event.FormattingFeatureMap{
-		event.FmtBold:          event.CapLevelPartialSupport,
-		event.FmtItalic:        event.CapLevelPartialSupport,
-		event.FmtStrikethrough: event.CapLevelPartialSupport,
-		event.FmtInlineCode:    event.CapLevelPartialSupport,
-		event.FmtCodeBlock:     event.CapLevelPartialSupport,
-		event.FmtBlockquote:    event.CapLevelPartialSupport,
-		event.FmtInlineLink:    event.CapLevelPartialSupport,
-		event.FmtUnorderedList: event.CapLevelPartialSupport,
-		event.FmtOrderedList:   event.CapLevelPartialSupport,
+		event.FmtBold:                event.CapLevelFullySupported,
+		event.FmtItalic:              event.CapLevelFullySupported,
+		event.FmtUnderline:           event.CapLevelFullySupported,
+		event.FmtStrikethrough:       event.CapLevelFullySupported,
+		event.FmtInlineCode:          event.CapLevelFullySupported,
+		event.FmtCodeBlock:           event.CapLevelFullySupported,
+		event.FmtSyntaxHighlighting:  event.CapLevelFullySupported,
+		event.FmtBlockquote:          event.CapLevelFullySupported,
+		event.FmtInlineLink:          event.CapLevelFullySupported,
+		event.FmtUserLink:            event.CapLevelFullySupported,
+		event.FmtRoomLink:            event.CapLevelFullySupported,
+		event.FmtEventLink:           event.CapLevelFullySupported,
+		event.FmtAtRoomMention:       event.CapLevelFullySupported,
+		event.FmtUnorderedList:       event.CapLevelFullySupported,
+		event.FmtOrderedList:         event.CapLevelFullySupported,
+		event.FmtListStart:           event.CapLevelFullySupported,
+		event.FmtListJumpValue:       event.CapLevelFullySupported,
+		event.FmtCustomEmoji:         event.CapLevelFullySupported,
+		event.FmtSpoiler:             event.CapLevelFullySupported,
+		event.FmtSpoilerReason:       event.CapLevelFullySupported,
+		event.FmtTextForegroundColor: event.CapLevelFullySupported,
+		event.FmtTextBackgroundColor: event.CapLevelFullySupported,
+		event.FmtHorizontalLine:      event.CapLevelFullySupported,
+		event.FmtHeaders:             event.CapLevelFullySupported,
+		event.FmtSuperscript:         event.CapLevelFullySupported,
+		event.FmtSubscript:           event.CapLevelFullySupported,
+		event.FmtMath:                event.CapLevelFullySupported,
+		event.FmtDetailsSummary:      event.CapLevelFullySupported,
+		event.FmtTable:               event.CapLevelFullySupported,
 	},
 	File: event.FileFeatureMap{
 		event.MsgFile: textFileFeatures(),
@@ -32,10 +52,11 @@ var roomCaps = &event.RoomFeatures{
 		event.StateTopic.Type:                   {Level: event.CapLevelFullySupported},
 		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
 	},
-	MaxTextLength: 20000,
-	Reply:         event.CapLevelFullySupported,
-	Edit:          event.CapLevelRejected,
-	Delete:        event.CapLevelFullySupported,
+	MaxTextLength:   20000,
+	LocationMessage: event.CapLevelFullySupported,
+	Reply:           event.CapLevelFullySupported,
+	Edit:            event.CapLevelRejected,
+	Delete:          event.CapLevelFullySupported,
 	DisappearingTimer: &event.DisappearingTimerCapability{
 		Types: []event.DisappearingType{
 			event.DisappearingTypeAfterSend,
@@ -48,7 +69,7 @@ var roomCaps = &event.RoomFeatures{
 	DeleteChat:          true,
 }
 
-const roomFeaturesIDBase = "com.beeper.ai.capabilities.2026_05_31.delete"
+const roomFeaturesIDBase = "com.beeper.ai.capabilities.2026_05_31.location_text"
 
 func roomFeaturesForModel(model ai.Model, supportsAIState bool) *event.RoomFeatures {
 	caps := roomCaps.Clone()
@@ -104,6 +125,8 @@ func textFileFeatures() *event.FileFeatures {
 	return &event.FileFeatures{
 		MimeTypes: map[string]event.CapabilitySupportLevel{
 			"text/*":                    event.CapLevelFullySupported,
+			"text/calendar":             event.CapLevelFullySupported,
+			"application/csv":           event.CapLevelFullySupported,
 			"application/json":          event.CapLevelFullySupported,
 			"application/ld+json":       event.CapLevelFullySupported,
 			"application/manifest+json": event.CapLevelFullySupported,
@@ -116,6 +139,7 @@ func textFileFeatures() *event.FileFeatures {
 			"application/javascript":    event.CapLevelFullySupported,
 			"application/ecmascript":    event.CapLevelFullySupported,
 			"application/sql":           event.CapLevelFullySupported,
+			"application/x-subrip":      event.CapLevelFullySupported,
 		},
 		MaxSize:          512 * 1024,
 		Caption:          event.CapLevelFullySupported,

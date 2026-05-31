@@ -81,33 +81,75 @@ func (c *sourceCollector) addWebSearchOutput(output toolOutputEvent, result any)
 		if !ok {
 			continue
 		}
-		source := sourceObservation{
-			URL:         sourceString(item, "url", "URL"),
-			Title:       sourceString(item, "title"),
-			Description: firstSourceString(sourceString(item, "description"), sourceString(item, "snippet"), sourceString(item, "summary"), firstStringFromSlice(item["highlights"]), sourceString(item, "text")),
-			SiteName:    sourceString(item, "siteName", "site_name", "source"),
-			FaviconURL:  sourceString(item, "favicon", "faviconUrl", "favicon_url"),
-			ImageURL:    sourceString(item, "image", "imageUrl", "image_url", "thumbnail", "thumbnailUrl", "thumbnail_url"),
-			PublishedAt: sourceString(item, "published", "publishedAt", "publishedDate", "datePublished", "date"),
-			Priority:    50,
-			Appearance: sourceAppearance{
-				Kind:       "web_search",
-				ToolCallID: output.ID,
-				ToolName:   output.Name,
-				Query:      query,
-				Rank:       index + 1,
-			},
-		}
-		if nested, ok := item["metadata"].(map[string]any); ok {
-			source.Title = firstSourceString(source.Title, sourceString(nested, "title", "ogTitle", "openGraphTitle"))
-			source.Description = firstSourceString(source.Description, sourceString(nested, "description", "summary", "ogDescription", "openGraphDescription"))
-			source.SiteName = firstSourceString(source.SiteName, sourceString(nested, "siteName", "site_name", "ogSiteName"))
-			source.FaviconURL = firstSourceString(source.FaviconURL, sourceString(nested, "favicon", "faviconUrl", "favicon_url"))
-			source.ImageURL = firstSourceString(source.ImageURL, sourceImageString(nested))
-			source.PublishedAt = firstSourceString(source.PublishedAt, sourceString(nested, "published", "publishedAt", "publishedDate", "datePublished", "date"))
-		}
-		if updated := c.add(source); updated != nil {
+		if updated := c.addSearchResultSource(output, query, index+1, item, 50, false); updated != nil {
 			changed = append(changed, updated)
+		}
+		for _, rawSubpage := range sourceSlice(item, "subpages") {
+			subpage, ok := rawSubpage.(map[string]any)
+			if !ok {
+				continue
+			}
+			if updated := c.addSearchResultSource(output, query, index+1, subpage, 50, false); updated != nil {
+				changed = append(changed, updated)
+			}
+		}
+	}
+	for _, updated := range c.addWebSearchGroundingSources(output, data, query) {
+		changed = append(changed, updated)
+	}
+	return changed
+}
+
+func (c *sourceCollector) addSearchResultSource(output toolOutputEvent, query string, rank int, item map[string]any, priority int, cited bool) map[string]any {
+	source := sourceObservation{
+		URL:         sourceString(item, "url", "URL", "uri"),
+		Title:       sourceString(item, "title"),
+		Description: firstSourceString(sourceDescriptionString(item), firstStringFromSlice(item["highlights"]), sourceString(item, "text")),
+		SiteName:    sourceString(item, "siteName", "site_name", "source"),
+		FaviconURL:  sourceFaviconString(item),
+		ImageURL:    sourceImageString(item),
+		PublishedAt: sourceString(item, "published", "publishedAt", "publishedDate", "datePublished", "date"),
+		Priority:    priority,
+		Appearance: sourceAppearance{
+			Kind:       "web_search",
+			ToolCallID: output.ID,
+			ToolName:   output.Name,
+			Query:      query,
+			Rank:       rank,
+			Cited:      cited,
+		},
+	}
+	if nested, ok := item["metadata"].(map[string]any); ok {
+		source.Title = firstSourceString(source.Title, sourceString(nested, "title", "ogTitle", "openGraphTitle"))
+		source.Description = firstSourceString(source.Description, sourceDescriptionString(nested))
+		source.SiteName = firstSourceString(source.SiteName, sourceString(nested, "siteName", "site_name", "ogSiteName"))
+		source.FaviconURL = firstSourceString(source.FaviconURL, sourceFaviconString(nested))
+		source.ImageURL = firstSourceString(source.ImageURL, sourceImageString(nested))
+		source.PublishedAt = firstSourceString(source.PublishedAt, sourceString(nested, "published", "publishedAt", "publishedDate", "datePublished", "date"))
+	}
+	return c.add(source)
+}
+
+func (c *sourceCollector) addWebSearchGroundingSources(output toolOutputEvent, data map[string]any, query string) []map[string]any {
+	outputData, ok := data["output"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	grounding := sourceSlice(outputData, "grounding")
+	changed := make([]map[string]any, 0, len(grounding))
+	for _, rawGrounding := range grounding {
+		item, ok := rawGrounding.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, rawCitation := range sourceSlice(item, "citations") {
+			citation, ok := rawCitation.(map[string]any)
+			if !ok {
+				continue
+			}
+			if updated := c.addSearchResultSource(output, query, 0, citation, 40, true); updated != nil {
+				changed = append(changed, updated)
+			}
 		}
 	}
 	return changed
@@ -121,9 +163,9 @@ func (c *sourceCollector) addFetchOutput(output toolOutputEvent, result any) []m
 	source := sourceObservation{
 		URL:         firstSourceString(sourceString(data, "final_url", "finalUrl"), sourceString(data, "url")),
 		Title:       sourceString(data, "title"),
-		Description: firstSourceString(sourceString(data, "summary"), firstStringFromSlice(data["highlights"]), sourceString(data, "text")),
+		Description: firstSourceString(sourceDescriptionString(data), firstStringFromSlice(data["highlights"]), sourceString(data, "text")),
 		SiteName:    sourceString(data, "siteName", "site_name", "source"),
-		FaviconURL:  sourceString(data, "favicon", "faviconUrl", "favicon_url"),
+		FaviconURL:  sourceFaviconString(data),
 		ImageURL:    sourceString(data, "image", "imageUrl", "image_url"),
 		PublishedAt: sourceString(data, "published", "publishedAt", "publishedDate", "datePublished", "date"),
 		Priority:    100,
@@ -160,7 +202,7 @@ func (c *sourceCollector) add(obs sourceObservation) map[string]any {
 	source := c.byID[normalized]
 	if source == nil {
 		siteName := sourceSiteName(normalized, obs.SiteName)
-		favicon := firstSourceString(obs.FaviconURL, sourceFaviconURL(normalized))
+		favicon := firstSourceString(obs.FaviconURL, sourceFallbackFaviconURL(normalized))
 		source = &canonicalSource{
 			SourceID:    normalized,
 			URL:         normalized,
@@ -285,7 +327,7 @@ func (s *canonicalSource) addAppearance(appearance sourceAppearance) bool {
 
 func (s *canonicalSource) fillFallbacks() {
 	s.SiteName = sourceSiteName(s.URL, s.SiteName)
-	s.FaviconURL = firstSourceString(s.FaviconURL, sourceFaviconURL(s.URL))
+	s.FaviconURL = firstSourceString(s.FaviconURL, sourceFallbackFaviconURL(s.URL))
 	s.Title = sourceFallbackTitle(s.URL, s.Title)
 	s.Description = sourceFallbackDescription(s.SiteName, s.Description)
 	s.ImageURL = firstSourceString(s.ImageURL, s.FaviconURL)
@@ -379,9 +421,9 @@ func walkProviderSources(value any, emit func(sourceObservation)) {
 			emit(sourceObservation{
 				URL:         rawURL,
 				Title:       sourceString(typed, "title"),
-				Description: firstSourceString(sourceString(typed, "description"), sourceString(typed, "snippet"), sourceString(typed, "text")),
+				Description: firstSourceString(sourceDescriptionString(typed), sourceString(typed, "text")),
 				SiteName:    sourceString(typed, "siteName", "site_name"),
-				FaviconURL:  sourceString(typed, "favicon", "faviconUrl", "favicon_url"),
+				FaviconURL:  sourceFaviconString(typed),
 				ImageURL:    sourceImageString(typed),
 				PublishedAt: sourceString(typed, "published", "publishedAt", "publishedDate", "datePublished", "date"),
 			})
@@ -418,13 +460,76 @@ func sourceString(data map[string]any, keys ...string) string {
 	return ""
 }
 
+func sourceSlice(data map[string]any, keys ...string) []any {
+	for _, key := range keys {
+		switch typed := data[key].(type) {
+		case []any:
+			if len(typed) > 0 {
+				return typed
+			}
+		case []string:
+			if len(typed) == 0 {
+				continue
+			}
+			out := make([]any, 0, len(typed))
+			for _, value := range typed {
+				out = append(out, value)
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+func sourceDescriptionString(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	if value := sourceString(data, "description", "snippet", "summary", "ogDescription", "openGraphDescription", "twitterDescription", "twitter_description"); value != "" {
+		return value
+	}
+	for _, key := range []string{"metadata", "meta", "openGraph", "open_graph", "og", "twitter"} {
+		if nested, ok := data[key].(map[string]any); ok {
+			if value := sourceDescriptionString(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func sourceFaviconString(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	if value := sourceString(data, "favicon", "faviconUrl", "favicon_url", "icon", "iconUrl", "icon_url", "siteIcon", "site_icon", "appleTouchIcon", "apple_touch_icon"); value != "" {
+		return value
+	}
+	for _, key := range []string{"metadata", "meta", "openGraph", "open_graph", "og", "twitter"} {
+		if nested, ok := data[key].(map[string]any); ok {
+			if value := sourceFaviconString(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
 func sourceImageString(data map[string]any) string {
 	if image, ok := data["image"].(map[string]any); ok {
 		if value := sourceString(image, "url"); value != "" {
 			return value
 		}
 	}
-	return sourceString(data, "image", "imageUrl", "image_url", "thumbnail", "thumbnailUrl", "thumbnail_url", "ogImage", "openGraphImage")
+	if value := sourceString(data, "image", "imageUrl", "image_url", "thumbnail", "thumbnailUrl", "thumbnail_url", "ogImage", "openGraphImage"); value != "" {
+		return value
+	}
+	if extras, ok := data["extras"].(map[string]any); ok {
+		if value := firstStringFromSlice(sourceSlice(extras, "imageLinks", "image_links", "images")); value != "" {
+			return value
+		}
+	}
+	return firstStringFromSlice(sourceSlice(data, "imageLinks", "image_links", "images"))
 }
 
 func firstSourceString(values ...string) string {
@@ -494,11 +599,10 @@ func sourceFallbackDescription(siteName string, fallback string) string {
 	return "Source from " + siteName
 }
 
-func sourceFaviconURL(rawURL string) string {
+func sourceFallbackFaviconURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Hostname() == "" {
 		return ""
 	}
-	host := strings.ToLower(parsed.Hostname())
-	return "https://icons.duckduckgo.com/ip3/" + host + ".ico"
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: "/favicon.ico"}).String()
 }

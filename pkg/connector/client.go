@@ -491,7 +491,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 		}
 		if event.Type != "tool_execution_end" || event.AgentEvent == nil || event.AgentEvent.ToolCallID == "" {
 			if event.Type == "turn_end" && event.Message != nil && event.Message.Role == "assistant" {
-				active.finalizeAssistant(ctx, cl, provider.ID, model.ID, *event.Message)
+				active.finalizeAssistant(ctx, cl, provider.ID, model, cl.withProviderVisibleError(ctx, provider, *event.Message))
 			}
 			return nil
 		}
@@ -555,11 +555,13 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 			}
 		}
 		if assistantMessage.StopReason == ai.StopReasonError {
+			assistantMessage = cl.withProviderVisibleError(ctx, provider, assistantMessage)
 			err := errors.New(assistantMessage.ErrorMessage)
 			if assistantMessage.ErrorMessage == "" {
 				err = errors.New("AI failed to respond")
 			}
 			active.failConsumed(ctx, cl, err)
+			active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
 		}
 		if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted {
 			if last := active.lastAssistant(); last != nil {
@@ -681,7 +683,8 @@ func (cl *Client) queueAssistantRunError(portalKey networkid.PortalKey, messageI
 		metadata.StopReason = string(ai.StopReasonError)
 		metadata.StreamStatus = "error"
 	}
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, run, message, metadata))
+	run = finalizedAssistantRun(run, message, 0)
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, run, metadata))
 }
 
 func hookStreamError(err error) *ai.AssistantMessageEventStream {
@@ -877,7 +880,7 @@ func (cl *Client) assistantEvent(ctx context.Context, portalKey networkid.Portal
 	return msg, metadata
 }
 
-func finalizedAssistantRun(run aistream.Run, message ai.Message) aistream.Run {
+func finalizedAssistantRun(run aistream.Run, message ai.Message, contextLimit int) aistream.Run {
 	if message.StopReason == ai.StopReasonError {
 		run.Status = aistream.Status{State: "error", Error: map[string]any{"message": message.ErrorMessage}}
 		if run.Text() == "" {
@@ -887,7 +890,9 @@ func finalizedAssistantRun(run aistream.Run, message ai.Message) aistream.Run {
 		run.Status = aistream.Status{State: "complete", FinishReason: aguiFinishReasonFromAI(message.StopReason)}
 	}
 	if isZeroAGUIUsage(run.Usage) {
-		run.Usage = aguiUsage(message.Usage)
+		run.Usage = aguiUsage(message.Usage, contextLimit)
+	} else if run.Usage.ContextLimit == 0 && contextLimit > 0 {
+		run.Usage.ContextLimit = contextLimit
 	}
 	if run.Preview.Text == "" {
 		run.Preview = aistream.PreviewFromText(msgconv.AssistantText(message), aistream.PreviewBudgetBytes)
@@ -901,11 +906,6 @@ func isZeroAGUIUsage(usage agui.Usage) bool {
 		usage.ReasoningTokens == 0 &&
 		usage.TotalTokens == 0 &&
 		usage.ContextLimit == 0
-}
-
-func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
-	run = finalizedAssistantRun(run, message)
-	return cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, run, metadata)
 }
 
 func (cl *Client) assistantFinalEditWithProjection(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, run aistream.Run, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
@@ -942,12 +942,12 @@ func (cl *Client) assistantFinalEditWithProjection(portalKey networkid.PortalKey
 	return edit
 }
 
-func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) {
+func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, model ai.Model, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) {
 	if cl == nil || cl.UserLogin == nil {
 		return
 	}
-	run = finalizedAssistantRun(run, message)
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, run, metadata))
+	run = finalizedAssistantRun(run, message, model.ContextWindow)
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, model.ID, run, metadata))
 }
 
 func uploadFinalPartsRef(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, run aistream.Run, message aistream.UIMessage) (*aistream.FinalPartsRef, error) {
@@ -1020,6 +1020,12 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		if active := cl.getActiveRun(portal.PortalKey); active != nil {
 			if stream := active.currentAssistantStream(); stream != nil {
 				return cl.streamPublisherWithEndFrom(publisher, portal.MXID, stream.eventID, stream.run, &stream.publish, nil, onSecondVisibleChunk...)(ctx, model, llmContext, options)
+			}
+			if message, ok := active.terminalAssistantError(); ok {
+				if message == "" {
+					message = "AI failed to respond"
+				}
+				return hookStreamError(errors.New(message))
 			}
 		}
 		runID := session.CreateSessionID()
@@ -1290,7 +1296,7 @@ func shouldPersistStreamRun(run *aistream.Run, cursor *streamPublishCursor) bool
 	}
 	switch run.Status.State {
 	case "complete", "aborted", "error":
-		return false
+		return true
 	case "interrupted":
 		return true
 	}
@@ -1656,13 +1662,25 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 }
 
 func writeFinalTextFallback(writer *aistream.Writer, message ai.Message) {
-	if writer == nil || writer.Run == nil || writer.Run.Text() != "" {
+	if writer == nil || writer.Run == nil || writer.Run.Text() != "" || runHasStreamedText(*writer.Run) {
 		return
 	}
 	if text := msgconv.AssistantText(message); text != "" {
 		writer.Text(text)
 		writer.TextEnd(0)
 	}
+}
+
+func runHasStreamedText(run aistream.Run) bool {
+	for _, evt := range run.Events {
+		switch evt.Type() {
+		case agui.EventTextMessageContent, agui.EventTextMessageChunk:
+			if delta, _ := evt.Get("delta").(string); delta != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type toolOutputEvent struct {
@@ -2014,18 +2032,39 @@ func (cl *Client) finishActiveStreamRecord(ctx context.Context, record aidb.Acti
 	if cl == nil || cl.UserLogin == nil || cl.Main == nil || cl.Main.Store == nil {
 		return
 	}
+	if err := cl.Main.Store.DeleteActiveStream(ctx, cl.UserLogin.ID, record.RunID); err != nil {
+		if cl.Main.Bridge != nil {
+			cl.Main.Bridge.Log.Warn().Err(err).Str("run_id", record.RunID).Msg("Failed to delete stale AI stream")
+		}
+		return
+	}
 	switch record.Run.Status.State {
 	case "complete", "aborted", "error":
-		// The terminal Matrix edit may already have been queued before the crash.
-		// Stale active-stream recovery is only authoritative for non-terminal rows.
+		cl.queueTerminalActiveStreamFinal(ctx, record)
 	default:
 		cl.finalizeInterruptedSessionTurn(ctx, record, err)
 		cl.queueAssistantRunError(record.PortalKey, record.MessageID, record.ProviderID, record.ModelID, record.RunID, record.Run, &record.Metadata, err)
 		cl.sendActiveStreamRetriableStatus(ctx, record, err)
 	}
-	if err := cl.Main.Store.DeleteActiveStream(ctx, cl.UserLogin.ID, record.RunID); err != nil && cl.Main.Bridge != nil {
-		cl.Main.Bridge.Log.Warn().Err(err).Str("run_id", record.RunID).Msg("Failed to delete stale AI stream")
+}
+
+func (cl *Client) queueTerminalActiveStreamFinal(ctx context.Context, record aidb.ActiveStreamRecord) {
+	metadata := record.Metadata
+	metadata.Role = "assistant"
+	metadata.RunID = record.RunID
+	metadata.ProviderID = record.ProviderID
+	metadata.ModelID = record.ModelID
+	metadata.StreamStatus = "done"
+	if metadata.StopReason == "" {
+		metadata.StopReason = record.Run.Status.FinishReason
 	}
+	if record.Run.Status.State == "error" || record.Run.Status.State == "aborted" {
+		metadata.ErrorMessage = aistream.ErrorVisibleText(record.Run.Status.Error)
+		if metadata.StopReason == "" {
+			metadata.StopReason = string(ai.StopReasonError)
+		}
+	}
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(record.PortalKey, record.MessageID, record.ProviderID, record.ModelID, record.Run, &metadata))
 }
 
 func (cl *Client) finalizeInterruptedSessionTurn(ctx context.Context, record aidb.ActiveStreamRecord, cause error) {
@@ -2043,7 +2082,7 @@ func (cl *Client) finalizeInterruptedSessionTurn(ctx context.Context, record aid
 	}
 	defer agentSession.Close()
 
-	existingToolResults, ok := sessionBranchCanAppendRecovery(ctx, agentSession, record.EntryID)
+	existingToolResults, ok := sessionBranchCanAppendRecovery(ctx, agentSession, record.EntryID, cause.Error())
 	if !ok {
 		if cl.Main.Bridge != nil {
 			cl.Main.Bridge.Log.Warn().Str("session_id", record.Run.ThreadID).Str("run_id", record.RunID).Str("entry_id", record.EntryID).Msg("Skipping interrupted AI session recovery because the branch moved")
@@ -2074,16 +2113,13 @@ func (cl *Client) finalizeInterruptedSessionTurn(ctx context.Context, record aid
 	}
 }
 
-func sessionBranchCanAppendRecovery(ctx context.Context, agentSession *session.Session, assistantEntryID string) (map[string]bool, bool) {
+func sessionBranchCanAppendRecovery(ctx context.Context, agentSession *session.Session, assistantEntryID string, recoveryMessage string) (map[string]bool, bool) {
 	existingToolResults := map[string]bool{}
-	if assistantEntryID == "" {
-		return existingToolResults, true
-	}
 	branch, err := agentSession.GetBranch(ctx, nil)
 	if err != nil {
 		return existingToolResults, false
 	}
-	found := false
+	found := assistantEntryID == ""
 	for _, raw := range branch {
 		var entry map[string]any
 		if err := json.Unmarshal(raw, &entry); err != nil {
@@ -2103,7 +2139,13 @@ func sessionBranchCanAppendRecovery(ctx context.Context, agentSession *session.S
 			return existingToolResults, false
 		}
 		role, _ := message["role"].(string)
+		if role == "assistant" && recoveryMessage != "" && stringFromAny(message["errorMessage"]) == recoveryMessage {
+			return existingToolResults, false
+		}
 		if role != "toolResult" {
+			if assistantEntryID == "" {
+				continue
+			}
 			return existingToolResults, false
 		}
 		if toolCallID, _ := message["toolCallId"].(string); toolCallID != "" {
@@ -2118,7 +2160,7 @@ func interruptedToolResultMessages(run aistream.Run, cause error, existingToolRe
 		Role:         "assistant",
 		StopReason:   ai.StopReasonError,
 		ErrorMessage: cause.Error(),
-	})
+	}, 0)
 	message := final.FinalBeeperAIMessage(0, true)
 	results := make([]ai.Message, 0)
 	for _, part := range message.Parts {
@@ -2299,6 +2341,20 @@ func (r *activeAIRun) currentAssistantStream() *assistantStreamState {
 	return r.streams[0]
 }
 
+func (r *activeAIRun) terminalAssistantError() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.last == nil || r.last.run == nil {
+		return "", false
+	}
+	switch r.last.run.Status.State {
+	case "error", "aborted":
+		return aistream.ErrorVisibleText(r.last.run.Status.Error), true
+	default:
+		return "", false
+	}
+}
+
 func (r *activeAIRun) setAssistantEntryID(entryID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2340,7 +2396,7 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, cl *Client, publish
 	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 
-func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, providerID string, modelID string, message ai.Message) {
+func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, providerID string, model ai.Model, message ai.Message) {
 	r.mu.Lock()
 	if len(r.streams) == 0 {
 		r.mu.Unlock()
@@ -2355,11 +2411,11 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 	r.last = stream
 	r.mu.Unlock()
 
-	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
+	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, model.ID, stream.runID, message)
 	appendToolOutputs(stream.run, stream.tools, message)
-	cl.queueAssistantFinal(r.portalKey, stream.messageID, providerID, modelID, *stream.run, message, stream.metadata)
+	cl.queueAssistantFinal(r.portalKey, stream.messageID, providerID, model, *stream.run, message, stream.metadata)
 	cl.deleteActiveStream(ctx, stream.runID)
-	cl.queueAssistantMediaMessages(r.portalKey, stream.messageID, providerID, modelID, stream.runID, message)
+	cl.queueAssistantMediaMessages(r.portalKey, stream.messageID, providerID, model.ID, stream.runID, message)
 }
 
 func (r *activeAIRun) failOpenAssistant(ctx context.Context, cl *Client, providerID string, modelID string, err error) {

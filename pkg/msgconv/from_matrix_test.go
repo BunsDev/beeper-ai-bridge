@@ -117,6 +117,96 @@ func TestFromMatrixUsesMediaCaptionInsteadOfFileName(t *testing.T) {
 	}
 }
 
+func TestFromMatrixUsesFormattedMediaCaption(t *testing.T) {
+	prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte("image-data")}, &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Content: &event.MessageEventContent{
+				MsgType:       event.MsgImage,
+				Body:          "please inspect this",
+				Format:        event.FormatHTML,
+				FormattedBody: "please <strong>inspect</strong> this",
+				FileName:      "photo.png",
+				URL:           id.ContentURIString("mxc://example/photo"),
+				Info: &event.FileInfo{
+					MimeType: "image/png",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Text != "please <strong>inspect</strong> this" {
+		t.Fatalf("expected formatted image caption, got %q", prompt.Text)
+	}
+}
+
+func TestFromMatrixDoesNotTreatFormattedFileNameAsCaption(t *testing.T) {
+	prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte("image-data")}, &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Content: &event.MessageEventContent{
+				MsgType:       event.MsgImage,
+				Body:          "photo.png",
+				Format:        event.FormatHTML,
+				FormattedBody: "<strong>photo.png</strong>",
+				FileName:      "photo.png",
+				URL:           id.ContentURIString("mxc://example/photo"),
+				Info: &event.FileInfo{
+					MimeType: "image/png",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Text != "" {
+		t.Fatalf("did not expect filename formatted body to be treated as caption, got %q", prompt.Text)
+	}
+}
+
+func TestFromMatrixUsesFormattedFileCaption(t *testing.T) {
+	prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte("BEGIN:VCALENDAR\nEND:VCALENDAR")}, &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Content: &event.MessageEventContent{
+				MsgType:       event.MsgFile,
+				Body:          "please read this",
+				Format:        event.FormatHTML,
+				FormattedBody: "please <em>read</em> this",
+				FileName:      "invite.ics",
+				URL:           id.ContentURIString("mxc://example/invite"),
+				Info: &event.FileInfo{
+					MimeType: "text/calendar",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt.Text, "please <em>read</em> this") || !strings.Contains(prompt.Text, "invite.ics") {
+		t.Fatalf("expected formatted file caption and attachment, got %q", prompt.Text)
+	}
+}
+
+func TestFromMatrixConvertsLocationToText(t *testing.T) {
+	prompt, err := FromMatrix(context.Background(), nil, &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Content: &event.MessageEventContent{
+				MsgType: event.MsgLocation,
+				Body:    "Office",
+				GeoURI:  "geo:52.3676,4.9041",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Text != "Location: Office\ngeo:52.3676,4.9041" {
+		t.Fatalf("expected location prompt text, got %q", prompt.Text)
+	}
+}
+
 func TestFromMatrixInlinesTextFile(t *testing.T) {
 	prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte("hello from file")}, &bridgev2.MatrixMessage{
 		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
@@ -160,6 +250,39 @@ func TestFromMatrixInlinesOctetStreamTextFileByExtension(t *testing.T) {
 	}
 	if !strings.Contains(prompt.Text, `{"ok":true}`) {
 		t.Fatalf("expected octet-stream JSON file to be inlined, got %q", prompt.Text)
+	}
+}
+
+func TestFromMatrixInlinesAdditionalTextLikeMIMETypes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mimeType string
+		fileName string
+		data     string
+	}{
+		{name: "csv", mimeType: "application/csv", fileName: "data.csv", data: "a,b\n1,2"},
+		{name: "subrip", mimeType: "application/x-subrip", fileName: "captions.srt", data: "1\n00:00:00,000 --> 00:00:01,000\nHello"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, err := FromMatrix(context.Background(), fakeMediaDownloader{data: []byte(tc.data)}, &bridgev2.MatrixMessage{
+				MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+					Content: &event.MessageEventContent{
+						MsgType:  event.MsgFile,
+						FileName: tc.fileName,
+						URL:      id.ContentURIString("mxc://example/file"),
+						Info: &event.FileInfo{
+							MimeType: tc.mimeType,
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(prompt.Text, tc.fileName) || !strings.Contains(prompt.Text, tc.data) {
+				t.Fatalf("expected %s file to be inlined, got %q", tc.mimeType, prompt.Text)
+			}
+		})
 	}
 }
 

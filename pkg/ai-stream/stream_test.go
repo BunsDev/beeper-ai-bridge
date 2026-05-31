@@ -566,7 +566,7 @@ func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T)
 		"title":       "Example Source",
 		"description": "Source from example.com",
 		"siteName":    "example.com",
-		"imageUrl":    "https://icons.duckduckgo.com/ip3/example.com.ico",
+		"imageUrl":    "https://example.com/favicon.ico",
 		"appearances": []map[string]any{{"kind": "provider", "cited": true}},
 	})
 	writer.Custom("com.beeper.document", map[string]any{

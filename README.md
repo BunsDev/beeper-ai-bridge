@@ -242,9 +242,10 @@ The response schema (if you drive approvals programmatically rather than via rea
 
 Per-room capabilities (`pkg/connector/capabilities.go`) are tailored to the room's model:
 
-- **Formatting:** bold/italic/strike/code/blockquote/links/lists — all partial support.
-- **Attachments:** text files always (≤512 KB); images only if the model has `image` input (PNG/JPEG/WebP, ≤20 MB); audio + voice only if `audio` input (WAV/MP3/MPEG, ≤25 MB).
-- `MaxTextLength: 20000`. **Reply:** full. **Edit: rejected. Reaction: unsupported** (reactions are reserved for approvals). **Delete:** partial.
+- **Formatting:** Matrix rich text is fully supported for user messages; the bridge preserves `formatted_body` and advertises full support for the Matrix formatting feature set.
+- **Attachments:** text-like files always (≤512 KB); images only if the model has `image` input (PNG/JPEG/WebP, ≤20 MB); audio + voice only if `audio` input (WAV/MP3/MPEG, ≤25 MB). Formatted captions are preserved.
+- **Location messages:** fully supported as prompt text.
+- `MaxTextLength: 20000`. **Reply:** full. **Edit: rejected. Reaction: unsupported** (reactions are reserved for approvals). **Delete:** full.
 - Disappearing messages supported; typing notifications on; read receipts off.
 
 Don't build a client that depends on editing AI messages or reacting to them as a general affordance.

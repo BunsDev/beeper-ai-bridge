@@ -83,6 +83,7 @@ type FetchResult struct {
 	Status          int             `json:"status"`
 	ContentType     string          `json:"content_type,omitempty"`
 	Title           string          `json:"title,omitempty"`
+	Description     string          `json:"description,omitempty"`
 	Text            string          `json:"text,omitempty"`
 	Truncated       bool            `json:"truncated"`
 	ID              string          `json:"id,omitempty"`
@@ -137,12 +138,21 @@ type SearchItem struct {
 }
 
 type SearchSubpage struct {
-	ID            string `json:"id,omitempty"`
-	Title         string `json:"title"`
-	URL           string `json:"url"`
-	PublishedDate string `json:"publishedDate,omitempty"`
-	Published     string `json:"published,omitempty"`
-	Author        string `json:"author,omitempty"`
-	Image         string `json:"image,omitempty"`
-	Favicon       string `json:"favicon,omitempty"`
+	ID              string         `json:"id,omitempty"`
+	Title           string         `json:"title"`
+	URL             string         `json:"url"`
+	Text            string         `json:"text,omitempty"`
+	Highlights      []string       `json:"highlights,omitempty"`
+	HighlightScores []float64      `json:"highlightScores,omitempty"`
+	Summary         string         `json:"summary,omitempty"`
+	Description     string         `json:"description,omitempty"`
+	PublishedDate   string         `json:"publishedDate,omitempty"`
+	Published       string         `json:"published,omitempty"`
+	SiteName        string         `json:"siteName,omitempty"`
+	Author          string         `json:"author,omitempty"`
+	Image           string         `json:"image,omitempty"`
+	Favicon         string         `json:"favicon,omitempty"`
+	Source          string         `json:"source,omitempty"`
+	Entities        []any          `json:"entities,omitempty"`
+	Extras          map[string]any `json:"extras,omitempty"`
 }

@@ -121,13 +121,16 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 		text = string(runes[:options.MaxChars])
 		truncated = true
 	}
+	metadata := extractHTMLMetadata(body, resp.Request.URL)
 	return FetchResult{
 		URL:         rawURL,
 		FinalURL:    resp.Request.URL.String(),
 		Status:      resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
-		Title:       extractTitle(body),
+		Title:       metadata.Title,
+		Description: metadata.Description,
 		Text:        text,
+		Favicon:     metadata.Favicon,
 		Truncated:   truncated,
 		FetchMethod: "direct",
 	}, nil
@@ -221,6 +224,7 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	result.FinalURL = firstNonEmpty(item.URL, rawURL)
 	result.ID = item.ID
 	result.Title = item.Title
+	result.Description = item.Description
 	result.Text = item.Text
 	result.Published = firstNonEmpty(item.Published, item.PublishedDate)
 	result.Author = item.Author
@@ -290,6 +294,7 @@ type contentsResponse struct {
 type contentsResultItem struct {
 	ID              string          `json:"id"`
 	Title           string          `json:"title"`
+	Description     string          `json:"description"`
 	URL             string          `json:"url"`
 	Text            string          `json:"text"`
 	Highlights      []string        `json:"highlights"`

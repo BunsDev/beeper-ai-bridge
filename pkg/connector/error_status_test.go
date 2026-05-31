@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"testing"
 
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -61,8 +62,8 @@ func TestMatrixMessageStatusForAIErrorMapsHTTPProviderFailures(t *testing.T) {
 		{
 			name:       "ai token quota",
 			err:        errors.New("OpenAI API error (429): AI token limit exceeded. Check /limits"),
-			wantStatus: event.MessageStatusFail,
-			wantReason: event.MessageStatusNoPermission,
+			wantStatus: event.MessageStatusRetriable,
+			wantReason: event.MessageStatusNetworkError,
 		},
 		{
 			name:       "bad request",
@@ -89,8 +90,23 @@ func TestMatrixMessageStatusForAIErrorMapsHTTPProviderFailures(t *testing.T) {
 
 func TestMatrixMessageStatusForAIErrorMapsUsageLimitMessage(t *testing.T) {
 	status := matrixMessageStatusForAIError(errors.New("OpenAI API error (429): insufficient_quota: quota exceeded"))
-	if status.Status != event.MessageStatusFail || status.ErrorReason != event.MessageStatusNoPermission {
-		t.Fatalf("expected permanent usage-limit status, got %#v", status)
+	if status.Status != event.MessageStatusRetriable || status.ErrorReason != event.MessageStatusNetworkError {
+		t.Fatalf("expected retriable usage-limit status, got %#v", status)
+	}
+	if status.Message != "AI usage limit exceeded. Check /limits" {
+		t.Fatalf("unexpected message %q", status.Message)
+	}
+}
+
+func TestMatrixMessageStatusForAIErrorOverridesWrappedUsageLimit(t *testing.T) {
+	err := bridgev2.WrapErrorInStatus(errors.New("This message exceeds the AI usage limits in your plan. Your limits will reset in 23 hours 17 minutes. You can see details by typing `/limits`")).
+		WithStatus(event.MessageStatusFail).
+		WithErrorReason(event.MessageStatusNoPermission).
+		WithMessage("AI usage limit exceeded. Check /limits")
+
+	status := matrixMessageStatusForAIError(err)
+	if status.Status != event.MessageStatusRetriable || status.ErrorReason != event.MessageStatusNetworkError {
+		t.Fatalf("expected retriable wrapped usage-limit status, got %#v", status)
 	}
 	if status.Message != "AI usage limit exceeded. Check /limits" {
 		t.Fatalf("unexpected message %q", status.Message)

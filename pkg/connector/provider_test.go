@@ -10,9 +10,12 @@ import (
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -373,6 +376,49 @@ func TestLoadUserLoginAlwaysCreatesAIClient(t *testing.T) {
 	}
 }
 
+func TestLoadUserLoginDoesNotRecoverPersistedActiveStreams(t *testing.T) {
+	ctx := context.Background()
+	store := testAIStore(t)
+	conn := &Connector{Store: store}
+	userMXID := id.UserID("@alice:beeper.com")
+	loginID := conn.defaultLoginID(userMXID)
+	provider := conn.defaultProviderConfig(userMXID)
+	run := aistream.NewRun("run-1", "session-1", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	if err := store.UpsertActiveStream(ctx, aidb.ActiveStreamRecord{
+		RunID:      run.RunID,
+		LoginID:    loginID,
+		PortalKey:  networkid.PortalKey{ID: "chat:1", Receiver: loginID},
+		RoomID:     "!room:beeper.com",
+		EventID:    "$event",
+		MessageID:  "assistant:run",
+		ProviderID: "beeper",
+		ModelID:    "fake",
+		Run:        *run,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		ID:       loginID,
+		UserMXID: userMXID,
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+			provider.ID: provider,
+		}},
+	}}
+	if err := conn.LoadUserLogin(ctx, login); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.ListActiveStreams(ctx, loginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].RunID != run.RunID {
+		t.Fatalf("LoadUserLogin should not recover active streams, got %#v", records)
+	}
+}
+
 func TestProviderResponseRedactsSecrets(t *testing.T) {
 	response := providerResponse(aiid.ProviderConfig{
 		ID:           "custom",
@@ -477,6 +523,34 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	if caps.File[event.MsgFile] == nil || caps.File[event.MsgFile].MimeTypes["text/*"] != event.CapLevelFullySupported {
 		t.Fatalf("expected text file support, got %#v", caps.File[event.MsgFile])
 	}
+	if caps.LocationMessage != event.CapLevelFullySupported {
+		t.Fatalf("expected location message support, got %d", caps.LocationMessage)
+	}
+	for _, mimeType := range []string{"text/calendar", "application/csv", "application/x-subrip"} {
+		if caps.File[event.MsgFile].MimeTypes[mimeType] != event.CapLevelFullySupported {
+			t.Fatalf("expected %s file support, got %#v", mimeType, caps.File[event.MsgFile])
+		}
+	}
+	for feature, level := range caps.Formatting {
+		if level != event.CapLevelFullySupported {
+			t.Fatalf("expected %s formatting to be fully supported, got %d", feature, level)
+		}
+	}
+	for _, feature := range []event.FormattingFeature{
+		event.FmtBold,
+		event.FmtUnderline,
+		event.FmtSyntaxHighlighting,
+		event.FmtInlineLink,
+		event.FmtUserLink,
+		event.FmtSpoiler,
+		event.FmtTextForegroundColor,
+		event.FmtHeaders,
+		event.FmtTable,
+	} {
+		if caps.Formatting[feature] != event.CapLevelFullySupported {
+			t.Fatalf("expected %s formatting support, got %d", feature, caps.Formatting[feature])
+		}
+	}
 	for _, stateType := range []string{aiid.RoomToolsType, aiid.RoomModelType, aiid.RoomPromptType} {
 		if caps.State[stateType] != nil {
 			t.Fatalf("did not expect %s state support without arbitrary state support, got %#v", stateType, caps.State[stateType])
@@ -526,18 +600,18 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 func TestRoomFeaturesUseDeterministicIDs(t *testing.T) {
 	first := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, true)
 	second := roomFeaturesForModel(ai.Model{ID: "model-b", Input: []string{"text", "image"}}, true)
-	if first.ID != "com.beeper.ai.capabilities.2026_05_31.delete+state+image" {
+	if first.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+state+image" {
 		t.Fatalf("expected deterministic image capability ID, got %q", first.ID)
 	}
 	if first.ID != second.ID {
 		t.Fatalf("same feature values should produce same ID, got %q and %q", first.ID, second.ID)
 	}
 	textOnly := roomFeaturesForModel(ai.Model{Input: []string{"text"}}, true)
-	if textOnly.ID != "com.beeper.ai.capabilities.2026_05_31.delete+state" {
+	if textOnly.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+state" {
 		t.Fatalf("expected deterministic text capability ID, got %q", textOnly.ID)
 	}
 	withoutState := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, false)
-	if withoutState.ID != "com.beeper.ai.capabilities.2026_05_31.delete+image" {
+	if withoutState.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+image" {
 		t.Fatalf("expected deterministic image capability ID without AI state, got %q", withoutState.ID)
 	}
 }

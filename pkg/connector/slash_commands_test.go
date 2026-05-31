@@ -432,6 +432,54 @@ func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
 	}
 }
 
+func TestBeeperUsageLimitErrorUsesPlanResetMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/limits" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"windows":{"llm":{"day":{"percentage_left":0,"limit":1000,"used":1000,"remaining":0,"reset_at":1893457800000},"week":{"percentage_left":0,"limit":7000,"used":7000,"remaining":0,"reset_at":1893978000000},"month":{"percentage_left":75,"limit":30000,"used":7500,"remaining":22500,"reset_at":1896134400000}}}}`))
+	}))
+	defer server.Close()
+
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	client := &Client{
+		Main: &Connector{AppServiceToken: "as-token"},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@alice:beeper.test",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				provider.ID: provider,
+			}},
+		}},
+	}
+
+	message := client.visibleProviderErrorMessage(
+		context.Background(),
+		provider,
+		"OpenAI API error (429): AI token limit exceeded. Check /limits",
+	)
+	for _, want := range []string{
+		"This message exceeds the AI usage limits in your plan.",
+		"Your limits will reset in ",
+		"You can see details by typing `/limits`",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message = %q, want to contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "OpenAI") {
+		t.Fatalf("message leaked provider name: %q", message)
+	}
+}
+
+func TestNonBeeperUsageLimitErrorKeepsProviderMessage(t *testing.T) {
+	client := &Client{}
+	provider := aiid.ProviderConfig{ID: "openai"}
+	message := "OpenAI API error (429): AI token limit exceeded. Check /limits"
+	if got := client.visibleProviderErrorMessage(context.Background(), provider, message); got != message {
+		t.Fatalf("message = %q, want provider message %q", got, message)
+	}
+}
+
 func TestFormatLimitsCommandInfo(t *testing.T) {
 	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
 	reset := now.Add(26*time.Hour + 3*time.Minute).UnixMilli()
@@ -446,6 +494,16 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: 1000000, Used: 0, Remaining: 1000000, ResetAtMS: reset},
 			Month: aiServicesLimitWindow{PercentageLeft: 100, Limit: 4000000, Used: 0, Remaining: 4000000, ResetAtMS: reset},
 		},
+		AudioTranscriptions: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 99, Limit: 86400, Used: 43, Remaining: 86357, ResetAtMS: reset},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: 302400, Used: 43, Remaining: 302357, ResetAtMS: reset},
+			Month: aiServicesLimitWindow{PercentageLeft: 100, Limit: 600000, Used: 43, Remaining: 599957, ResetAtMS: reset},
+		},
+		AudioGeneration: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 99, Limit: 50000, Used: 1234, Remaining: 48766, ResetAtMS: reset},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: 200000, Used: 1234, Remaining: 198766, ResetAtMS: reset},
+			Month: aiServicesLimitWindow{PercentageLeft: 100, Limit: 500000, Used: 1234, Remaining: 498766, ResetAtMS: reset},
+		},
 	}}, now)
 	for _, want := range []string{
 		"AI limits",
@@ -456,6 +514,10 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		"| Monthly | **Out** | `30,500 / 30,000` | in 1 day 2 hours 3 minutes |",
 		"## Web Search",
 		"| Daily | `99%` | `1 / 200,000` | in 1 day 2 hours 3 minutes |",
+		"## Transcription",
+		"| Daily | `99%` | `1 minute / 1,440 minutes` | in 1 day 2 hours 3 minutes |",
+		"## Audio Generation",
+		"| Daily | `99%` | `1,234 / 50,000 chars` | in 1 day 2 hours 3 minutes |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
@@ -517,11 +579,18 @@ func TestFormatRawLimitsCommandInfoShowsExactUsage(t *testing.T) {
 			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: -1, Used: 1234, Remaining: -1, ResetAtMS: resetAt.UnixMilli()},
 			Month: aiServicesLimitWindow{PercentageLeft: 0, Limit: 30000, Used: 30000, Remaining: 0, ResetAtMS: resetAt.UnixMilli()},
 		},
+		AudioTranscriptions: aiServicesLimitWindows{
+			Day:   aiServicesLimitWindow{PercentageLeft: 99, Limit: 86400, Used: 43, Remaining: 86357, ResetAtMS: resetAt.UnixMilli()},
+			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: 302400, Used: 43, Remaining: 302357, ResetAtMS: resetAt.UnixMilli()},
+			Month: aiServicesLimitWindow{PercentageLeft: 100, Limit: 600000, Used: 43, Remaining: 599957, ResetAtMS: resetAt.UnixMilli()},
+		},
 	}}, time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC))
 	for _, want := range []string{
 		"AI limits raw:",
 		"percentage_left=`75`, limit=`1,000`, used=`250`, remaining=`750`, reset_at=`1893456000000` (`2030-01-01T00:00:00Z`, in 1 day)",
 		"percentage_left=`100`, limit=`-1`, used=`1,234`, remaining=`-1`",
+		"Audio transcription seconds:",
+		"percentage_left=`99`, limit=`86,400`, used=`43`, remaining=`86,357`",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("raw limits info missing %q:\n%s", want, text)

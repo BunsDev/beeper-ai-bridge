@@ -37,7 +37,15 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	if status.InternalError == nil {
 		status.InternalError = err
 	}
+
+	lower := strings.ToLower(err.Error())
+	httpStatus := errorHTTPStatus(err)
 	if status.Status != "" && status.ErrorReason != event.MessageStatusGenericError {
+		if isAIUsageLimitError(lower) || isRateLimitError(httpStatus, lower) {
+			status.Status = event.MessageStatusRetriable
+			status.ErrorReason = event.MessageStatusNetworkError
+			status.Message = usageLimitStatusMessage(lower)
+		}
 		return status
 	}
 
@@ -45,8 +53,6 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	status.ErrorReason = event.MessageStatusGenericError
 	status.Message = "AI failed to respond"
 
-	lower := strings.ToLower(err.Error())
-	httpStatus := errorHTTPStatus(err)
 	switch {
 	case errors.Is(err, context.Canceled):
 		status.Status = event.MessageStatusFail
@@ -55,6 +61,9 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	case errors.Is(err, context.DeadlineExceeded), isNetworkTimeout(err):
 		status.ErrorReason = event.MessageStatusNetworkError
 		status.Message = "AI provider request timed out"
+	case isAIUsageLimitError(lower) || isRateLimitError(httpStatus, lower):
+		status.ErrorReason = event.MessageStatusNetworkError
+		status.Message = usageLimitStatusMessage(lower)
 	case httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden ||
 		strings.Contains(lower, "missing api key") ||
 		strings.Contains(lower, "no api key") ||
@@ -64,13 +73,6 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 		status.Status = event.MessageStatusFail
 		status.ErrorReason = event.MessageStatusNoPermission
 		status.Message = "AI provider credentials are missing or invalid"
-	case isAIUsageLimitError(lower):
-		status.Status = event.MessageStatusFail
-		status.ErrorReason = event.MessageStatusNoPermission
-		status.Message = "AI usage limit exceeded. Check /limits"
-	case httpStatus == http.StatusTooManyRequests || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests"):
-		status.ErrorReason = event.MessageStatusNetworkError
-		status.Message = "AI provider rate limited the request"
 	case httpStatus >= 500:
 		status.ErrorReason = event.MessageStatusNetworkError
 		status.Message = "AI provider is temporarily unavailable"
@@ -95,6 +97,19 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 		status.Message = "AI model is not available"
 	}
 	return status
+}
+
+func isRateLimitError(httpStatus int, lower string) bool {
+	return httpStatus == http.StatusTooManyRequests ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "too many requests")
+}
+
+func usageLimitStatusMessage(lower string) string {
+	if isAIUsageLimitError(lower) {
+		return "AI usage limit exceeded. Check /limits"
+	}
+	return "AI provider rate limited the request"
 }
 
 func isAIUsageLimitError(lower string) bool {

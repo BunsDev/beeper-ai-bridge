@@ -146,7 +146,7 @@ func TestFetchUsesExaContentsForPages(t *testing.T) {
 		if !ok || text["maxCharacters"] != float64(100) || text["verbosity"] != "standard" {
 			t.Fatalf("unexpected text payload %#v", payload)
 		}
-		_, _ = w.Write([]byte(`{"requestId":"req_1","costDollars":{"total":0.001},"statuses":[{"id":"https://example.com/page","status":"success","source":"crawled"}],"results":[{"id":"doc_1","title":"Page","url":"https://example.com/page","text":"Extracted page text","publishedDate":"2026-01-01","author":"A","highlights":["hit"],"summary":"sum","extras":{"links":["https://example.com/next"]}}]}`))
+		_, _ = w.Write([]byte(`{"requestId":"req_1","costDollars":{"total":0.001},"statuses":[{"id":"https://example.com/page","status":"success","source":"crawled"}],"results":[{"id":"doc_1","title":"Page","description":"Page description","url":"https://example.com/page","text":"Extracted page text","publishedDate":"2026-01-01","author":"A","favicon":"https://example.com/favicon.ico","highlights":["hit"],"summary":"sum","extras":{"links":["https://example.com/next"]}}]}`))
 	}))
 	defer exa.Close()
 
@@ -157,7 +157,7 @@ func TestFetchUsesExaContentsForPages(t *testing.T) {
 	if result.FetchMethod != "exa" || result.RequestID != "req_1" || result.Source != "crawled" || result.ID != "doc_1" || result.Title != "Page" || result.Text != "Extracted page text" {
 		t.Fatalf("unexpected Exa fetch result %#v", result)
 	}
-	if result.Published != "2026-01-01" || result.Author != "A" || len(result.Highlights) != 1 || result.Summary != "sum" || result.Extras["links"] == nil {
+	if result.Description != "Page description" || result.Favicon != "https://example.com/favicon.ico" || result.Published != "2026-01-01" || result.Author != "A" || len(result.Highlights) != 1 || result.Summary != "sum" || result.Extras["links"] == nil {
 		t.Fatalf("missing Exa fetch metadata %#v", result)
 	}
 	raw, err := json.Marshal(result)
@@ -166,6 +166,25 @@ func TestFetchUsesExaContentsForPages(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "costDollars") || strings.Contains(string(raw), "fetch_method") {
 		t.Fatalf("Exa internal metadata leaked into fetch JSON: %s", string(raw))
+	}
+}
+
+func TestFetchDirectExtractsHTMLSourceMetadata(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<html><head><title>Direct Page</title><meta name="description" content="Direct page description"><link rel="icon" href="/favicon.ico"></head><body>Direct page text</body></html>`)
+	}))
+	defer page.Close()
+
+	result, err := Fetch(context.Background(), page.URL+"/page", FetchOptions{Timeout: time.Second, MaxBytes: 1024, MaxChars: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FetchMethod != "direct" || result.Title != "Direct Page" || result.Description != "Direct page description" {
+		t.Fatalf("missing direct fetch metadata %#v", result)
+	}
+	if result.Favicon != page.URL+"/favicon.ico" {
+		t.Fatalf("expected resolved favicon, got %#v", result)
 	}
 }
 
@@ -209,7 +228,7 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 		if payload["useAutoprompt"] != false {
 			t.Fatalf("unexpected search payload %#v", payload)
 		}
-		_, _ = w.Write([]byte(`{"requestId":"req_1","resolvedSearchType":"auto","costDollars":{"total":0.001},"output":{"content":"synth"},"results":[{"id":"doc_1","title":"One","url":"https://example.com","text":"ok","highlights":["hit"],"highlightScores":[0.5],"summary":"sum","publishedDate":"2026-01-01","siteName":"Example","author":"A","image":"https://example.com/image.png","favicon":"https://example.com/favicon.ico","subpages":[{"id":"sub_1","title":"Sub","url":"https://example.com/sub"}],"entities":[{"type":"company"}],"extras":{"links":["https://example.com/link"]}}]}`))
+		_, _ = w.Write([]byte(`{"requestId":"req_1","resolvedSearchType":"auto","costDollars":{"total":0.001},"output":{"content":"synth"},"results":[{"id":"doc_1","title":"One","url":"https://example.com","text":"ok","highlights":["hit"],"highlightScores":[0.5],"summary":"sum","publishedDate":"2026-01-01","siteName":"Example","author":"A","image":"https://example.com/image.png","favicon":"https://example.com/favicon.ico","subpages":[{"id":"sub_1","title":"Sub","url":"https://example.com/sub","text":"sub text","highlights":["sub hit"],"highlightScores":[0.4],"summary":"sub sum","publishedDate":"2026-01-02","author":"Sub A","image":"https://example.com/sub.png","favicon":"https://example.com/sub.ico","extras":{"links":["https://example.com/sub-link"]}}],"entities":[{"type":"company"}],"extras":{"links":["https://example.com/link"]}}]}`))
 	}))
 	defer server.Close()
 
@@ -238,6 +257,10 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 	}
 	if len(result.Results[0].Subpages) != 1 || len(result.Results[0].Entities) != 1 || result.Results[0].Extras["links"] == nil {
 		t.Fatalf("missing Exa nested fields: %#v", result.Results[0])
+	}
+	subpage := result.Results[0].Subpages[0]
+	if subpage.Text != "sub text" || subpage.Summary != "sub sum" || len(subpage.Highlights) != 1 || subpage.HighlightScores[0] != 0.4 || subpage.Image == "" || subpage.Favicon == "" || subpage.Extras["links"] == nil {
+		t.Fatalf("missing Exa subpage content fields: %#v", subpage)
 	}
 }
 
