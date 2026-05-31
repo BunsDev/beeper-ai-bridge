@@ -319,7 +319,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		cl.markPendingFailed(ctx, pending, err)
 		return
 	}
-	cl.registerProviderBuiltInToolHooks(agentHarness, provider, model, prompt)
+	cl.registerProviderBuiltInToolHooks(agentHarness)
 	active := &activeAIRun{portalKey: msg.Portal.PortalKey, harness: agentHarness, provider: provider, model: model, runID: runID}
 	active.addPending(pending)
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)

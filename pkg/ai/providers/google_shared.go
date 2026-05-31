@@ -104,6 +104,10 @@ func ConvertGoogleMessages(model ai.Model, llmContext ai.Context) []map[string]a
 						part["thoughtSignature"] = signature
 					}
 					parts = append(parts, part)
+				case "image":
+					if isSameProviderAndModel && modelSupportsImage(model) {
+						parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": block.MimeType, "data": block.Data}})
+					}
 				}
 			}
 			if len(parts) > 0 {
@@ -181,6 +185,38 @@ func mapGoogleToolChoice(choice string) string {
 	}
 }
 
+func googleResponseModalities(model ai.Model) []string {
+	if !modelOutputsImage(model) {
+		return nil
+	}
+	modalities := []string{}
+	if modelOutputsText(model) {
+		modalities = append(modalities, "TEXT")
+	}
+	return append(modalities, "IMAGE")
+}
+
+func modelOutputsImage(model ai.Model) bool {
+	for _, output := range model.Output {
+		if output == "image" {
+			return true
+		}
+	}
+	return false
+}
+
+func modelOutputsText(model ai.Model) bool {
+	if len(model.Output) == 0 {
+		return true
+	}
+	for _, output := range model.Output {
+		if output == "text" {
+			return true
+		}
+	}
+	return false
+}
+
 func mapGoogleStopReason(reason string) ai.StopReason {
 	switch reason {
 	case "STOP":
@@ -190,6 +226,28 @@ func mapGoogleStopReason(reason string) ai.StopReason {
 	default:
 		return ai.StopReasonError
 	}
+}
+
+func googleImagePart(part map[string]any) (ai.ContentBlock, bool) {
+	inlineData, _ := part["inlineData"].(map[string]any)
+	if inlineData == nil {
+		inlineData, _ = part["inline_data"].(map[string]any)
+	}
+	if inlineData == nil {
+		return ai.ContentBlock{}, false
+	}
+	data := stringFromAny(inlineData["data"])
+	if data == "" {
+		return ai.ContentBlock{}, false
+	}
+	mimeType := stringFromAny(inlineData["mimeType"])
+	if mimeType == "" {
+		mimeType = stringFromAny(inlineData["mime_type"])
+	}
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return ai.ContentBlock{Type: "image", MimeType: mimeType, Data: data}, true
 }
 
 func parseGoogleUsage(raw map[string]any, model ai.Model) ai.Usage {

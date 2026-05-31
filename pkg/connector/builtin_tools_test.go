@@ -1,40 +1,17 @@
 package connector
 
-import (
-	"testing"
+import "testing"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/beeper/ai-bridge/pkg/aiid"
-	"github.com/beeper/ai-bridge/pkg/msgconv"
-)
-
-func TestProviderBuiltInToolsPayloadRewritesOpenAIImageModelToHostedTool(t *testing.T) {
-	provider := aiid.ProviderConfig{Models: []ai.Model{
-		{ID: "openai/gpt-5.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, BuiltInTools: []string{"image_generation"}},
-		{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
-	}}
-	model := ai.Model{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
-	payload := map[string]any{"model": "openai/gpt-image-2", "input": "create an image of Amsterdam"}
-
-	next, changed := providerBuiltInToolsPayload(provider, model, model, msgconv.MatrixPrompt{Text: "create an image of Amsterdam"}, payload)
-	if !changed {
-		t.Fatal("expected payload to change")
+func TestAddBuiltInToolsToPayloadAddsCatalogBuiltIns(t *testing.T) {
+	payload := map[string]any{
+		"model": "openai/gpt-5.5",
+		"tools": []any{map[string]any{
+			"type": "function",
+			"name": "lookup_contact",
+		}},
 	}
-	body := next.(map[string]any)
-	if body["model"] != "openai/gpt-5.5" {
-		t.Fatalf("expected hosted tool model, got %#v", body["model"])
-	}
-	if choice, ok := body["tool_choice"].(map[string]any); !ok || choice["type"] != "image_generation" {
-		t.Fatalf("expected forced image tool choice, got %#v", body["tool_choice"])
-	}
-	assertToolType(t, body["tools"], "image_generation")
-}
 
-func TestProviderBuiltInToolsPayloadAddsImageToolForOpenAIPrompt(t *testing.T) {
-	model := ai.Model{ID: "openai/gpt-5.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, BuiltInTools: []string{"image_generation"}}
-	payload := map[string]any{"model": "openai/gpt-5.5", "input": "generate a photo of Amsterdam"}
-
-	next, changed := providerBuiltInToolsPayload(aiid.ProviderConfig{}, model, model, msgconv.MatrixPrompt{Text: "generate a photo of Amsterdam"}, payload)
+	next, changed := addBuiltInToolsToPayload(payload, []string{"image_generation"})
 	if !changed {
 		t.Fatal("expected payload to change")
 	}
@@ -43,58 +20,64 @@ func TestProviderBuiltInToolsPayloadAddsImageToolForOpenAIPrompt(t *testing.T) {
 		t.Fatalf("expected model to stay unchanged, got %#v", body["model"])
 	}
 	if _, ok := body["tool_choice"]; ok {
-		t.Fatalf("did not expect forced tool choice for normal model prompt, got %#v", body["tool_choice"])
+		t.Fatalf("did not expect forced tool choice, got %#v", body["tool_choice"])
 	}
+	assertToolType(t, body["tools"], "function")
 	assertToolType(t, body["tools"], "image_generation")
 }
 
-func TestProviderBuiltInToolsPayloadSkipsUnsupportedOpenAIModel(t *testing.T) {
-	model := ai.Model{ID: "openai/gpt-5.3-chat", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
+func TestAddBuiltInToolsToPayloadSkipsWithoutCatalogBuiltIns(t *testing.T) {
 	payload := map[string]any{"model": "openai/gpt-5.3-chat", "input": "generate a photo of Amsterdam"}
 
-	_, changed := providerBuiltInToolsPayload(aiid.ProviderConfig{}, model, model, msgconv.MatrixPrompt{Text: "generate a photo of Amsterdam"}, payload)
+	_, changed := addBuiltInToolsToPayload(payload, nil)
 	if changed {
-		t.Fatal("did not expect image tool for unsupported OpenAI model")
+		t.Fatal("did not expect payload change without catalog built-ins")
 	}
 }
 
-func TestProviderBuiltInToolsPayloadSkipsLegacyImageModelWithoutHostSupport(t *testing.T) {
-	provider := aiid.ProviderConfig{Models: []ai.Model{
-		{ID: "openai/gpt-5.3-chat", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
-		{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
-	}}
-	model := ai.Model{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
-	payload := map[string]any{"model": "openai/gpt-image-2", "input": "create an image of Amsterdam"}
+func TestAddBuiltInToolsToPayloadSkipsWhenAlreadyPresent(t *testing.T) {
+	payload := map[string]any{
+		"model": "openai/gpt-5.5",
+		"tools": []any{map[string]any{
+			"type": "image_generation",
+		}},
+	}
 
-	_, changed := providerBuiltInToolsPayload(provider, model, model, msgconv.MatrixPrompt{Text: "create an image of Amsterdam"}, payload)
+	_, changed := addBuiltInToolsToPayload(payload, []string{"image_generation"})
 	if changed {
-		t.Fatal("did not expect image tool without supported host model")
+		t.Fatal("did not expect payload change when built-in tool is already present")
 	}
 }
 
-func TestProviderBuiltInToolsPayloadAddsOpenRouterImageTool(t *testing.T) {
-	model := ai.Model{ID: "anthropic/claude-sonnet-4.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter, BuiltInTools: []string{"openrouter:image_generation"}}
-	payload := map[string]any{"model": "anthropic/claude-sonnet-4.5", "input": "create an image of Amsterdam"}
+func TestAddBuiltInToolsToPayloadAddsOpenRouterBuiltIn(t *testing.T) {
+	payload := map[string]any{"model": "anthropic/claude-sonnet-4.5"}
 
-	next, changed := providerBuiltInToolsPayload(aiid.ProviderConfig{}, model, model, msgconv.MatrixPrompt{Text: "create an image of Amsterdam"}, payload)
+	next, changed := addBuiltInToolsToPayload(payload, []string{"openrouter:image_generation"})
 	if !changed {
 		t.Fatal("expected payload to change")
 	}
-	body := next.(map[string]any)
-	assertToolType(t, body["tools"], "openrouter:image_generation")
+	assertToolType(t, next.(map[string]any)["tools"], "openrouter:image_generation")
 }
 
 func assertToolType(t *testing.T, raw any, toolType string) {
+	t.Helper()
+	assertToolTypeCount(t, raw, toolType, 1)
+}
+
+func assertToolTypeCount(t *testing.T, raw any, toolType string, want int) {
 	t.Helper()
 	tools, ok := raw.([]any)
 	if !ok {
 		t.Fatalf("expected tools array, got %#v", raw)
 	}
+	count := 0
 	for _, tool := range tools {
 		toolMap, ok := tool.(map[string]any)
 		if ok && toolMap["type"] == toolType {
-			return
+			count++
 		}
 	}
-	t.Fatalf("tool %q not found in %#v", toolType, raw)
+	if count != want {
+		t.Fatalf("tool %q count = %d, want %d in %#v", toolType, count, want, raw)
+	}
 }

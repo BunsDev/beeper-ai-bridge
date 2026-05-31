@@ -116,6 +116,9 @@ func BuildGoogleParams(model ai.Model, llmContext ai.Context, options GoogleOpti
 	if options.MaxTokens != nil {
 		config["maxOutputTokens"] = *options.MaxTokens
 	}
+	if modalities := googleResponseModalities(model); len(modalities) > 0 {
+		config["responseModalities"] = modalities
+	}
 	if options.Thinking != nil && model.Reasoning {
 		if options.Thinking.Enabled {
 			thinking := map[string]any{"includeThoughts": true}

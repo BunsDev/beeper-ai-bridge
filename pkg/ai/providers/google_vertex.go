@@ -128,6 +128,9 @@ func BuildGoogleVertexParams(model ai.Model, llmContext ai.Context, options Goog
 	if options.MaxTokens != nil {
 		config["maxOutputTokens"] = *options.MaxTokens
 	}
+	if modalities := googleResponseModalities(model); len(modalities) > 0 {
+		config["responseModalities"] = modalities
+	}
 	if options.Thinking != nil && model.Reasoning {
 		if options.Thinking.Enabled {
 			thinking := map[string]any{"includeThoughts": true}
@@ -411,6 +414,11 @@ func (s *googleVertexStreamState) apply(stream *ai.AssistantMessageEventStream, 
 
 func (s *googleVertexStreamState) applyPart(stream *ai.AssistantMessageEventStream, output *ai.Message, part map[string]any) {
 	if part == nil {
+		return
+	}
+	if image, ok := googleImagePart(part); ok {
+		finishGoogleCurrentBlock(stream, output, &s.currentBlockIndex)
+		appendContentBlock(output, image)
 		return
 	}
 	if text, ok := part["text"].(string); ok {

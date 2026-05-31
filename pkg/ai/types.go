@@ -140,6 +140,7 @@ type Model struct {
 	ThinkingLevelMap     map[ModelThinkingLevel]*string `json:"thinkingLevelMap,omitempty"`
 	DefaultThinkingLevel ModelThinkingLevel             `json:"defaultThinkingLevel,omitempty"`
 	Input                []string                       `json:"input"`
+	Output               []string                       `json:"output,omitempty"`
 	Cost                 ModelCost                      `json:"cost"`
 	ContextWindow        int                            `json:"contextWindow"`
 	MaxTokens            int                            `json:"maxTokens"`

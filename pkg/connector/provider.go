@@ -82,15 +82,6 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 			Msg("Resolved AI provider to catalog default model")
 		return provider, provider.Models[0].ID, nil
 	}
-	if provider.Provider == ai.ProviderOpenAI && isOpenAIImageGenerationModelID(modelID) {
-		log.Debug().
-			Str("provider_id", provider.ID).
-			Str("provider", string(provider.Provider)).
-			Str("model_id", modelID).
-			Int("model_count", len(provider.Models)).
-			Msg("Resolved legacy OpenAI image model for built-in image generation tool")
-		return provider, modelID, nil
-	}
 	err = fmt.Errorf("model %s is not available for provider %s", modelID, provider.ID)
 	log.Err(err).Str("provider_id", provider.ID).Str("model_id", modelID).Msg("AI model is unavailable for provider")
 	return aiid.ProviderConfig{}, "", err
@@ -110,7 +101,7 @@ func modelForProviderConfig(provider aiid.ProviderConfig, modelID string) ai.Mod
 }
 
 func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Model {
-	keepModelRoute := model.Provider != "" && model.Provider != provider.Provider
+	keepModelRoute := (model.Provider != "" && model.Provider != provider.Provider) || (model.BaseURL != "" && model.BaseURL != provider.BaseURL)
 	if provider.API != "" && !keepModelRoute {
 		model.API = provider.API
 	} else if model.API == "" {

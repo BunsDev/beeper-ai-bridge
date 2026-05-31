@@ -62,3 +62,19 @@ func TestGoogleBeeperProxyUsesBearerAuth(t *testing.T) {
 		t.Fatalf("X-Goog-Api-Key = %q, want empty", gotGoogleKey)
 	}
 }
+
+func TestGoogleParamsRequestImageResponseModalities(t *testing.T) {
+	params := BuildGoogleParams(
+		ai.Model{ID: "google/gemini-3.1-flash-image-preview", Output: []string{"image", "text"}},
+		ai.Context{Messages: []ai.Message{{Role: "user", Content: "draw Amsterdam"}}},
+		GoogleOptions{},
+	)
+	config, ok := params["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected generation config, got %#v", params)
+	}
+	modalities, ok := config["responseModalities"].([]string)
+	if !ok || len(modalities) != 2 || modalities[0] != "TEXT" || modalities[1] != "IMAGE" {
+		t.Fatalf("unexpected response modalities %#v", config["responseModalities"])
+	}
+}

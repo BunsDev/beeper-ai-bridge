@@ -266,6 +266,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			ThinkingLevelMap:     item.thinkingLevelMap(),
 			DefaultThinkingLevel: item.defaultThinkingLevel(),
 			Input:                item.inputModalities(),
+			Output:               item.outputModalities(),
 			ContextWindow:        item.contextWindow(),
 			MaxTokens:            item.maxTokens(),
 			BuiltInTools:         item.builtInTools(),
@@ -298,6 +299,8 @@ func trimAIProxyProviderPath(path string) string {
 		"/proxy/anthropic",
 		"/proxy/vertex/v1",
 		"/proxy/vertex",
+		"/proxy/a8c/v1",
+		"/proxy/a8c",
 		"/proxy/_/v1",
 		"/proxy/_",
 	} {
@@ -330,6 +333,9 @@ type aiServicesModelEntry struct {
 		Input struct {
 			Modalities []string `json:"modalities"`
 		} `json:"input"`
+		Output struct {
+			Modalities []string `json:"modalities"`
+		} `json:"output"`
 		Reasoning *struct {
 			Supported    bool               `json:"supported"`
 			Levels       []string           `json:"levels"`
@@ -365,7 +371,7 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 		model.Provider = ai.ProviderOpenAI
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openai", true)
 	case "wpcom_google":
-		model.API = ai.ApiGoogleGenerativeAI
+		model.API = ai.ApiOpenAIResponses
 		model.Provider = ai.ProviderGoogle
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "google", true)
 	case "wpcom_xai":
@@ -376,6 +382,13 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 		model.API = ai.ApiOpenAIResponses
 		model.Provider = ai.ProviderGroq
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "groq", true)
+	case "wpcom_a8c":
+		model.API = ai.ApiOpenAICompletions
+		if entry.Provider.API == string(ai.ApiOpenAIResponses) {
+			model.API = ai.ApiOpenAIResponses
+		}
+		model.Provider = ai.Provider("a8c")
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "a8c", true)
 	case "openrouter":
 		model.API = ai.ApiOpenAIResponses
 		model.Provider = ai.ProviderOpenRouter
@@ -404,6 +417,13 @@ func (entry aiServicesModelEntry) inputModalities() []string {
 	}
 	if entry.Architecture != nil && len(entry.Architecture.InputModalities) > 0 {
 		return append([]string{}, entry.Architecture.InputModalities...)
+	}
+	return []string{"text"}
+}
+
+func (entry aiServicesModelEntry) outputModalities() []string {
+	if entry.Capabilities != nil && len(entry.Capabilities.Output.Modalities) > 0 {
+		return append([]string{}, entry.Capabilities.Output.Modalities...)
 	}
 	return []string{"text"}
 }
