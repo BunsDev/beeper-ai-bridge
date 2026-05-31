@@ -58,6 +58,59 @@ func TestRunAgentLoopExecutesToolCallsAndContinues(t *testing.T) {
 	}
 }
 
+func TestRunAgentLoopTreatsLengthStopAsTerminal(t *testing.T) {
+	ctx := context.Background()
+	toolExecuted := false
+	tool := AgentTool[any]{
+		Tool: ai.Tool{Name: "read", Description: "read", Parameters: map[string]any{"type": "object"}},
+		Execute: func(ctx context.Context, toolCallID string, params any, onUpdate AgentToolUpdateCallback[any]) (AgentToolResult[any], error) {
+			toolExecuted = true
+			return AgentToolResult[any]{Content: []ai.ContentBlock{{Type: "text", Text: "tool output"}}}, nil
+		},
+	}
+	calls := 0
+	followUps := []AgentMessage{{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: "follow up"}}, Timestamp: time.Now().UnixMilli()}}
+	streamFn := func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		calls++
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{
+				Role:       "assistant",
+				Content:    []ai.ContentBlock{{Type: "toolCall", ID: "call_1", Name: "read", Arguments: map[string]any{"path": "x"}}},
+				StopReason: ai.StopReasonLength,
+				Usage:      ai.EmptyUsage(),
+				Timestamp:  time.Now().UnixMilli(),
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "start", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonLength, Message: &message})
+		}()
+		return stream
+	}
+
+	messages, err := RunAgentLoop(ctx, []AgentMessage{{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: "hi"}}, Timestamp: time.Now().UnixMilli()}}, AgentContext{Tools: []AgentTool[any]{tool}}, AgentLoopConfig{
+		Model: testModel(),
+		GetFollowUpMessages: func(context.Context) ([]AgentMessage, error) {
+			next := followUps
+			followUps = nil
+			return next, nil
+		},
+	}, func(ctx context.Context, event AgentEvent) error {
+		return nil
+	}, streamFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected length stop to end the agent loop after one provider call, got %d", calls)
+	}
+	if toolExecuted {
+		t.Fatal("length-limited partial tool call should not be executed")
+	}
+	if len(messages) != 2 || messages[1].StopReason != ai.StopReasonLength {
+		t.Fatalf("expected prompt and terminal length assistant message, got %#v", messages)
+	}
+}
+
 func TestAgentLoopReturnsEventStream(t *testing.T) {
 	ctx := context.Background()
 	stream := AgentLoop(ctx, []AgentMessage{{Role: "user", Content: []ai.ContentBlock{{Type: "text", Text: "hi"}}, Timestamp: time.Now().UnixMilli()}}, AgentContext{}, AgentLoopConfig{Model: testModel()}, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {

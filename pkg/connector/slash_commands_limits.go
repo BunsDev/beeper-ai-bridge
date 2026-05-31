@@ -56,7 +56,11 @@ func runLimitsCommand(cl *Client, ctx context.Context, _ *bridgev2.Portal, _ Roo
 	if raw {
 		return responder.Reply(ctx, formatRawLimitsCommandInfo(limits, now))
 	}
-	return responder.Reply(ctx, formatLimitsCommandInfo(limits, now))
+	text := formatLimitsCommandInfo(limits, now)
+	if aiResponder, ok := responder.(aiCommandAIResponder); ok {
+		return aiResponder.ReplyAI(ctx, text)
+	}
+	return responder.Reply(ctx, text)
 }
 
 func (cl *Client) fetchAIServicesLimits(ctx context.Context) (aiServicesLimitsResponse, error) {
@@ -125,15 +129,10 @@ func aiServicesLimitsURL(proxyBaseURL string) (string, error) {
 
 func formatLimitsCommandInfo(limits aiServicesLimitsResponse, now time.Time) string {
 	var text strings.Builder
-	text.WriteString("AI limits:")
-	categories := limitCategories(limits)
-	sharedResetAt, hasSharedReset := sharedResetAt(categories)
-	for _, category := range categories {
-		appendLimitCategory(&text, category.label, category.windows, now, hasSharedReset)
-	}
-	if hasSharedReset {
-		fmt.Fprintf(&text, "\n\nEverything resets in %s.", formatResetIn(sharedResetAt, now))
-	}
+	text.WriteString("AI limits\n\n")
+	appendLimitSection(&text, "Models", limits.Windows.LLM, now)
+	text.WriteString("\n")
+	appendLimitSection(&text, "Web Search", limits.Windows.WebTools, now)
 	return text.String()
 }
 
@@ -159,38 +158,55 @@ func limitCategories(limits aiServicesLimitsResponse) []limitCategory {
 	return categories
 }
 
-func appendLimitCategory(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time, skipReset bool) {
-	parts := []string{
-		formatLimitPercent("day", windows.Day, now, skipReset),
-		formatLimitPercent("week", windows.Week, now, skipReset),
-		formatLimitPercent("month", windows.Month, now, skipReset),
+func appendLimitSection(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {
+	fmt.Fprintf(text, "## %s\n\n", label)
+	if emptyLimitWindows(windows) {
+		text.WriteString("No limits reported.\n")
+		return
 	}
-	fmt.Fprintf(text, "\n\n%s: %s.", label, joinSentence(parts))
+	text.WriteString("| Window | Left | Used | Reset |\n")
+	text.WriteString("| --- | ---: | ---: | --- |\n")
+	appendLimitWindowSummary(text, "Daily", windows.Day, now)
+	appendLimitWindowSummary(text, "Weekly", windows.Week, now)
+	appendLimitWindowSummary(text, "Monthly", windows.Month, now)
 }
 
-func formatLimitPercent(label string, window aiServicesLimitWindow, now time.Time, skipReset bool) string {
-	windowName := limitWindowName(label)
-	text := fmt.Sprintf("you have `%d%%` of the %s limit left", window.PercentageLeft, windowName)
+func appendLimitWindowSummary(text *strings.Builder, windowName string, window aiServicesLimitWindow, now time.Time) {
+	fmt.Fprintf(
+		text,
+		"| %s | %s | %s | %s |\n",
+		windowName,
+		formatLimitLeft(window),
+		formatLimitUsed(window),
+		formatLimitReset(window, now),
+	)
+}
+
+func formatLimitLeft(window aiServicesLimitWindow) string {
+	if window.Limit < 0 || window.Remaining < 0 {
+		return "Unlimited"
+	}
 	if window.PercentageLeft <= 0 {
-		text = fmt.Sprintf("you are out of the %s limit", windowName)
+		return "**Out**"
 	}
-	if !skipReset && window.ResetAtMS > 0 {
-		text += " and it resets in " + formatResetIn(time.UnixMilli(window.ResetAtMS), now)
-	}
-	return text
+	return fmt.Sprintf("`%d%%`", window.PercentageLeft)
 }
 
-func limitWindowName(label string) string {
-	switch label {
-	case "day":
-		return "daily"
-	case "week":
-		return "weekly"
-	case "month":
-		return "monthly"
-	default:
-		return label
+func formatLimitUsed(window aiServicesLimitWindow) string {
+	if window.Limit == 0 && window.Used == 0 && window.Remaining == 0 {
+		return "Not reported"
 	}
+	if window.Limit < 0 || window.Remaining < 0 {
+		return fmt.Sprintf("`%s` used", formatInt(window.Used))
+	}
+	return fmt.Sprintf("`%s / %s`", formatInt(window.Used), formatInt(window.Limit))
+}
+
+func formatLimitReset(window aiServicesLimitWindow, now time.Time) string {
+	if window.ResetAtMS <= 0 {
+		return "unknown"
+	}
+	return "in " + formatResetIn(time.UnixMilli(window.ResetAtMS), now)
 }
 
 func appendRawLimitCategory(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {

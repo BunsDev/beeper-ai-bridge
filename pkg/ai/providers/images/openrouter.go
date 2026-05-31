@@ -70,6 +70,8 @@ func GenerateImagesOpenRouter(ctx context.Context, model ai.ImagesModel, imageCo
 	}
 	if options.MaxRetries != nil {
 		requestOptions = append(requestOptions, option.WithMaxRetries(*options.MaxRetries))
+	} else {
+		requestOptions = append(requestOptions, option.WithMaxRetries(0))
 	}
 
 	client := openaisdk.NewClient()

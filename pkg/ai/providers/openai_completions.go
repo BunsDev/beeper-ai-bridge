@@ -493,6 +493,8 @@ func newClient(model ai.Model, llmContext ai.Context, options ai.StreamOptions) 
 	}
 	if options.MaxRetries != nil {
 		requestOptions = append(requestOptions, option.WithMaxRetries(*options.MaxRetries))
+	} else {
+		requestOptions = append(requestOptions, option.WithMaxRetries(0))
 	}
 	return openaisdk.NewClient(requestOptions...), requestOptions, nil
 }

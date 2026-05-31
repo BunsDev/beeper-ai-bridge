@@ -26,8 +26,9 @@ import (
 const defaultCodexBaseURL = "https://chatgpt.com/backend-api"
 const jwtClaimPath = "https://api.openai.com/auth"
 const openAIBetaResponsesWebSockets = "responses_websockets=2026-02-06"
-const maxCodexRetries = 3
+const maxCodexRetries = 0
 const baseCodexRetryDelay = time.Second
+const defaultMaxCodexRetryDelayMs = 60000
 
 type OpenAICodexResponsesOptions struct {
 	OpenAIResponsesOptions
@@ -887,6 +888,9 @@ func normalizeCodexStatus(status string) string {
 }
 
 func isRetryableCodexError(status int, errorText string) bool {
+	if isTerminalCodexUsageLimitError(errorText) {
+		return false
+	}
 	if status == http.StatusTooManyRequests || status == http.StatusInternalServerError || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout {
 		return true
 	}
@@ -899,13 +903,29 @@ func isRetryableCodexError(status int, errorText string) bool {
 		strings.Contains(lower, "connection refused")
 }
 
+func isTerminalCodexUsageLimitError(errorText string) bool {
+	lower := strings.ToLower(errorText)
+	return strings.Contains(lower, "gousagelimiterror") ||
+		strings.Contains(lower, "freeusagelimiterror") ||
+		strings.Contains(lower, "monthly usage limit reached") ||
+		strings.Contains(lower, "available balance") ||
+		strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "out of budget") ||
+		strings.Contains(lower, "quota exceeded") ||
+		strings.Contains(lower, "billing")
+}
+
 func codexRetryDelay(attempt int, response *http.Response, maxRetryDelayMs *int) time.Duration {
 	delay := baseCodexRetryDelay * time.Duration(1<<attempt)
 	if requested, ok := RequestedRetryDelay(response, time.Now()); ok {
 		delay = requested
 	}
-	if maxRetryDelayMs != nil && *maxRetryDelayMs >= 0 {
-		maxDelay := time.Duration(*maxRetryDelayMs) * time.Millisecond
+	maxDelayMs := defaultMaxCodexRetryDelayMs
+	if maxRetryDelayMs != nil {
+		maxDelayMs = *maxRetryDelayMs
+	}
+	if maxDelayMs >= 0 {
+		maxDelay := time.Duration(maxDelayMs) * time.Millisecond
 		if delay > maxDelay {
 			return maxDelay
 		}

@@ -53,6 +53,18 @@ func TestMatrixMessageStatusForAIErrorMapsHTTPProviderFailures(t *testing.T) {
 			wantReason: event.MessageStatusNetworkError,
 		},
 		{
+			name:       "formatted provider rate limit",
+			err:        errors.New("OpenAI API error (429): too many requests"),
+			wantStatus: event.MessageStatusRetriable,
+			wantReason: event.MessageStatusNetworkError,
+		},
+		{
+			name:       "ai token quota",
+			err:        errors.New("OpenAI API error (429): AI token limit exceeded. Check /limits"),
+			wantStatus: event.MessageStatusFail,
+			wantReason: event.MessageStatusNoPermission,
+		},
+		{
 			name:       "bad request",
 			err:        testHTTPStatusError{StatusCode: http.StatusBadRequest, message: "bad request"},
 			wantStatus: event.MessageStatusFail,
@@ -72,6 +84,16 @@ func TestMatrixMessageStatusForAIErrorMapsHTTPProviderFailures(t *testing.T) {
 				t.Fatalf("unexpected status %#v", status)
 			}
 		})
+	}
+}
+
+func TestMatrixMessageStatusForAIErrorMapsUsageLimitMessage(t *testing.T) {
+	status := matrixMessageStatusForAIError(errors.New("OpenAI API error (429): insufficient_quota: quota exceeded"))
+	if status.Status != event.MessageStatusFail || status.ErrorReason != event.MessageStatusNoPermission {
+		t.Fatalf("expected permanent usage-limit status, got %#v", status)
+	}
+	if status.Message != "AI usage limit exceeded. Check /limits" {
+		t.Fatalf("unexpected message %q", status.Message)
 	}
 }
 

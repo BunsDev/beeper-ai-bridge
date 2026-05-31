@@ -145,7 +145,7 @@ func runLoop(ctx context.Context, currentContext *AgentContext, newMessages *[]A
 				return err
 			}
 			*newMessages = append(*newMessages, message)
-			if message.StopReason == ai.StopReasonError || message.StopReason == ai.StopReasonAborted {
+			if message.StopReason == ai.StopReasonError || message.StopReason == ai.StopReasonAborted || message.StopReason == ai.StopReasonLength {
 				_ = emit(ctx, AgentEvent{Type: "turn_end", Message: &message, ToolResults: []ai.Message{}})
 				return emit(ctx, AgentEvent{Type: "agent_end", Messages: *newMessages})
 			}

@@ -1,7 +1,12 @@
 package providers
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
@@ -321,6 +326,42 @@ func TestFinishResponsesStreamEmitsErrorForFailedResponse(t *testing.T) {
 	}
 	if event.Error == nil || event.Error.StopReason != ai.StopReasonError || event.Error.ErrorMessage != "bad_request: nope" {
 		t.Fatalf("expected failed response error event, got %#v", event)
+	}
+}
+
+func TestOpenAIResponsesStreamDoesNotSleepOnHugeRetryAfterByDefault(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "32976")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"AI token limit exceeded","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	result := StreamOpenAIResponses(ctx, ai.Model{
+		ID:       "gpt-test",
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  server.URL,
+		Input:    []string{"text"},
+	}, ai.Context{Messages: []ai.Message{{Role: "user", Content: "hi"}}}, OpenAIResponsesOptions{
+		StreamOptions: ai.StreamOptions{APIKey: "key"},
+	}).Result()
+	elapsed := time.Since(started)
+
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("stream waited on Retry-After before returning: %s", elapsed)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected no implicit retry attempts, got %d", attempts)
+	}
+	if result.StopReason != ai.StopReasonError || !strings.Contains(result.ErrorMessage, "429") {
+		t.Fatalf("expected terminal 429 error result, got %#v", result)
 	}
 }
 

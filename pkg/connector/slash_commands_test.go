@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -35,6 +37,7 @@ func TestParseAISlashCommand(t *testing.T) {
 		{body: "/help model", name: "help", arg: "model", ok: true},
 		{body: "/compact focus on decisions", name: "compact", arg: "focus on decisions", ok: true},
 		{body: "/abort", name: "abort", ok: true},
+		{body: "/stop", name: "abort", ok: true},
 		{body: "/session", name: "session", ok: true},
 		{body: "/limits", name: "limits", ok: true},
 		{body: "/unknown nope", ok: false},
@@ -50,6 +53,75 @@ func TestParseAISlashCommand(t *testing.T) {
 		}
 		if got.name != tt.name || got.arg != tt.arg {
 			t.Fatalf("%q parsed as %#v, want name=%q arg=%q", tt.body, got, tt.name, tt.arg)
+		}
+	}
+}
+
+func TestParseAICommandMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *event.MessageEventContent
+		want    aiSlashCommand
+		ok      bool
+	}{
+		{
+			name:    "visible slash command",
+			content: &event.MessageEventContent{MsgType: event.MsgText, Body: "/model gpt-5"},
+			want:    aiSlashCommand{name: "model", arg: "gpt-5"},
+			ok:      true,
+		},
+		{
+			name:    "hidden slash command",
+			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "/abort"},
+			want:    aiSlashCommand{name: "abort"},
+			ok:      true,
+		},
+		{
+			name:    "hidden bridge-prefixed command",
+			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "!ai stop"},
+			want:    aiSlashCommand{name: "abort"},
+			ok:      true,
+		},
+		{
+			name:    "hidden bridge-prefixed command with args",
+			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "!ai model gpt-5"},
+			want:    aiSlashCommand{name: "model", arg: "gpt-5"},
+			ok:      true,
+		},
+		{
+			name:    "hidden bare command ignored",
+			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "abort"},
+			ok:      false,
+		},
+		{
+			name:    "visible bridge-prefixed command ignored",
+			content: &event.MessageEventContent{MsgType: event.MsgText, Body: "!ai stop"},
+			ok:      false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseAICommandMessage(tt.content)
+			if ok != tt.ok {
+				t.Fatalf("ok=%v, want %v", ok, tt.ok)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("parsed %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalAICommandNameAliases(t *testing.T) {
+	tests := map[string]string{
+		"abort":   "abort",
+		" stop ":  "abort",
+		"ai-help": "help",
+		"MODEL":   "model",
+	}
+	for input, want := range tests {
+		if got := canonicalAICommandName(input); got != want {
+			t.Fatalf("canonicalAICommandName(%q)=%q, want %q", input, got, want)
 		}
 	}
 }
@@ -143,6 +215,33 @@ func TestCommandResponseContentIsVisibleText(t *testing.T) {
 	}
 	if !strings.Contains(content.FormattedBody, "<code>/help [command]</code>") {
 		t.Fatalf("command response formatted body did not render command usage as HTML:\n%s", content.FormattedBody)
+	}
+}
+
+func TestCommandResponseContentRendersMarkdownTables(t *testing.T) {
+	content := commandResponseContent("| One | Two |\n| --- | ---: |\n| A | `1` |\n")
+	if content.Format != event.FormatHTML || !strings.Contains(content.FormattedBody, "<table>") {
+		t.Fatalf("command response did not render markdown table as Matrix HTML: %#v", content)
+	}
+	if !strings.Contains(content.FormattedBody, "<code>1</code>") {
+		t.Fatalf("command response table did not preserve markdown cell formatting:\n%s", content.FormattedBody)
+	}
+}
+
+func TestCommandFinalAICarriesMarkdownAsFinalAssistantMessage(t *testing.T) {
+	text := "AI limits\n\n## Models\n\n| Window | Left |\n| --- | ---: |\n| Daily | `75%` |\n"
+	payload := commandFinalAI(text, "message-1", "thread-1", "beeper/gpt-5", "ai", "AI", time.Unix(10, 0))
+	if payload.Schema != aistream.BeeperAISchema || payload.Protocol != "ag-ui" || payload.Kind != aistream.AIKindFinal {
+		t.Fatalf("unexpected command AI envelope: %#v", payload)
+	}
+	if payload.Message == nil || payload.Message.Role != agui.RoleAssistant || payload.Message.ID != "message-1" {
+		t.Fatalf("unexpected command AI message: %#v", payload.Message)
+	}
+	if len(payload.Message.Parts) != 1 || payload.Message.Parts[0]["type"] != "text" || payload.Message.Parts[0]["content"] != text {
+		t.Fatalf("command AI message did not preserve markdown text part: %#v", payload.Message.Parts)
+	}
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunFinished {
+		t.Fatalf("command AI final payload missing terminal event: %#v", payload.Events)
 	}
 }
 
@@ -336,16 +435,20 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		},
 	}}, now)
 	for _, want := range []string{
-		"AI limits:",
-		"LLM tokens: you have `75%` of the daily limit left, you have `100%` of the weekly limit left, and you are out of the monthly limit.",
-		"Web tools: you have `99%` of the daily limit left, you have `100%` of the weekly limit left, and you have `100%` of the monthly limit left.",
-		"Everything resets in 1 day 2 hours 3 minutes.",
+		"AI limits",
+		"## Models",
+		"| Window | Left | Used | Reset |",
+		"| Daily | `75%` | `250 / 1,000` | in 1 day 2 hours 3 minutes |",
+		"| Weekly | Unlimited | `1,234` used | in 1 day 2 hours 3 minutes |",
+		"| Monthly | **Out** | `30,000 / 30,000` | in 1 day 2 hours 3 minutes |",
+		"## Web Search",
+		"| Daily | `99%` | `1 / 200,000` | in 1 day 2 hours 3 minutes |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"`250`", "`1,000`", "`199,999`", "2030-01-01T00:00:00Z"} {
+	for _, notWant := range []string{"`199,999`", "2030-01-01T00:00:00Z"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
 		}
@@ -362,9 +465,12 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 		},
 	}}, now)
 	for _, want := range []string{
-		"you have `75%` of the daily limit left and it resets in 1 day 1 hour 3 minutes",
-		"you have `100%` of the weekly limit left and it resets in 7 days",
-		"you are out of the monthly limit and it resets in 31 days",
+		"## Models",
+		"| Daily | `75%` | Not reported | in 1 day 1 hour 3 minutes |",
+		"| Weekly | `100%` | Not reported | in 7 days |",
+		"| Monthly | **Out** | Not reported | in 31 days |",
+		"## Web Search",
+		"No limits reported.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
