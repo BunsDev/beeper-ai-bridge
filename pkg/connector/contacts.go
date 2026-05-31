@@ -99,17 +99,20 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 
 func aiChatMembers() *bridgev2.ChatMemberList {
 	return &bridgev2.ChatMemberList{
-		IsFull:      true,
-		OtherUserID: aiid.AssistantUserID(),
+		IsFull:                     true,
+		OtherUserID:                aiid.AssistantUserID(),
+		ExcludeChangesFromTimeline: true,
 		MemberMap: bridgev2.ChatMemberMap{
 			"": {
-				EventSender: bridgev2.EventSender{IsFromMe: true},
-				Membership:  event.MembershipJoin,
+				EventSender:      bridgev2.EventSender{IsFromMe: true},
+				Membership:       event.MembershipJoin,
+				MemberEventExtra: syntheticMemberEventExtra(),
 			},
 			aiid.AssistantUserID(): {
-				EventSender: bridgev2.EventSender{Sender: aiid.AssistantUserID()},
-				Membership:  event.MembershipJoin,
-				UserInfo:    aiAssistantUserInfo(),
+				EventSender:      bridgev2.EventSender{Sender: aiid.AssistantUserID()},
+				Membership:       event.MembershipJoin,
+				UserInfo:         aiAssistantUserInfo(),
+				MemberEventExtra: syntheticMemberEventExtra(),
 			},
 		},
 		PowerLevels: &bridgev2.PowerLevelOverrides{
@@ -119,6 +122,12 @@ func aiChatMembers() *bridgev2.ChatMemberList {
 				event.StateBeeperDisappearingTimer: 0,
 			},
 		},
+	}
+}
+
+func syntheticMemberEventExtra() map[string]any {
+	return map[string]any{
+		"com.beeper.exclude_from_timeline": true,
 	}
 }
 

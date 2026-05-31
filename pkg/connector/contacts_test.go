@@ -441,8 +441,13 @@ func TestAIChatMembersUseGlobalAssistantGhostWithoutNetworkBotFlag(t *testing.T)
 	if members == nil || !members.IsFull || members.OtherUserID != aiid.AssistantUserID() {
 		t.Fatalf("unexpected AI chat members %#v", members)
 	}
+	if !members.ExcludeChangesFromTimeline {
+		t.Fatalf("expected synthetic AI member changes to be excluded from timeline")
+	}
 	if member, ok := members.MemberMap[networkid.UserID("")]; !ok || !member.IsFromMe {
 		t.Fatalf("expected Matrix user member, got %#v", members.MemberMap)
+	} else if member.MemberEventExtra["com.beeper.exclude_from_timeline"] != true {
+		t.Fatalf("expected Matrix user member event to be excluded from timeline, got %#v", member.MemberEventExtra)
 	}
 	if member, ok := members.MemberMap[aiid.AssistantUserID()]; !ok || member.Sender != aiid.AssistantUserID() {
 		t.Fatalf("expected assistant ghost member, got %#v", members.MemberMap)
@@ -450,6 +455,8 @@ func TestAIChatMembersUseGlobalAssistantGhostWithoutNetworkBotFlag(t *testing.T)
 		t.Fatalf("expected assistant ghost avatar %q, got %#v", defaultAIAssistantAvatarMXC, member.UserInfo)
 	} else if member.UserInfo.IsBot == nil || *member.UserInfo.IsBot {
 		t.Fatalf("expected assistant ghost to not be marked as a network bot, got %#v", member.UserInfo)
+	} else if member.MemberEventExtra["com.beeper.exclude_from_timeline"] != true {
+		t.Fatalf("expected assistant ghost member event to be excluded from timeline, got %#v", member.MemberEventExtra)
 	}
 	if members.PowerLevels == nil {
 		t.Fatalf("expected AI chat power levels")
