@@ -300,6 +300,14 @@ func TestDefaultProviderBaseURLUsesInternalLocalServiceForLocalUser(t *testing.T
 	}
 }
 
+func TestDefaultProviderBaseURLUsesUserHomeserverForMegahungryCloudUser(t *testing.T) {
+	conn := &Connector{HomeserverURL: "http://megahungry-proxy.megahungry/api/proxy/bridge-user"}
+	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
+	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
+		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
+	}
+}
+
 func TestDefaultProviderBaseURLUsesExternalLocaltestServiceForSelfHosted(t *testing.T) {
 	conn := &Connector{HomeserverURL: "https://matrix.beeper.localtest.me/_hungryserv/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")

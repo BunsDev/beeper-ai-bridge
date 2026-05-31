@@ -102,7 +102,13 @@ func (c *Connector) defaultAIServicesOpenAIProxyBaseURL(userMXID id.UserID) stri
 	userDomain := userMXID.Homeserver()
 	bridgeHost := c.homeserverAddressHost()
 	if bridgeHost == "megahungry-proxy.megahungry" {
-		if userDomain != "" && userDomain != "beeper.localtest.me" {
+		if userDomain == "beeper.localtest.me" {
+			return "http://ai-services.beeper" + defaultAIServicesProxyPath
+		}
+		if isBeeperAIServiceDomain(userDomain) {
+			return "https://ai-services." + userDomain + defaultAIServicesProxyPath
+		}
+		if userDomain != "" {
 			return ""
 		}
 		return "http://ai-services.beeper" + defaultAIServicesProxyPath
@@ -118,6 +124,15 @@ func (c *Connector) defaultAIServicesOpenAIProxyBaseURL(userMXID id.UserID) stri
 		return ""
 	}
 	return "https://ai-services." + userDomain + defaultAIServicesProxyPath
+}
+
+func isBeeperAIServiceDomain(domain string) bool {
+	switch domain {
+	case "beeper.com", "beeper-staging.com", "beeper-dev.com":
+		return true
+	default:
+		return false
+	}
 }
 
 func homeserverServiceDomain(host string) string {
