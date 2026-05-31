@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,9 +12,11 @@ import (
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
 	"go.mau.fi/util/jsontime"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
@@ -24,10 +27,11 @@ import (
 )
 
 func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
-	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: networkid.UserLoginID("login")}}}
+	client := newCreateGroupTestClient(t)
+	roomID := id.RoomID("!room:example.com")
 	response, err := client.CreateGroup(context.Background(), &bridgev2.GroupCreateParams{
 		Type:   "ai",
-		RoomID: id.RoomID("!room:example.com"),
+		RoomID: roomID,
 		Name:   &event.RoomNameEventContent{Name: "Work AI"},
 		Topic:  &event.TopicEventContent{Topic: "Project notes"},
 		Disappear: &event.BeeperDisappearingTimer{
@@ -38,9 +42,24 @@ func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := aiid.PortalKey(id.RoomID("!room:example.com"), networkid.UserLoginID("login"))
+	expected := aiid.PortalKey(roomID, networkid.UserLoginID("login"))
 	if response.PortalKey != expected {
 		t.Fatalf("unexpected portal key %#v", response.PortalKey)
+	}
+	if response.Portal == nil || response.Portal.MXID != roomID {
+		t.Fatalf("expected returned portal to be bound to %s, got %#v", roomID, response.Portal)
+	}
+	if response.Portal.Name != "Work AI" || !response.Portal.NameSet {
+		t.Fatalf("portal name metadata not synced: name=%q set=%v", response.Portal.Name, response.Portal.NameSet)
+	}
+	if response.Portal.Topic != "Project notes" || !response.Portal.TopicSet {
+		t.Fatalf("portal topic metadata not synced: topic=%q set=%v", response.Portal.Topic, response.Portal.TopicSet)
+	}
+	if response.Portal.RoomType != database.RoomTypeDM {
+		t.Fatalf("expected AI session portal to be a DM, got %q", response.Portal.RoomType)
+	}
+	if response.Portal.Disappear.Type != event.DisappearingTypeAfterRead || response.Portal.Disappear.Timer != time.Hour {
+		t.Fatalf("portal disappearing setting not synced: %#v", response.Portal.Disappear)
 	}
 	if response.PortalInfo == nil || response.PortalInfo.Name == nil || *response.PortalInfo.Name != "Work AI" {
 		t.Fatalf("unexpected portal info %#v", response.PortalInfo)
@@ -60,6 +79,13 @@ func TestCreateGroupMapsMatrixRoomToAISessionPortal(t *testing.T) {
 	if !response.PortalInfo.ExcludeChangesFromTimeline {
 		t.Fatalf("expected synthetic AI room metadata changes to be excluded from timeline")
 	}
+	loaded, err := client.Main.Bridge.GetPortalByKey(context.Background(), expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.MXID != roomID {
+		t.Fatalf("expected cached portal to stay bound to existing room, got %s", loaded.MXID)
+	}
 }
 
 func TestCreateGroupRequiresExistingMatrixRoom(t *testing.T) {
@@ -67,6 +93,165 @@ func TestCreateGroupRequiresExistingMatrixRoom(t *testing.T) {
 	if _, err := client.CreateGroup(context.Background(), &bridgev2.GroupCreateParams{Type: "ai"}); err == nil {
 		t.Fatalf("expected roomless AI group creation to fail")
 	}
+}
+
+func newCreateGroupTestClient(t *testing.T) *Client {
+	t.Helper()
+	ctx := context.Background()
+	rawDB, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := dbutil.NewWithDB(rawDB, "sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	conn := &Connector{}
+	br := bridgev2.NewBridge(
+		networkid.BridgeID("bridge"),
+		db,
+		zerolog.Nop(),
+		nil,
+		&createGroupTestMatrix{bot: createGroupTestIntent{mxid: id.UserID("@bot:example.com")}},
+		conn,
+		func(*bridgev2.Bridge) bridgev2.CommandProcessor { return nil },
+	)
+	br.BackgroundCtx = context.Background()
+	if err = br.DB.Upgrade(ctx); err != nil {
+		t.Fatal(err)
+	}
+	login := &bridgev2.UserLogin{
+		UserLogin: &database.UserLogin{ID: networkid.UserLoginID("login"), UserMXID: id.UserID("@alice:example.com")},
+		Bridge:    br,
+		Log:       zerolog.Nop(),
+	}
+	client := &Client{Main: conn, UserLogin: login}
+	login.Client = client
+	return client
+}
+
+type createGroupTestMatrix struct {
+	bot createGroupTestIntent
+}
+
+func (m *createGroupTestMatrix) Init(*bridgev2.Bridge) {}
+func (m *createGroupTestMatrix) Start(context.Context) error {
+	return nil
+}
+func (m *createGroupTestMatrix) PreStop() {}
+func (m *createGroupTestMatrix) Stop()    {}
+func (m *createGroupTestMatrix) GetCapabilities() *bridgev2.MatrixCapabilities {
+	return &bridgev2.MatrixCapabilities{}
+}
+func (m *createGroupTestMatrix) ParseGhostMXID(id.UserID) (networkid.UserID, bool) {
+	return "", false
+}
+func (m *createGroupTestMatrix) GhostIntent(networkid.UserID) bridgev2.MatrixAPI {
+	return m.bot
+}
+func (m *createGroupTestMatrix) NewUserIntent(context.Context, id.UserID, string) (bridgev2.MatrixAPI, string, error) {
+	return m.bot, "", nil
+}
+func (m *createGroupTestMatrix) BotIntent() bridgev2.MatrixAPI {
+	return m.bot
+}
+func (m *createGroupTestMatrix) SendBridgeStatus(context.Context, *status.BridgeState) error {
+	return nil
+}
+func (m *createGroupTestMatrix) SendMessageStatus(context.Context, *bridgev2.MessageStatus, *bridgev2.MessageStatusEventInfo) {
+}
+func (m *createGroupTestMatrix) GenerateContentURI(context.Context, networkid.MediaID) (id.ContentURIString, error) {
+	return "", nil
+}
+func (m *createGroupTestMatrix) GetPowerLevels(context.Context, id.RoomID) (*event.PowerLevelsEventContent, error) {
+	return &event.PowerLevelsEventContent{}, nil
+}
+func (m *createGroupTestMatrix) GetMembers(context.Context, id.RoomID) (map[id.UserID]*event.MemberEventContent, error) {
+	return nil, nil
+}
+func (m *createGroupTestMatrix) GetMemberInfo(context.Context, id.RoomID, id.UserID) (*event.MemberEventContent, error) {
+	return nil, nil
+}
+func (m *createGroupTestMatrix) BatchSend(context.Context, id.RoomID, *mautrix.ReqBeeperBatchSend, []*bridgev2.MatrixSendExtra) (*mautrix.RespBeeperBatchSend, error) {
+	return nil, nil
+}
+func (m *createGroupTestMatrix) GenerateDeterministicRoomID(key networkid.PortalKey) id.RoomID {
+	return id.RoomID("!" + string(key.ID) + ":" + m.ServerName())
+}
+func (m *createGroupTestMatrix) GenerateDeterministicEventID(id.RoomID, networkid.PortalKey, networkid.MessageID, networkid.PartID) id.EventID {
+	return ""
+}
+func (m *createGroupTestMatrix) GenerateReactionEventID(id.RoomID, *database.Message, networkid.UserID, networkid.EmojiID) id.EventID {
+	return ""
+}
+func (m *createGroupTestMatrix) ServerName() string {
+	return "example.com"
+}
+
+type createGroupTestIntent struct {
+	mxid id.UserID
+}
+
+func (i createGroupTestIntent) GetMXID() id.UserID { return i.mxid }
+func (i createGroupTestIntent) IsDoublePuppet() bool {
+	return false
+}
+func (i createGroupTestIntent) SendMessage(context.Context, id.RoomID, event.Type, *event.Content, *bridgev2.MatrixSendExtra) (*mautrix.RespSendEvent, error) {
+	return &mautrix.RespSendEvent{EventID: id.EventID("$message")}, nil
+}
+func (i createGroupTestIntent) SendState(context.Context, id.RoomID, event.Type, string, *event.Content, time.Time) (*mautrix.RespSendEvent, error) {
+	return &mautrix.RespSendEvent{EventID: id.EventID("$state")}, nil
+}
+func (i createGroupTestIntent) MarkRead(context.Context, id.RoomID, id.EventID, time.Time) error {
+	return nil
+}
+func (i createGroupTestIntent) MarkUnread(context.Context, id.RoomID, bool) error {
+	return nil
+}
+func (i createGroupTestIntent) MarkTyping(context.Context, id.RoomID, bridgev2.TypingType, time.Duration) error {
+	return nil
+}
+func (i createGroupTestIntent) DownloadMedia(context.Context, id.ContentURIString, *event.EncryptedFileInfo) ([]byte, error) {
+	return nil, nil
+}
+func (i createGroupTestIntent) DownloadMediaToFile(context.Context, id.ContentURIString, *event.EncryptedFileInfo, bool, func(*os.File) error) error {
+	return nil
+}
+func (i createGroupTestIntent) UploadMedia(context.Context, id.RoomID, []byte, string, string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+	return "", nil, nil
+}
+func (i createGroupTestIntent) UploadMediaStream(context.Context, id.RoomID, int64, bool, bridgev2.FileStreamCallback) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+	return "", nil, nil
+}
+func (i createGroupTestIntent) SetDisplayName(context.Context, string) error { return nil }
+func (i createGroupTestIntent) SetAvatarURL(context.Context, id.ContentURIString) error {
+	return nil
+}
+func (i createGroupTestIntent) SetExtraProfileMeta(context.Context, any) error { return nil }
+func (i createGroupTestIntent) SetProfile(context.Context, any) error          { return nil }
+func (i createGroupTestIntent) CreateRoom(context.Context, *mautrix.ReqCreateRoom) (id.RoomID, error) {
+	return "", nil
+}
+func (i createGroupTestIntent) DeleteRoom(context.Context, id.RoomID, bool) error {
+	return nil
+}
+func (i createGroupTestIntent) EnsureJoined(context.Context, id.RoomID, ...bridgev2.EnsureJoinedParams) error {
+	return nil
+}
+func (i createGroupTestIntent) EnsureInvited(context.Context, id.RoomID, id.UserID) error {
+	return nil
+}
+func (i createGroupTestIntent) TagRoom(context.Context, id.RoomID, event.RoomTag, bool) error {
+	return nil
+}
+func (i createGroupTestIntent) MuteRoom(context.Context, id.RoomID, time.Time) error {
+	return nil
+}
+func (i createGroupTestIntent) GetEvent(context.Context, id.RoomID, id.EventID) (*event.Event, error) {
+	return nil, nil
 }
 
 func TestGetChatInfoUsesDefaultTitleAndDMType(t *testing.T) {

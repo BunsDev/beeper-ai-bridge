@@ -205,6 +205,9 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 	if params == nil || params.RoomID == "" {
 		return nil, fmt.Errorf("AI sessions must be created from an existing Matrix room")
 	}
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || cl.UserLogin == nil {
+		return nil, fmt.Errorf("AI session creation requires a loaded bridge login")
+	}
 	if params.Type != "" && params.Type != "ai" {
 		return nil, fmt.Errorf("unsupported AI group type %s", params.Type)
 	}
@@ -222,17 +225,42 @@ func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateP
 		disappear = &disappearSetting
 	}
 	roomType := database.RoomTypeDM
-	return &bridgev2.CreateChatResponse{
-		PortalKey: aiid.PortalKey(params.RoomID, cl.UserLogin.ID),
-		PortalInfo: &bridgev2.ChatInfo{
-			Name:                       &name,
-			Topic:                      topic,
-			Avatar:                     defaultAIAssistantAvatar(),
-			Type:                       &roomType,
-			Members:                    aiChatMembers(),
-			Disappear:                  disappear,
-			ExcludeChangesFromTimeline: true,
+	portalKey := aiid.PortalKey(params.RoomID, cl.UserLogin.ID)
+	info := &bridgev2.ChatInfo{
+		Name:                       &name,
+		Topic:                      topic,
+		Avatar:                     defaultAIAssistantAvatar(),
+		Type:                       &roomType,
+		Members:                    aiChatMembers(),
+		Disappear:                  disappear,
+		ExcludeChangesFromTimeline: true,
+	}
+	portal, err := cl.Main.Bridge.GetPortalByKey(ctx, portalKey)
+	if err != nil {
+		return nil, err
+	}
+	err = portal.UpdateMatrixRoomID(ctx, params.RoomID, bridgev2.UpdateMatrixRoomIDParams{
+		ChatInfoSource: cl.UserLogin,
+		SyncDBMetadata: func() {
+			portal.Name = name
+			portal.NameSet = name != ""
+			if topic != nil {
+				portal.Topic = *topic
+				portal.TopicSet = *topic != ""
+			}
+			portal.RoomType = roomType
+			if disappear != nil {
+				portal.Disappear = *disappear
+			}
 		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &bridgev2.CreateChatResponse{
+		PortalKey:  portalKey,
+		Portal:     portal,
+		PortalInfo: info,
 	}, nil
 }
 
