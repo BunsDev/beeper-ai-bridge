@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"strings"
 )
@@ -13,8 +14,7 @@ type serverSentEvent struct {
 }
 
 func iterateSSE(reader io.Reader, handle func(serverSentEvent) error) error {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	buffered := bufio.NewReaderSize(reader, 64*1024)
 	eventType := ""
 	data := []string{}
 	raw := []string{}
@@ -28,17 +28,18 @@ func iterateSSE(reader io.Reader, handle func(serverSentEvent) error) error {
 		raw = nil
 		return handle(event)
 	}
-	for scanner.Scan() {
-		line := scanner.Text()
+
+	processLine := func(line string) error {
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		if line == "" {
 			if err := flush(); err != nil {
 				return err
 			}
-			continue
+			return nil
 		}
 		raw = append(raw, line)
 		if strings.HasPrefix(line, ":") {
-			continue
+			return nil
 		}
 		field := line
 		value := ""
@@ -53,9 +54,22 @@ func iterateSSE(reader io.Reader, handle func(serverSentEvent) error) error {
 		case "data":
 			data = append(data, value)
 		}
+		return nil
 	}
-	if err := scanner.Err(); err != nil {
-		return err
+
+	for {
+		line, err := buffered.ReadString('\n')
+		if len(line) > 0 {
+			if processErr := processLine(line); processErr != nil {
+				return processErr
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
 	}
 	return flush()
 }

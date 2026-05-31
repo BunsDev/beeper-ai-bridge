@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -806,51 +805,30 @@ func parseCodexSSE(ctx context.Context, body io.Reader, stream *ai.AssistantMess
 	events := make(chan map[string]any)
 	go func() {
 		defer close(events)
-		scanner := bufio.NewScanner(body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-		dataLines := []string{}
-		flush := func() bool {
-			if len(dataLines) == 0 {
-				return true
-			}
-			data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-			dataLines = nil
+		err := iterateSSE(body, func(sse serverSentEvent) error {
+			data := strings.TrimSpace(sse.Data)
 			if data == "" || data == "[DONE]" {
-				return true
+				return nil
 			}
 			var event map[string]any
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
 				output.StopReason = ai.StopReasonError
 				output.ErrorMessage = "Invalid Codex SSE JSON: " + err.Error()
-				return false
+				return err
 			}
 			select {
 			case <-ctx.Done():
 				output.StopReason = ai.StopReasonAborted
 				output.ErrorMessage = ctx.Err().Error()
-				return false
+				return ctx.Err()
 			case events <- event:
-				return true
+				return nil
 			}
-		}
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				if !flush() {
-					return
-				}
-				continue
-			}
-			if strings.HasPrefix(line, "data:") {
-				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			}
-		}
-		if err := scanner.Err(); err != nil {
+		})
+		if err != nil && output.StopReason == "" {
 			output.StopReason = ai.StopReasonError
 			output.ErrorMessage = err.Error()
-			return
 		}
-		_ = flush()
 	}()
 	return events
 }

@@ -816,6 +816,34 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 	}
 }
 
+func TestApplyAIStreamEventSkipsEmptyToolCallDelta(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:      "toolCall",
+			ID:        "call-1",
+			Name:      "web_search",
+			Arguments: map[string]any{"query": "what is god"},
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 0, Partial: partial})
+
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventToolCallArgs {
+			t.Fatalf("empty tool delta emitted TOOL_CALL_ARGS: %#v", evt)
+		}
+	}
+	if _, err := aistream.PackRun(*run); err != nil {
+		t.Fatalf("expected stream to remain packable: %v", err)
+	}
+}
+
 func TestApplyAIStreamEventDoesNotPublishReasoningSignaturesToAGUI(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	writer := aistream.NewWriter(run, timeNow)

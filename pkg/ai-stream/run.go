@@ -411,6 +411,9 @@ func (w *Writer) recordApprovalRequestFromRequest(request ApprovalRequest) {
 }
 
 func (w *Writer) ToolArgs(toolCallID, delta string, args any) {
+	if delta == "" {
+		return
+	}
 	w.Add(w.builder.ToolCallArgs(toolCallID, delta, args))
 }
 
