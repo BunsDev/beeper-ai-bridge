@@ -502,6 +502,61 @@ func TestFinalBeeperAIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	}
 }
 
+func TestFinalBeeperAIMessageFailsPendingApprovalWhenRunFails(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "get_session", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	run.Status = Status{State: "error", Error: map[string]any{"message": "AI stream was interrupted before completion"}}
+
+	message := run.FinalBeeperAIMessage(0, true)
+	if len(message.Parts) != 1 {
+		t.Fatalf("expected one tool part, got %#v", message.Parts)
+	}
+	if message.Parts[0]["state"] != agui.ToolStateInputComplete {
+		t.Fatalf("pending approval should be finalized as input-complete on error: %#v", message.Parts[0])
+	}
+	output, ok := message.Parts[0]["output"].(map[string]any)
+	if !ok || output["status"] != "failed" || output["reason"] != "run failed before tool completed" {
+		t.Fatalf("pending approval should carry failed output, got %#v", message.Parts[0])
+	}
+}
+
+func TestFinalBeeperAIMessageKeepsPendingApprovalWhenInterrupted(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "get_session", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+
+	message := run.FinalBeeperAIMessage(0, true)
+	if len(message.Parts) != 1 || message.Parts[0]["state"] != ToolStateApprovalRequested {
+		t.Fatalf("interrupted run should keep approval pending: %#v", message.Parts)
+	}
+	if _, hasOutput := message.Parts[0]["output"]; hasOutput {
+		t.Fatalf("interrupted approval should not synthesize failed output: %#v", message.Parts[0])
+	}
+}
+
+func TestFinalLifecycleEventsPreferTerminalErrorOverPreviousInterrupt(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "get_session", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	run.Status = Status{State: "error", Error: map[string]any{"message": "AI stream was interrupted before completion"}}
+
+	payload := run.AI(AIKindFinal)
+	if len(payload.Events) != 1 {
+		t.Fatalf("expected one final lifecycle event, got %#v", payload.Events)
+	}
+	event := payload.Events[0].Event
+	if event.Type() != agui.EventRunError {
+		t.Fatalf("final lifecycle should be RUN_ERROR, got %#v", event)
+	}
+	if event.Get("message") != "AI stream was interrupted before completion" {
+		t.Fatalf("final RUN_ERROR carried wrong message: %#v", event)
+	}
+}
+
 func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
@@ -775,10 +830,16 @@ func TestApprovalResponseClearsResolvedInterrupt(t *testing.T) {
 	if len(run.Interrupts) != 0 {
 		t.Fatalf("approval response left stale interrupts: %#v", run.Interrupts)
 	}
+	if run.Status.State != "streaming" {
+		t.Fatalf("approval response should reopen the stream, got state %q", run.Status.State)
+	}
 	writer.ToolApprovalRequested("tool-2", "fetch", map[string]any{}, ToolApproval{ID: "approval-2", NeedsApproval: true})
 	writer.ToolDenied("tool-2", "fetch", map[string]any{}, "approval-2", "denied")
 	if len(run.Interrupts) != 0 {
 		t.Fatalf("approval denial left stale interrupts: %#v", run.Interrupts)
+	}
+	if run.Status.State != "streaming" {
+		t.Fatalf("approval denial should reopen the stream, got state %q", run.Status.State)
 	}
 }
 

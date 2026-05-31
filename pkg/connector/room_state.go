@@ -29,6 +29,7 @@ type RoomConfig struct {
 
 	modelStatePresent  bool
 	modelStateModel    string
+	modelStateName     string
 	modelStateReason   string
 	modelStateEventID  string
 	promptStateEventID string
@@ -58,6 +59,7 @@ func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (Roo
 	} else if raw != nil {
 		config.modelStatePresent = true
 		config.modelStateModel = firstString(raw, "model")
+		config.modelStateName = firstString(raw, "name")
 		config.modelStateReason = firstString(raw, "reasoning")
 		config.modelStateEventID = eventID
 		applyRoomModelConfig(&config, raw)

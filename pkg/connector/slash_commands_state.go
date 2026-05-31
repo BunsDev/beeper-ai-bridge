@@ -49,13 +49,16 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 	}
 	config.ThinkingLevel = cl.reasoningLevelForModel(model, config)
 	normalized := config.modelStatePresent && (config.modelStateModel != canonical || config.modelStateReason != config.ThinkingLevel)
-	if normalized {
+	nameChanged := config.modelStatePresent && model.Name != "" && config.modelStateName != model.Name
+	if normalized || nameChanged {
 		if _, err = cl.writeRoomModelState(ctx, msg.Portal, provider, model, canonical, config.ThinkingLevel); err != nil {
 			return config, nil, false, err
 		}
 		cl.refreshRoomCapabilities(ctx, msg.Portal)
-		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings normalized to `%s`.", canonical)); noticeErr != nil {
-			return config, nil, false, noticeErr
+		if normalized {
+			if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings normalized to `%s`.", canonical)); noticeErr != nil {
+				return config, nil, false, noticeErr
+			}
 		}
 	}
 	config.ProviderID = provider.ID
@@ -112,10 +115,7 @@ func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Port
 }
 
 func (cl *Client) applyRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string, opts applyRoomModelStateOptions) (string, error) {
-	content := map[string]any{"model": canonicalModel}
-	if reasoning != "" {
-		content["reasoning"] = reasoning
-	}
+	content := roomModelStateContent(model, canonicalModel, reasoning)
 	eventID, err := cl.writeAIRoomState(ctx, portal, aiid.RoomModelType, content)
 	if err != nil {
 		return eventID, err
@@ -125,6 +125,17 @@ func (cl *Client) applyRoomModelState(ctx context.Context, portal *bridgev2.Port
 	}
 	cl.updateRoomModelInfo(ctx, portal, provider, model, opts)
 	return eventID, nil
+}
+
+func roomModelStateContent(model ai.Model, canonicalModel string, reasoning string) map[string]any {
+	content := map[string]any{"model": canonicalModel}
+	if model.Name != "" {
+		content["name"] = model.Name
+	}
+	if reasoning != "" {
+		content["reasoning"] = reasoning
+	}
+	return content
 }
 
 func (cl *Client) updateRoomModelInfo(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, opts applyRoomModelStateOptions) {

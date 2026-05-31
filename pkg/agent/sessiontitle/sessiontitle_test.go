@@ -37,7 +37,7 @@ func TestGenerateCleansAndLimitsTitle(t *testing.T) {
 			if strings.Contains(prompt, "Conversation title generation task") {
 				t.Fatalf("title prompt should be based only on the first user message")
 			}
-			if options.MaxTokens == nil || *options.MaxTokens != 64 {
+			if options.MaxTokens == nil || *options.MaxTokens != 32 {
 				t.Fatalf("unexpected max tokens %#v", options.MaxTokens)
 			}
 			return ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: `Title: "Matrix AI Bridge Implementation."`}}, StopReason: ai.StopReasonStop}
@@ -58,6 +58,9 @@ func TestCleanTitleSanitizesMarkdownLabelsAndLength(t *testing.T) {
 	}
 	if len([]rune(title)) > maxTitleChars {
 		t.Fatalf("title was not truncated: %q", title)
+	}
+	if maxTitleChars != 48 {
+		t.Fatalf("unexpected max title length %d", maxTitleChars)
 	}
 }
 

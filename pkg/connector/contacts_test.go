@@ -15,6 +15,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 )
 
 func TestModelContactsExposeConfiguredModels(t *testing.T) {
@@ -449,6 +450,18 @@ func TestAIChatMembersUseGlobalAssistantGhostWithoutNetworkBotFlag(t *testing.T)
 		t.Fatalf("expected assistant ghost avatar %q, got %#v", defaultAIAssistantAvatarMXC, member.UserInfo)
 	} else if member.UserInfo.IsBot == nil || *member.UserInfo.IsBot {
 		t.Fatalf("expected assistant ghost to not be marked as a network bot, got %#v", member.UserInfo)
+	}
+	if members.PowerLevels == nil {
+		t.Fatalf("expected AI chat power levels")
+	}
+	for _, evtType := range []event.Type{
+		event.StateRoomName,
+		event.StateTopic,
+		event.StateBeeperDisappearingTimer,
+	} {
+		if level, ok := members.PowerLevels.Events[evtType]; !ok || level != 0 {
+			t.Fatalf("expected %s power level 0, got %d (present=%v)", evtType.Type, level, ok)
+		}
 	}
 }
 

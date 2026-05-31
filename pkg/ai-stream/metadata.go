@@ -46,12 +46,6 @@ func (t Run) finalDelivery() FinalDelivery {
 }
 
 func (t Run) finalLifecycleEvents() []Envelope {
-	for i := len(t.Events) - 1; i >= 0; i-- {
-		eventType := t.Events[i].Type()
-		if eventType == agui.EventRunFinished || eventType == agui.EventRunError {
-			return []Envelope{{Seq: 1, Event: t.Events[i]}}
-		}
-	}
 	switch t.Status.State {
 	case "complete", "interrupted":
 		reason := t.Status.FinishReason
@@ -99,9 +93,14 @@ func (t Run) finalLifecycleEvents() []Envelope {
 		}
 		event := agui.NewEvent(fields)
 		return []Envelope{{Seq: 1, Event: event}}
-	default:
-		return nil
 	}
+	for i := len(t.Events) - 1; i >= 0; i-- {
+		eventType := t.Events[i].Type()
+		if eventType == agui.EventRunFinished || eventType == agui.EventRunError {
+			return []Envelope{{Seq: 1, Event: t.Events[i]}}
+		}
+	}
+	return nil
 }
 
 func (t Run) Validate() error {

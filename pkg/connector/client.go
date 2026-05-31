@@ -93,12 +93,13 @@ type activeAIRun struct {
 	model     ai.Model
 	runID     string
 
-	mu       sync.Mutex
-	pending  []*pendingAIMessage
-	consumed []*pendingAIMessage
-	streams  []*assistantStreamState
-	last     *assistantStreamState
-	status   *bridgev2.MessageStatusEventInfo
+	mu        sync.Mutex
+	pending   []*pendingAIMessage
+	consumed  []*pendingAIMessage
+	streams   []*assistantStreamState
+	last      *assistantStreamState
+	status    *bridgev2.MessageStatusEventInfo
+	approvals map[string]*activeApproval
 }
 
 type assistantStreamState struct {
@@ -332,6 +333,7 @@ func nativeAudioMimeSupported(mimeType string) bool {
 func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, portalMeta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, agentSession *session.Session, prompt msgconv.MatrixPrompt, pending *pendingAIMessage) {
 	streamPublisher := cl.Main.Bridge.GetBeeperStreamPublisher()
 	runID := session.CreateSessionID()
+	active := &activeAIRun{portalKey: msg.Portal.PortalKey, provider: provider, model: model, runID: runID}
 	streamFn := cl.assistantStreamPublisher(streamPublisher, msg.Portal, portalMeta, provider, model, func() {
 		cl.queueAssistantTyping(msg.Portal.PortalKey, 0)
 	})
@@ -340,7 +342,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		Model:               model,
 		ThinkingLevel:       agent.ThinkingLevel(cl.reasoningLevelForModel(model, roomConfig)),
 		SystemPrompt:        cl.systemPrompt(roomConfig),
-		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, prompt),
+		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, prompt, chatToolsApprovalContext{publisher: streamPublisher, active: active}),
 		StreamFn:            streamFn,
 		GetAPIKeyAndHeaders: cl.authForProvider(provider),
 		CompactionSettings:  cl.Main.Config.Compaction.Settings(),
@@ -351,7 +353,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		return
 	}
 	cl.registerProviderBuiltInToolHooks(agentHarness)
-	active := &activeAIRun{portalKey: msg.Portal.PortalKey, harness: agentHarness, provider: provider, model: model, runID: runID}
+	active.harness = agentHarness
 	active.addPending(pending)
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)
 	cl.setActiveRun(msg.Portal.PortalKey, active)
@@ -880,7 +882,7 @@ func finalizedAssistantRun(run aistream.Run, message ai.Message) aistream.Run {
 		if run.Text() == "" {
 			run.Preview = aistream.PreviewFromText(aistream.ErrorFallbackPlaintext(message.ErrorMessage), aistream.PreviewBudgetBytes)
 		}
-	} else if run.Status.State == "streaming" {
+	} else if run.Status.State != "aborted" && run.Status.State != "error" {
 		run.Status = aistream.Status{State: "complete", FinishReason: aguiFinishReasonFromAI(message.StopReason)}
 	}
 	if isZeroAGUIUsage(run.Usage) {
@@ -1285,8 +1287,10 @@ func shouldPersistStreamRun(run *aistream.Run, cursor *streamPublishCursor) bool
 		return false
 	}
 	switch run.Status.State {
-	case "complete", "interrupted", "aborted", "error":
+	case "complete", "aborted", "error":
 		return false
+	case "interrupted":
+		return true
 	}
 	if cursor.lastPersisted == 0 {
 		return true
@@ -2004,16 +2008,143 @@ func (cl *Client) finishActiveStreamRecord(ctx context.Context, record aidb.Acti
 		return
 	}
 	switch record.Run.Status.State {
-	case "complete", "interrupted", "aborted", "error":
+	case "complete", "aborted", "error":
 		// The terminal Matrix edit may already have been queued before the crash.
 		// Stale active-stream recovery is only authoritative for non-terminal rows.
 	default:
+		cl.finalizeInterruptedSessionTurn(ctx, record, err)
 		cl.queueAssistantRunError(record.PortalKey, record.MessageID, record.ProviderID, record.ModelID, record.RunID, record.Run, &record.Metadata, err)
 		cl.sendActiveStreamRetriableStatus(ctx, record, err)
 	}
 	if err := cl.Main.Store.DeleteActiveStream(ctx, cl.UserLogin.ID, record.RunID); err != nil && cl.Main.Bridge != nil {
 		cl.Main.Bridge.Log.Warn().Err(err).Str("run_id", record.RunID).Msg("Failed to delete stale AI stream")
 	}
+}
+
+func (cl *Client) finalizeInterruptedSessionTurn(ctx context.Context, record aidb.ActiveStreamRecord, cause error) {
+	if cl == nil || cl.Main == nil || cl.Main.Store == nil || cl.UserLogin == nil || record.Run.ThreadID == "" || cause == nil {
+		return
+	}
+	agentSession, err := cl.Main.Store.OpenSession(ctx, cl.UserLogin.ID, session.SQLiteSessionMetadata{
+		SessionMetadata: session.SessionMetadata{ID: record.Run.ThreadID},
+	})
+	if err != nil {
+		if cl.Main.Bridge != nil {
+			cl.Main.Bridge.Log.Warn().Err(err).Str("session_id", record.Run.ThreadID).Str("run_id", record.RunID).Msg("Failed to open interrupted AI session")
+		}
+		return
+	}
+	defer agentSession.Close()
+
+	existingToolResults, ok := sessionBranchCanAppendRecovery(ctx, agentSession, record.EntryID)
+	if !ok {
+		if cl.Main.Bridge != nil {
+			cl.Main.Bridge.Log.Warn().Str("session_id", record.Run.ThreadID).Str("run_id", record.RunID).Str("entry_id", record.EntryID).Msg("Skipping interrupted AI session recovery because the branch moved")
+		}
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	for _, message := range interruptedToolResultMessages(record.Run, cause, existingToolResults, now) {
+		if _, err := agentSession.AppendMessage(ctx, message); err != nil {
+			if cl.Main.Bridge != nil {
+				cl.Main.Bridge.Log.Warn().Err(err).Str("session_id", record.Run.ThreadID).Str("run_id", record.RunID).Msg("Failed to append interrupted AI tool result")
+			}
+			return
+		}
+	}
+	assistantMessage := ai.Message{
+		Role:         "assistant",
+		Content:      []ai.ContentBlock{{Type: "text", Text: cause.Error()}},
+		Provider:     ai.Provider(record.ProviderID),
+		Model:        record.ModelID,
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: cause.Error(),
+		Timestamp:    now,
+	}
+	if _, err := agentSession.AppendMessage(ctx, assistantMessage); err != nil && cl.Main.Bridge != nil {
+		cl.Main.Bridge.Log.Warn().Err(err).Str("session_id", record.Run.ThreadID).Str("run_id", record.RunID).Msg("Failed to append interrupted AI assistant error")
+	}
+}
+
+func sessionBranchCanAppendRecovery(ctx context.Context, agentSession *session.Session, assistantEntryID string) (map[string]bool, bool) {
+	existingToolResults := map[string]bool{}
+	if assistantEntryID == "" {
+		return existingToolResults, true
+	}
+	branch, err := agentSession.GetBranch(ctx, nil)
+	if err != nil {
+		return existingToolResults, false
+	}
+	found := false
+	for _, raw := range branch {
+		var entry map[string]any
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return existingToolResults, false
+		}
+		if !found {
+			if entry["id"] == assistantEntryID {
+				found = true
+			}
+			continue
+		}
+		if entry["type"] != "message" {
+			continue
+		}
+		message, ok := entry["message"].(map[string]any)
+		if !ok {
+			return existingToolResults, false
+		}
+		role, _ := message["role"].(string)
+		if role != "toolResult" {
+			return existingToolResults, false
+		}
+		if toolCallID, _ := message["toolCallId"].(string); toolCallID != "" {
+			existingToolResults[toolCallID] = true
+		}
+	}
+	return existingToolResults, found
+}
+
+func interruptedToolResultMessages(run aistream.Run, cause error, existingToolResults map[string]bool, timestamp int64) []ai.Message {
+	final := finalizedAssistantRun(run, ai.Message{
+		Role:         "assistant",
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: cause.Error(),
+	})
+	message := final.FinalBeeperAIMessage(0, true)
+	results := make([]ai.Message, 0)
+	for _, part := range message.Parts {
+		if stringFromAny(part["type"]) != "tool-call" {
+			continue
+		}
+		toolCallID := stringFromAny(part["toolCallId"])
+		if toolCallID == "" || existingToolResults[toolCallID] {
+			continue
+		}
+		output := mapFromAny(part["output"])
+		if output == nil {
+			output = map[string]any{
+				"state":  agui.ToolResultStateError,
+				"status": "failed",
+				"reason": cause.Error(),
+			}
+		}
+		reason := stringFromAny(output["reason"])
+		if reason == "" {
+			reason = cause.Error()
+		}
+		results = append(results, ai.Message{
+			Role:       "toolResult",
+			ToolCallID: toolCallID,
+			ToolName:   stringFromAny(part["name"]),
+			Content:    []ai.ContentBlock{{Type: "text", Text: reason}},
+			Details:    output,
+			IsError:    true,
+			Timestamp:  timestamp,
+		})
+	}
+	return results
 }
 
 func (cl *Client) sendActiveStreamRetriableStatus(ctx context.Context, record aidb.ActiveStreamRecord, err error) {

@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -14,7 +15,12 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 )
 
-func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt) []agent.AgentTool[any] {
+type chatToolsApprovalContext struct {
+	publisher bridgev2.BeeperStreamPublisher
+	active    *activeAIRun
+}
+
+func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt, approvalContext ...chatToolsApprovalContext) []agent.AgentTool[any] {
 	if !modelSupportsAgentTools(model) {
 		return nil
 	}
@@ -55,7 +61,18 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 			}
 		}
 	}
-	return chattools.Tools(info, fetch, search)
+	sessionOptions := chattools.SessionOptions{}
+	var approvals chatToolsApprovalContext
+	if len(approvalContext) > 0 {
+		approvals = approvalContext[0]
+	}
+	if msg != nil && msg.Portal != nil && approvals.publisher != nil && approvals.active != nil {
+		portal := msg.Portal
+		sessionOptions.ResolveProfile = func(ctx context.Context, toolCallID string) (*chattools.SessionProfile, error) {
+			return cl.resolveBeeperProfileForSession(ctx, portal, approvals.publisher, approvals.active, toolCallID)
+		}
+	}
+	return chattools.ToolsWithOptions(info, fetch, search, sessionOptions)
 }
 
 func modelSupportsAgentTools(model ai.Model) bool {

@@ -233,6 +233,9 @@ func TestApprovalContentIncludesContextAndChoices(t *testing.T) {
 		MessageID:   "msg-run-1",
 		ToolCallID:  "tool-1",
 		ToolName:    "fetch",
+		Title:       "Can I fetch this?",
+		Description: "This will use the network.",
+		ExpiresAt:   "2026-05-31T12:00:00Z",
 		TargetEvent: "$anchor",
 	}
 	choices := aistream.DefaultApprovalChoices()
@@ -248,8 +251,14 @@ func TestApprovalContentIncludesContextAndChoices(t *testing.T) {
 	if meta["schema"] != "com.beeper.ai.approval.v1" || meta["id"] != ctx.ID || meta["messageId"] != ctx.MessageID || meta["toolCallId"] != ctx.ToolCallID || meta["state"] != "requested" {
 		t.Fatalf("bad approval metadata: %#v", meta)
 	}
+	if meta["title"] != ctx.Title || meta["description"] != ctx.Description || meta["expiresAt"] != ctx.ExpiresAt {
+		t.Fatalf("approval metadata missing title/description/expiry: %#v", meta)
+	}
 	if _, ok := meta["runId"]; ok {
 		t.Fatalf("approval event should not duplicate run metadata: %#v", meta)
+	}
+	if strings.Contains(strings.ToLower(content.Body), "react") || !strings.Contains(content.Body, "/approve approval-1 approve") {
+		t.Fatalf("approval fallback should use approve commands, got %q", content.Body)
 	}
 	approvalChoices, ok := meta["choices"].([]any)
 	if !ok || len(approvalChoices) != len(choices) {

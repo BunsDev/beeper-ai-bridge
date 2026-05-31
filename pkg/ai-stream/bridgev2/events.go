@@ -54,7 +54,11 @@ func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistrea
 }
 
 func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx aistream.ApprovalContext, timestamp time.Time) *simplevent.PreConvertedMessage {
-	content, extra := aimatrix.ApprovalContent(ctx, aistream.DefaultApprovalChoices())
+	choices := ctx.Choices
+	if len(choices) == 0 {
+		choices = aistream.DefaultApprovalChoices()
+	}
+	content, extra := aimatrix.ApprovalContent(ctx, choices)
 	return &simplevent.PreConvertedMessage{
 		EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, timestamp),
 		Data: &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{

@@ -1,30 +1,44 @@
 package chattools
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
 
 type SessionInfo struct {
-	Timestamp       string         `json:"timestamp"`
-	Timezone        string         `json:"timezone"`
-	RoomTitle       string         `json:"room_title,omitempty"`
-	RoomID          string         `json:"room_id,omitempty"`
-	SessionID       string         `json:"session_id,omitempty"`
-	ThreadID        string         `json:"thread_id,omitempty"`
-	LoginID         string         `json:"login_id,omitempty"`
-	ProviderID      string         `json:"provider_id,omitempty"`
-	ModelID         string         `json:"model_id,omitempty"`
-	ReasoningLevel  string         `json:"reasoning_level,omitempty"`
-	DisabledTools   []string       `json:"disabled_tools,omitempty"`
-	AttachmentCount int            `json:"attachment_count"`
-	Attachments     []Attachment   `json:"attachments,omitempty"`
-	Extra           map[string]any `json:"extra,omitempty"`
+	Timestamp       string          `json:"timestamp"`
+	Timezone        string          `json:"timezone"`
+	RoomTitle       string          `json:"room_title,omitempty"`
+	RoomID          string          `json:"room_id,omitempty"`
+	SessionID       string          `json:"session_id,omitempty"`
+	ThreadID        string          `json:"thread_id,omitempty"`
+	LoginID         string          `json:"login_id,omitempty"`
+	ProviderID      string          `json:"provider_id,omitempty"`
+	ModelID         string          `json:"model_id,omitempty"`
+	ReasoningLevel  string          `json:"reasoning_level,omitempty"`
+	DisabledTools   []string        `json:"disabled_tools,omitempty"`
+	AttachmentCount int             `json:"attachment_count"`
+	Attachments     []Attachment    `json:"attachments,omitempty"`
+	BeeperProfile   *SessionProfile `json:"beeper_profile,omitempty"`
+	Extra           map[string]any  `json:"extra,omitempty"`
+}
+
+type SessionProfile struct {
+	Email           string `json:"email,omitempty"`
+	Username        string `json:"username,omitempty"`
+	FullName        string `json:"full_name,omitempty"`
+	MatrixProfile   any    `json:"matrix_profile,omitempty"`
+	GravatarProfile any    `json:"gravatar_profile,omitempty"`
 }
 
 type Attachment struct {
 	Type     string `json:"type,omitempty"`
 	MimeType string `json:"mime_type,omitempty"`
+}
+
+type SessionOptions struct {
+	ResolveProfile func(context.Context, string) (*SessionProfile, error)
 }
 
 type FetchOptions struct {

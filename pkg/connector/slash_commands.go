@@ -118,6 +118,21 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 			noticeErrors: true,
 			run:          runLimitsCommand,
 		},
+		{
+			name:         "approve",
+			usage:        "/approve <approval-id> <approve|always|deny>",
+			description:  "Respond to a pending AI approval request.",
+			argRequired:  true,
+			noticeErrors: true,
+			run:          runApproveCommand,
+		},
+		{
+			name:         "reset-approvals",
+			usage:        "/reset-approvals",
+			description:  "Clear saved AI approval decisions for this bridge login.",
+			noticeErrors: true,
+			run:          runResetApprovalsCommand,
+		},
 	}
 }
 
@@ -186,13 +201,19 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 		return nil, true, fmt.Errorf("missing portal for AI command")
 	}
 	def, _ := aiSlashCommandByName(cmd.name)
+	reply := func(ctx context.Context, text string) error {
+		return cl.sendCommandNotice(ctx, msg.Portal, text)
+	}
+	replyAI := func(ctx context.Context, text string) error {
+		return cl.sendAICommandNotice(ctx, msg.Portal, text)
+	}
+	if msg.Content.MsgType == matrixCommandMsgType {
+		reply = func(context.Context, string) error { return nil }
+		replyAI = reply
+	}
 	responder := aiPortalCommandResponder{
-		reply: func(ctx context.Context, text string) error {
-			return cl.sendCommandNotice(ctx, msg.Portal, text)
-		},
-		replyAI: func(ctx context.Context, text string) error {
-			return cl.sendAICommandNotice(ctx, msg.Portal, text)
-		},
+		reply:   reply,
+		replyAI: replyAI,
 	}
 	if def.argRequired && cmd.arg == "" {
 		if err := responder.Reply(ctx, aiSlashCommandUsage(def)); err != nil {

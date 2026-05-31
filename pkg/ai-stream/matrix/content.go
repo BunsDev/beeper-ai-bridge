@@ -230,10 +230,22 @@ func CarrierContent(run aistream.Run, carrier aistream.Carrier, targetEventID id
 }
 
 func ApprovalContent(ctx aistream.ApprovalContext, choices []aistream.ApprovalChoice) (*event.MessageEventContent, map[string]any) {
-	toolName := ctx.ToolName
-	body := fmt.Sprintf("Approval required for %s", toolName)
+	body := strings.TrimSpace(ctx.PlanText)
+	if body == "" {
+		title := strings.TrimSpace(ctx.Title)
+		if title == "" {
+			title = fmt.Sprintf("Approval required for %s", ctx.ToolName)
+		}
+		body = title
+		if description := strings.TrimSpace(ctx.Description); description != "" {
+			body += "\n\n" + description
+		}
+	}
 	if len(choices) > 0 {
-		body += "\nReact with one of the listed choices."
+		body += "\n\nRespond with one of these commands:"
+		for _, choice := range choices {
+			body += fmt.Sprintf("\n- `/approve %s %s`", ctx.ID, choice.Key)
+		}
 	}
 	content := format.TextToContent(body)
 	if ctx.TargetEvent != "" {

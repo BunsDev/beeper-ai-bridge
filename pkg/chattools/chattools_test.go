@@ -50,6 +50,41 @@ func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 	}
 }
 
+func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
+	tool := GetSessionToolWithOptions(SessionInfo{SessionID: "session-1"}, SessionOptions{
+		ResolveProfile: func(ctx context.Context, toolCallID string) (*SessionProfile, error) {
+			if toolCallID != "call" {
+				t.Fatalf("tool call ID = %q", toolCallID)
+			}
+			return &SessionProfile{Email: "user@example.com", Username: "user"}, nil
+		},
+	})
+	result, err := tool.Execute(context.Background(), "call", map[string]any{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info SessionInfo
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.BeeperProfile == nil || info.BeeperProfile.Email != "user@example.com" || info.BeeperProfile.Username != "user" {
+		t.Fatalf("missing approved profile: %#v", info.BeeperProfile)
+	}
+
+	baseline := GetSessionToolWithOptions(SessionInfo{SessionID: "session-1"}, SessionOptions{
+		ResolveProfile: func(ctx context.Context, toolCallID string) (*SessionProfile, error) {
+			return nil, nil
+		},
+	})
+	result, err = baseline.Execute(context.Background(), "call", map[string]any{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Content[0].Text, "beeper_profile") {
+		t.Fatalf("denied baseline session should not include profile fields: %s", result.Content[0].Text)
+	}
+}
+
 func TestToolsOmitsDisabledSearch(t *testing.T) {
 	tools := Tools(SessionInfo{}, FetchOptions{}, SearchOptions{Enabled: false})
 	for _, tool := range tools {

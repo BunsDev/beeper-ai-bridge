@@ -183,7 +183,7 @@ func appendLimitWindowSummary(text *strings.Builder, windowName string, window a
 }
 
 func formatLimitLeft(window aiServicesLimitWindow) string {
-	if window.Limit < 0 || window.Remaining < 0 {
+	if window.Limit < 0 {
 		return "Unlimited"
 	}
 	if window.PercentageLeft <= 0 {
@@ -196,7 +196,7 @@ func formatLimitUsed(window aiServicesLimitWindow) string {
 	if window.Limit == 0 && window.Used == 0 && window.Remaining == 0 {
 		return "Not reported"
 	}
-	if window.Limit < 0 || window.Remaining < 0 {
+	if window.Limit < 0 {
 		return fmt.Sprintf("`%s` used", formatInt(window.Used))
 	}
 	return fmt.Sprintf("`%s / %s`", formatInt(window.Used), formatInt(window.Limit))

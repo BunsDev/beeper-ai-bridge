@@ -552,6 +552,18 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 					} else {
 						part["approval"] = ToolApproval{ID: interrupt.ID, NeedsApproval: true}
 					}
+					if title := firstString(metadata["title"]); title != "" {
+						part["title"] = title
+					}
+					if description := firstString(metadata["description"]); description != "" {
+						part["description"] = description
+					}
+					if expiresAt := firstString(metadata["expiresAt"], interrupt.ExpiresAt); expiresAt != "" {
+						part["expiresAt"] = expiresAt
+					}
+					if displayMetadata, ok := metadata["metadata"].(map[string]any); ok && len(displayMetadata) > 0 {
+						part["metadata"] = displayMetadata
+					}
 				} else {
 					part["approval"] = ToolApproval{ID: interrupt.ID, NeedsApproval: true}
 				}
@@ -667,8 +679,10 @@ func finalizeOpenToolPart(part MessagePart, runState string) {
 		return
 	}
 	state, _ := part["state"].(string)
-	switch state {
-	case ToolStateApprovalRequested, ToolStateApprovalResponded:
+	if state == ToolStateApprovalRequested && runState == "interrupted" {
+		return
+	}
+	if state == ToolStateApprovalResponded {
 		return
 	}
 	reason := "run finalized before tool completed"

@@ -13,17 +13,17 @@ import (
 const SystemPrompt = `Generate a concise, specific title for this chat.
 Capture the main topic or task from the provided message.
 Rules:
-- Prefer 2 to 6 words
+- Prefer 2 to 4 words
 - Use Title Case
 - Be specific and descriptive
 - No quotes
 - No markdown
 - No labels like Title:
 - No trailing punctuation
-- Maximum 60 characters
+- Maximum 48 characters
 - Return only the title`
 
-const maxTitleChars = 60
+const maxTitleChars = 48
 
 type Options struct {
 	Model      ai.Model
@@ -47,7 +47,7 @@ func Generate(ctx context.Context, messages []agent.AgentMessage, options Option
 	if len(prompt) == 0 {
 		return "", nil
 	}
-	maxTokens := 64
+	maxTokens := 32
 	result := options.CompleteFn(ctx, options.Model, ai.Context{
 		SystemPrompt: SystemPrompt,
 		Messages: []ai.Message{{

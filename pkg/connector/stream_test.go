@@ -2,22 +2,29 @@ package connector
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	agent "github.com/beeper/ai-bridge/pkg/agent"
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -206,6 +213,113 @@ func TestFinalizedAssistantRunPreservesAccumulatedStreamUsage(t *testing.T) {
 	final := finalizedAssistantRun(run, message)
 	if final.Usage != run.Usage {
 		t.Fatalf("finalization overwrote accumulated usage: got %#v want %#v", final.Usage, run.Usage)
+	}
+}
+
+func TestFinalizedAssistantRunCompletesAfterApprovalInterrupt(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(&run, timeNow)
+	writer.Start()
+	writer.ToolApprovalRequested("call-session", "get_session", map[string]any{}, aistream.ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	writer.ToolApprovalResponded("call-session", "get_session", map[string]any{}, aistream.ToolApprovalResponse{ID: "approval-1", Approved: true})
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "done"}},
+		StopReason: ai.StopReasonStop,
+	}
+
+	final := finalizedAssistantRun(run, message)
+	if final.Status.State != "complete" {
+		t.Fatalf("finalized interrupted run state = %q, want complete", final.Status.State)
+	}
+	payload := final.AI(aistream.AIKindFinal)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunFinished {
+		t.Fatalf("missing final RUN_FINISHED event: %#v", payload.Events)
+	}
+	terminal := payload.Events[0].Event
+	if terminal.Get("finishReason") != agui.FinishReasonStop {
+		t.Fatalf("final finish reason = %#v, want stop", terminal.Get("finishReason"))
+	}
+	if outcome, ok := terminal.Get("outcome").(agui.RunFinishedOutcome); !ok || outcome.Type != agui.OutcomeSuccess {
+		t.Fatalf("final outcome should be success, got %#v", terminal.Get("outcome"))
+	}
+}
+
+func TestInterruptedStreamRunsRemainRecoverable(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.Status.State = "interrupted"
+	cursor := &streamPublishCursor{lastPersisted: 1, lastPersistedAt: time.Now()}
+
+	if !shouldPersistStreamRun(run, cursor) {
+		t.Fatal("interrupted stream should stay persisted while waiting for approval")
+	}
+}
+
+func TestFinalizeInterruptedSessionTurnClosesToolUseTurn(t *testing.T) {
+	ctx := context.Background()
+	store := testAIStore(t)
+	loginID := networkid.UserLoginID("login")
+	agentSession, err := store.CreateSession(ctx, loginID, session.SQLiteSessionCreateOptions{ID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = agentSession.AppendMessage(ctx, ai.Message{Role: "user", Content: "hi", Timestamp: 1}); err != nil {
+		t.Fatal(err)
+	}
+	assistantEntryID, err := agentSession.AppendMessage(ctx, ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:      "toolCall",
+			ID:        "call-session",
+			Name:      "get_session",
+			Arguments: map[string]any{},
+		}},
+		StopReason: ai.StopReasonToolUse,
+		Timestamp:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := aistream.NewRun("run-1", "session-1", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.ToolStart("call-session", "get_session", 0, nil)
+	writer.ToolApprovalRequested("call-session", "get_session", map[string]any{}, aistream.ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+
+	client := &Client{
+		Main: &Connector{Store: store},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			ID: loginID,
+		}},
+	}
+	client.finalizeInterruptedSessionTurn(ctx, aidb.ActiveStreamRecord{
+		RunID:      run.RunID,
+		LoginID:    loginID,
+		EntryID:    assistantEntryID,
+		Run:        *run,
+		ProviderID: "beeper",
+		ModelID:    "fake",
+	}, errors.New("AI stream was interrupted before completion"))
+
+	context, err := agentSession.BuildContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.Messages) != 4 {
+		t.Fatalf("expected recovered turn to have 4 messages, got %#v", context.Messages)
+	}
+	toolResult := context.Messages[2]
+	if toolResult.Role != "toolResult" || toolResult.ToolCallID != "call-session" || !toolResult.IsError {
+		t.Fatalf("expected failed tool result after interrupted tool call, got %#v", toolResult)
+	}
+	final := context.Messages[3]
+	if final.Role != "assistant" || final.StopReason != ai.StopReasonError || !strings.Contains(final.ErrorMessage, "interrupted") {
+		t.Fatalf("expected assistant error to close interrupted turn, got %#v", final)
 	}
 }
 
@@ -612,6 +726,29 @@ func TestPublishNewStreamEventsSuppressesMautrixRequestBodyLogs(t *testing.T) {
 	if publisher.publishLogLevels[0] < zerolog.FatalLevel {
 		t.Fatalf("stream carrier publish should suppress mautrix request body logs, got level %s", publisher.publishLogLevels[0])
 	}
+}
+
+func testAIStore(t *testing.T) *aidb.Store {
+	t.Helper()
+	rawDB, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = rawDB.Close()
+	})
+	db, err := dbutil.NewWithDB(rawDB, "sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	store := aidb.NewStore(db, networkid.BridgeID("bridge"), dbutil.ZeroLogger(zerolog.Nop()))
+	if err := store.Upgrade(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 type recordingStreamPublisher struct {

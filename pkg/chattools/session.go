@@ -9,10 +9,14 @@ import (
 )
 
 func GetSessionTool(info SessionInfo) agent.AgentTool[any] {
+	return GetSessionToolWithOptions(info, SessionOptions{})
+}
+
+func GetSessionToolWithOptions(info SessionInfo, options SessionOptions) agent.AgentTool[any] {
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "get_session",
-			Description: "Get fresh metadata for this Beeper AI chat, including current timestamp, timezone, room, session, model, reasoning, search, and attachments.",
+			Description: "Get fresh metadata for this Beeper AI chat, including current timestamp, timezone, room, session, model, reasoning, search, attachments, and approved profile fields.",
 			Parameters:  objectSchema(nil, nil),
 		},
 		Execute: func(ctx context.Context, toolCallID string, params any, onUpdate agent.AgentToolUpdateCallback[any]) (agent.AgentToolResult[any], error) {
@@ -22,6 +26,13 @@ func GetSessionTool(info SessionInfo) agent.AgentTool[any] {
 			current.Timezone = timezoneName(now)
 			if current.ThreadID == "" {
 				current.ThreadID = current.SessionID
+			}
+			if options.ResolveProfile != nil {
+				profile, err := options.ResolveProfile(ctx, toolCallID)
+				if err != nil {
+					return agent.AgentToolResult[any]{}, err
+				}
+				current.BeeperProfile = profile
 			}
 			return jsonResult(current)
 		},

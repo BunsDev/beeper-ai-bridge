@@ -112,6 +112,13 @@ func aiChatMembers() *bridgev2.ChatMemberList {
 				UserInfo:    aiAssistantUserInfo(),
 			},
 		},
+		PowerLevels: &bridgev2.PowerLevelOverrides{
+			Events: map[event.Type]int{
+				event.StateRoomName:                0,
+				event.StateTopic:                   0,
+				event.StateBeeperDisappearingTimer: 0,
+			},
+		},
 	}
 }
 

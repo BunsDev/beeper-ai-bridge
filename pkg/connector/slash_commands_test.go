@@ -40,6 +40,8 @@ func TestParseAISlashCommand(t *testing.T) {
 		{body: "/stop", name: "abort", ok: true},
 		{body: "/session", name: "session", ok: true},
 		{body: "/limits", name: "limits", ok: true},
+		{body: "/approve approval-1 always", name: "approve", arg: "approval-1 always", ok: true},
+		{body: "/reset-approvals", name: "reset-approvals", ok: true},
 		{body: "/unknown nope", ok: false},
 		{body: "hello /model gpt-5", ok: false},
 	}
@@ -123,6 +125,17 @@ func TestCanonicalAICommandNameAliases(t *testing.T) {
 		if got := canonicalAICommandName(input); got != want {
 			t.Fatalf("canonicalAICommandName(%q)=%q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestApprovalResponseFromCommandAliases(t *testing.T) {
+	response, ok := approvalResponseFromCommand("approval-1", "always")
+	if !ok || !response.Approved || !response.Always || response.Choice != aistream.ApprovalChoiceAlwaysApprove {
+		t.Fatalf("always approval response = %#v ok=%v", response, ok)
+	}
+	response, ok = approvalResponseFromCommand("approval-1", "deny")
+	if !ok || response.Approved || response.Reason != "denied" {
+		t.Fatalf("deny approval response = %#v ok=%v", response, ok)
 	}
 }
 
@@ -426,7 +439,7 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		LLM: aiServicesLimitWindows{
 			Day:   aiServicesLimitWindow{PercentageLeft: 75, Limit: 1000, Used: 250, Remaining: 750, ResetAtMS: reset},
 			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: -1, Used: 1234, Remaining: -1, ResetAtMS: reset},
-			Month: aiServicesLimitWindow{PercentageLeft: 0, Limit: 30000, Used: 30000, Remaining: 0, ResetAtMS: reset},
+			Month: aiServicesLimitWindow{PercentageLeft: 0, Limit: 30000, Used: 30500, Remaining: -500, ResetAtMS: reset},
 		},
 		WebTools: aiServicesLimitWindows{
 			Day:   aiServicesLimitWindow{PercentageLeft: 99, Limit: 200000, Used: 1, Remaining: 199999, ResetAtMS: reset},
@@ -440,7 +453,7 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		"| Window | Left | Used | Reset |",
 		"| Daily | `75%` | `250 / 1,000` | in 1 day 2 hours 3 minutes |",
 		"| Weekly | Unlimited | `1,234` used | in 1 day 2 hours 3 minutes |",
-		"| Monthly | **Out** | `30,000 / 30,000` | in 1 day 2 hours 3 minutes |",
+		"| Monthly | **Out** | `30,500 / 30,000` | in 1 day 2 hours 3 minutes |",
 		"## Web Search",
 		"| Daily | `99%` | `1 / 200,000` | in 1 day 2 hours 3 minutes |",
 	} {

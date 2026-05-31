@@ -143,20 +143,32 @@ func terminalError(value any) *RunError {
 }
 
 type ApprovalSummary struct {
-	ID         string         `json:"id"`
-	ToolCallID string         `json:"toolCallId"`
-	State      string         `json:"state"`
-	Always     bool           `json:"always"`
-	Reason     string         `json:"reason,omitempty"`
-	EditedArgs map[string]any `json:"editedArgs,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	ID          string         `json:"id"`
+	ToolCallID  string         `json:"toolCallId"`
+	ToolName    string         `json:"toolName,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	ExpiresAt   string         `json:"expiresAt,omitempty"`
+	State       string         `json:"state"`
+	Always      bool           `json:"always"`
+	Choice      string         `json:"choice,omitempty"`
+	Persisted   bool           `json:"persisted,omitempty"`
+	RespondedAt string         `json:"respondedAt,omitempty"`
+	Reason      string         `json:"reason,omitempty"`
+	EditedArgs  map[string]any `json:"editedArgs,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type ApprovalPrompt struct {
-	ID         string
-	ToolCallID string
-	ToolName   string
-	SeqStart   int
+	ID          string
+	ToolCallID  string
+	ToolName    string
+	Title       string
+	Description string
+	PlanText    string
+	ExpiresAt   string
+	SeqStart    int
+	Metadata    map[string]any
 }
 
 type ArtifactSummary struct {
@@ -326,6 +338,17 @@ func (w *Writer) ToolApprovalRequestedWithMetadata(toolCallID, name string, inpu
 	w.recordInterrupt(NewApprovalInterrupt(*w.Run, toolCallID, name, input, approval, metadata))
 }
 
+func (w *Writer) ToolApprovalRequestedWithRequest(request ApprovalRequest) {
+	approval := request.Approval
+	if approval.ID == "" {
+		approval.ID = request.ID
+	}
+	approval.NeedsApproval = true
+	request.Approval = approval
+	w.recordApprovalRequestFromRequest(request)
+	w.recordInterrupt(NewApprovalInterruptFromRequest(*w.Run, request))
+}
+
 func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *ToolApproval) {
 	if approval == nil || approval.ID == "" {
 		return
@@ -340,9 +363,51 @@ func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *ToolAp
 	w.Run.Approvals = append(w.Run.Approvals, ApprovalSummary{
 		ID:         approval.ID,
 		ToolCallID: toolCallID,
+		ToolName:   name,
 		State:      "requested",
 	})
 	w.Run.Prompts = append(w.Run.Prompts, ApprovalPrompt{ID: approval.ID, ToolCallID: toolCallID, ToolName: name})
+}
+
+func (w *Writer) recordApprovalRequestFromRequest(request ApprovalRequest) {
+	approval := request.Approval
+	if approval.ID == "" {
+		approval.ID = request.ID
+	}
+	if approval.ID == "" {
+		return
+	}
+	w.Run.ToolCallID = request.ToolCallID
+	w.Run.ApprovalID = approval.ID
+	expiresAt := ""
+	if !request.ExpiresAt.IsZero() {
+		expiresAt = request.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	for _, existing := range w.Run.Approvals {
+		if existing.ID == approval.ID {
+			return
+		}
+	}
+	w.Run.Approvals = append(w.Run.Approvals, ApprovalSummary{
+		ID:          approval.ID,
+		ToolCallID:  request.ToolCallID,
+		ToolName:    request.ToolName,
+		Title:       request.Title,
+		Description: request.Description,
+		ExpiresAt:   expiresAt,
+		State:       "requested",
+		Metadata:    request.Metadata,
+	})
+	w.Run.Prompts = append(w.Run.Prompts, ApprovalPrompt{
+		ID:          approval.ID,
+		ToolCallID:  request.ToolCallID,
+		ToolName:    request.ToolName,
+		Title:       request.Title,
+		Description: request.Description,
+		PlanText:    request.PlanText,
+		ExpiresAt:   expiresAt,
+		Metadata:    request.Metadata,
+	})
 }
 
 func (w *Writer) ToolArgs(toolCallID, delta string, args any) {
@@ -373,9 +438,14 @@ func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, respo
 		if w.Run.Approvals[i].ID == response.ID {
 			w.Run.Approvals[i].State = approvalSummaryState(response)
 			w.Run.Approvals[i].Always = response.Always
+			w.Run.Approvals[i].Choice = response.Choice
+			w.Run.Approvals[i].Persisted = response.Persisted
+			w.Run.Approvals[i].RespondedAt = response.RespondedAt
 			w.Run.Approvals[i].Reason = response.Reason
 			w.Run.Approvals[i].EditedArgs = response.EditedArgs
-			w.Run.Approvals[i].Metadata = response.Metadata
+			if response.Metadata != nil {
+				w.Run.Approvals[i].Metadata = response.Metadata
+			}
 		}
 	}
 	result := ApprovalToolResultFromResponse(response)
@@ -384,6 +454,7 @@ func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, respo
 		state = agui.ToolResultStateError
 	}
 	w.resolveInterrupt(response.ID, toolCallID)
+	w.Run.Status = Status{State: "streaming"}
 	w.ToolResult(toolCallID, asString(jsonString(result)), state)
 }
 
@@ -411,6 +482,7 @@ func (w *Writer) ToolDenied(toolCallID, name string, input any, approvalID, reas
 		}
 	}
 	w.resolveInterrupt(approvalID, toolCallID)
+	w.Run.Status = Status{State: "streaming"}
 	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
 	w.ToolResult(toolCallID, asString(jsonString(DeniedApprovalToolResult(approvalID, reason))), agui.ToolResultStateError)
 }
