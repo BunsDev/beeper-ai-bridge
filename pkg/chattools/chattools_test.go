@@ -171,7 +171,7 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 		if payload["query"] != "query" || payload["numResults"] != float64(5) {
 			t.Fatalf("unexpected search payload %#v", payload)
 		}
-		if _, ok := payload["useAutoprompt"]; ok {
+		if payload["useAutoprompt"] != false {
 			t.Fatalf("unexpected search payload %#v", payload)
 		}
 		_, _ = w.Write([]byte(`{"requestId":"req_1","resolvedSearchType":"auto","costDollars":{"total":0.001},"output":{"content":"synth"},"results":[{"id":"doc_1","title":"One","url":"https://example.com","text":"ok","highlights":["hit"],"highlightScores":[0.5],"summary":"sum","publishedDate":"2026-01-01","siteName":"Example","author":"A","image":"https://example.com/image.png","favicon":"https://example.com/favicon.ico","subpages":[{"id":"sub_1","title":"Sub","url":"https://example.com/sub"}],"entities":[{"type":"company"}],"extras":{"links":["https://example.com/link"]}}]}`))

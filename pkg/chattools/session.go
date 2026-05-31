@@ -19,11 +19,31 @@ func GetSessionTool(info SessionInfo) agent.AgentTool[any] {
 			now := time.Now()
 			current := info
 			current.Timestamp = now.Format(time.RFC3339)
-			current.Timezone = now.Location().String()
+			current.Timezone = timezoneName(now)
 			if current.ThreadID == "" {
 				current.ThreadID = current.SessionID
 			}
 			return jsonResult(current)
 		},
 	}
+}
+
+func timezoneName(t time.Time) string {
+	name, offset := t.Zone()
+	if loc := t.Location().String(); loc != "" && loc != "Local" {
+		return loc
+	}
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	return name + " UTC" + sign + twoDigits(offset/3600) + ":" + twoDigits((offset%3600)/60)
+}
+
+func twoDigits(value int) string {
+	if value < 10 {
+		return "0" + string(rune('0'+value))
+	}
+	return string(rune('0'+value/10)) + string(rune('0'+value%10))
 }

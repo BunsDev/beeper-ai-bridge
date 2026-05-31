@@ -79,6 +79,17 @@ function nextResponse() {
 	return normalizeResponse(raw);
 }
 
+function redactHeaders(headers) {
+	const redacted = { ...headers };
+	for (const name of Object.keys(redacted)) {
+		const lower = name.toLowerCase();
+		if (lower === "authorization" || lower === "cookie" || lower === "set-cookie" || lower === "x-api-key" || lower.includes("token")) {
+			redacted[name] = "<redacted>";
+		}
+	}
+	return redacted;
+}
+
 function readBody(req) {
 	return new Promise((resolve, reject) => {
 		let body = "";
@@ -315,7 +326,7 @@ async function handle(req, res) {
 		}
 		if (req.method === "POST" && ["/api/stream", "/v1/chat/completions", "/v1/responses"].includes(url.pathname)) {
 			const body = await readBody(req);
-			state.requests.push({ method: req.method, path: url.pathname, headers: req.headers, body });
+				state.requests.push({ method: req.method, path: url.pathname, headers: redactHeaders(req.headers), body });
 			const response = nextResponse();
 			if (url.pathname === "/api/stream") bridgeEventStream(res, response);
 			if (url.pathname === "/v1/chat/completions") chatCompletionStream(res, body, response);

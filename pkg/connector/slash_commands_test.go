@@ -209,12 +209,13 @@ func TestSessionCommandStatsFromEntries(t *testing.T) {
 
 func TestFormatSessionCommandInfo(t *testing.T) {
 	text := formatSessionCommandInfo(sessionCommandInfo{
-		SessionID:    "session-1",
-		CreatedAt:    "2026-05-30T00:00:00Z",
-		Model:        "beeper/gpt-5.5",
-		Reasoning:    "off",
-		SystemPrompt: true,
-		Responding:   true,
+		SessionID:     "session-1",
+		CreatedAt:     "2026-05-30T00:00:00Z",
+		RoomProvider:  "beeper",
+		RoomModel:     "beeper/gpt-5.5",
+		RoomReasoning: "off",
+		SystemPrompt:  true,
+		Responding:    true,
 		Stats: sessionCommandStats{
 			TotalEntries:       4,
 			Messages:           3,
@@ -227,8 +228,8 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 	for _, want := range []string{
 		"Status: `responding`",
 		"ID: `session-1`",
-		"Model: `beeper/gpt-5.5`",
-		"System prompt: `yes`",
+		"Room model: `beeper/gpt-5.5`",
+		"System prompt: `yes, 0 chars`",
 		"Messages: `3` total, `1` user, `1` assistant, `1` tool results",
 		"Compactions: `1`",
 	} {
@@ -237,7 +238,7 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 		}
 	}
 
-	text = formatSessionCommandInfo(sessionCommandInfo{Model: "beeper/gpt-5.5", Reasoning: "off"})
+	text = formatSessionCommandInfo(sessionCommandInfo{RoomProvider: "beeper", RoomModel: "beeper/gpt-5.5", RoomReasoning: "off"})
 	if !strings.Contains(text, "No AI session has been started in this room yet.") {
 		t.Fatalf("empty session info missing no-session text:\n%s", text)
 	}

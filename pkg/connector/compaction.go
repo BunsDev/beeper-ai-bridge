@@ -95,8 +95,7 @@ func compactCommandError(err error) error {
 			return fmt.Errorf("compaction failed while summarizing: %w", err)
 		case harness.CompactionErrorInvalidSession:
 			return fmt.Errorf("cannot compact this session: %w", err)
-		}
-		if err.Error() == "Nothing to compact" {
+		case harness.CompactionErrorNothingToCompact:
 			return fmt.Errorf("nothing to compact yet. Send more messages first")
 		}
 	}

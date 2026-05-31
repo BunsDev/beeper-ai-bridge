@@ -19,7 +19,7 @@ import (
 )
 
 func (cl *Client) sendCommandNotice(ctx context.Context, portal *bridgev2.Portal, text string) error {
-	if cl == nil || cl.UserLogin == nil || portal == nil || portal.MXID == "" {
+	if cl == nil || cl.Main == nil || cl.UserLogin == nil || portal == nil || portal.MXID == "" {
 		return fmt.Errorf("portal room is not available to send command notice")
 	}
 	content := commandResponseContent(text)

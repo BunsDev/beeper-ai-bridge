@@ -558,7 +558,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 		case agui.EventStepStarted, agui.EventStepFinished:
 			stepName := firstString(evt.Get("stepName"), evt.Get("stepId"), "Step")
 			messageID := firstString(evt.Get("messageId"), t.MessageID)
-			state := "running"
+			state := agui.PartStateStreaming
 			if eventType == agui.EventStepFinished {
 				state = agui.PartStateDone
 			}

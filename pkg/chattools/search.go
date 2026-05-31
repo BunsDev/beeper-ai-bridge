@@ -194,8 +194,9 @@ func (body searchResponse) result() SearchResult {
 
 func searchPayload(query string, limit int, request SearchRequestOptions) map[string]any {
 	payload := map[string]any{
-		"query":      query,
-		"numResults": limit,
+		"query":         query,
+		"numResults":    limit,
+		"useAutoprompt": false,
 	}
 	addStrings(payload, "includeDomains", request.IncludeDomains)
 	addStrings(payload, "excludeDomains", request.ExcludeDomains)

@@ -63,7 +63,7 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	name := defaultConversationTitle(provider, model)
 	topic := modelRoomDescription(provider, model)
 	roomType := database.RoomTypeDM
-	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: modelAvatar(provider, model), Type: &roomType, Members: aiChatMembers()}
+	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: defaultAIAssistantAvatar(), Type: &roomType, Members: aiChatMembers()}
 	meta := portalMetadata(portal)
 	meta.AutoTitlePending = true
 	if portal.MXID == "" {
@@ -838,6 +838,10 @@ func cloneModelContacts(contacts []*bridgev2.ResolveIdentifierResponse) []*bridg
 			userInfo := *contact.UserInfo
 			userInfo.Identifiers = append([]string(nil), contact.UserInfo.Identifiers...)
 			cloned.UserInfo = &userInfo
+		}
+		if contact.Ghost != nil {
+			ghost := *contact.Ghost
+			cloned.Ghost = &ghost
 		}
 		out = append(out, &cloned)
 	}

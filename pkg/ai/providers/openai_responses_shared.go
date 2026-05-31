@@ -77,6 +77,19 @@ func ConvertResponsesMessages(model ai.Model, llmContext ai.Context, options ...
 						item["id"] = itemID
 					}
 					input = append(input, item)
+				case "image":
+					if msg.Provider == model.Provider && msg.API == model.API && block.ID != "" && block.Data != "" {
+						result := block.Data
+						if block.MimeType != "" && !strings.HasPrefix(result, "data:") {
+							result = "data:" + block.MimeType + ";base64," + result
+						}
+						input = append(input, map[string]any{
+							"type":   "image_generation_call",
+							"id":     block.ID,
+							"status": "completed",
+							"result": result,
+						})
+					}
 				}
 			}
 		case "toolResult":

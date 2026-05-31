@@ -40,12 +40,6 @@ func (t Run) AIStream(envelopes []Envelope) BeeperAI {
 	return payload
 }
 
-func (t Run) AISegment(message UIMessage, segment FinalSegmentMetadata) BeeperAI {
-	payload := t.AIWithMessage("segment", message)
-	payload.Segment = &segment
-	return payload
-}
-
 func (t Run) finalDelivery() FinalDelivery {
 	if t.Final.Delivery != "" {
 		return t.Final

@@ -301,16 +301,17 @@ func fetchProviderModels(ctx context.Context, api ai.Api, providerID string, bas
 		req.Header.Set("Authorization", "Bearer "+resolveConfiguredAPIKey(apiKey))
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
-	log := zerolog.Ctx(ctx).With().
+	logCtx := zerolog.Ctx(ctx).With().
 		Str("action", "ai_provider_models_http").
 		Str("provider_id", providerID).
 		Str("api", string(api)).
-		Str("method", http.MethodGet).
-		Str("url", modelURL).
-		Logger()
+		Str("method", http.MethodGet)
 	if parsed, parseErr := url.Parse(modelURL); parseErr == nil {
-		log = log.With().Str("host", parsed.Host).Str("path", parsed.EscapedPath()).Logger()
+		logCtx = logCtx.Str("url", parsed.Redacted()).Str("host", parsed.Host).Str("path", parsed.EscapedPath())
+	} else {
+		logCtx = logCtx.Str("url", modelURL)
 	}
+	log := logCtx.Logger()
 	ctx = log.WithContext(ctx)
 	log.Trace().Msg("Sending provider models HTTP request")
 	started := time.Now()

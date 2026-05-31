@@ -441,7 +441,7 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 		return CompactResult{}, err
 	}
 	if !ok || preparation == nil {
-		return CompactResult{}, NewCompactionError(CompactionErrorUnknown, "Nothing to compact", nil)
+		return CompactResult{}, NewCompactionError(CompactionErrorNothingToCompact, "Nothing to compact", nil)
 	}
 	hookResult, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "session_before_compact", CompactionPreparation: preparation, BranchEntries: branch, CustomInstructions: customInstructions})
 	if err != nil {
@@ -1132,6 +1132,10 @@ func (h *AgentHarness) summaryGenerationOptions(ctx context.Context, customInstr
 	headers := cloneStringMap(h.streamOptions.Headers)
 	streamFn := h.streamFn
 	if h.getAPIKeyAndHeaders != nil {
+		baseStreamFn := streamFn
+		if baseStreamFn == nil {
+			baseStreamFn = ai.StreamSimple
+		}
 		streamFn = func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
 			auth, err := h.getAPIKeyAndHeaders(ctx, model)
 			if err != nil {
@@ -1143,7 +1147,7 @@ func (h *AgentHarness) summaryGenerationOptions(ctx context.Context, customInstr
 				}
 				options.Headers = mergeStringMaps(options.Headers, auth.Headers)
 			}
-			return ai.StreamSimple(ctx, model, llmContext, options)
+			return baseStreamFn(ctx, model, llmContext, options)
 		}
 	}
 	if h.getAPIKey != nil {

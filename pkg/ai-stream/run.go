@@ -58,24 +58,23 @@ type Preview struct {
 }
 
 type BeeperAI struct {
-	Schema     string                `json:"schema"`
-	Protocol   string                `json:"protocol"`
-	Kind       string                `json:"kind"`
-	ThreadID   string                `json:"threadId"`
-	RunID      string                `json:"runId"`
-	MessageID  string                `json:"messageId"`
-	Agent      AgentMetadata         `json:"agent,omitempty"`
-	Model      string                `json:"model,omitempty"`
-	Message    *UIMessage            `json:"message,omitempty"`
-	Events     []Envelope            `json:"events,omitempty"`
-	Approvals  []ApprovalSummary     `json:"approvals,omitempty"`
-	Interrupts []agui.Interrupt      `json:"interrupts,omitempty"`
-	Artifacts  ArtifactSummary       `json:"artifacts,omitempty"`
-	Data       map[string]any        `json:"data,omitempty"`
-	Preview    Preview               `json:"preview,omitempty"`
-	Terminal   *RunTerminal          `json:"terminal,omitempty"`
-	Final      *FinalDelivery        `json:"final,omitempty"`
-	Segment    *FinalSegmentMetadata `json:"segment,omitempty"`
+	Schema     string            `json:"schema"`
+	Protocol   string            `json:"protocol"`
+	Kind       string            `json:"kind"`
+	ThreadID   string            `json:"threadId"`
+	RunID      string            `json:"runId"`
+	MessageID  string            `json:"messageId"`
+	Agent      AgentMetadata     `json:"agent,omitempty"`
+	Model      string            `json:"model,omitempty"`
+	Message    *UIMessage        `json:"message,omitempty"`
+	Events     []Envelope        `json:"events,omitempty"`
+	Approvals  []ApprovalSummary `json:"approvals,omitempty"`
+	Interrupts []agui.Interrupt  `json:"interrupts,omitempty"`
+	Artifacts  ArtifactSummary   `json:"artifacts,omitempty"`
+	Data       map[string]any    `json:"data,omitempty"`
+	Preview    Preview           `json:"preview,omitempty"`
+	Terminal   *RunTerminal      `json:"terminal,omitempty"`
+	Final      *FinalDelivery    `json:"final,omitempty"`
 }
 
 type AgentMetadata struct {
@@ -189,6 +188,7 @@ type Writer struct {
 	reasoningPhaseID          string
 	reasoningPhaseOpen        bool
 	nextSyntheticReasoningIdx int
+	lastAccountedChars        int
 	previewText               string
 }
 
@@ -227,14 +227,15 @@ func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *R
 
 func NewWriter(run *Run, now func() time.Time) *Writer {
 	return &Writer{
-		Run:               run,
-		builder:           agui.NewEventBuilder(run.Model, now),
-		textMessages:      map[int]string{},
-		textOpen:          map[int]bool{},
-		reasoningMessages: map[int]string{},
-		reasoningOpen:     map[int]bool{},
-		reasoningPhaseID:  "reasoning-" + run.RunID,
-		previewText:       run.Text(),
+		Run:                run,
+		builder:            agui.NewEventBuilder(run.Model, now),
+		textMessages:       map[int]string{},
+		textOpen:           map[int]bool{},
+		reasoningMessages:  map[int]string{},
+		reasoningOpen:      map[int]bool{},
+		reasoningPhaseID:   "reasoning-" + run.RunID,
+		lastAccountedChars: utf8.RuneCountInString(run.Text()),
+		previewText:        run.Text(),
 	}
 }
 
@@ -482,10 +483,19 @@ func (w *Writer) InterruptWithUsage(usage *agui.Usage) {
 func (w *Writer) addUsage(usage *agui.Usage) {
 	if usage == nil {
 		text := w.Run.Text()
+		currentChars := utf8.RuneCountInString(text)
+		completionChars := currentChars - w.lastAccountedChars
+		if completionChars < 0 {
+			completionChars = 0
+		}
+		promptTokens := 0
+		if w.Run.Usage.PromptTokens == 0 {
+			promptTokens = 1
+		}
 		usage = &agui.Usage{
-			PromptTokens:     1,
-			CompletionTokens: utf8.RuneCountInString(text),
-			TotalTokens:      utf8.RuneCountInString(text) + 1,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionChars,
+			TotalTokens:      completionChars + promptTokens,
 		}
 	}
 	w.Run.Usage.PromptTokens += usage.PromptTokens
@@ -495,6 +505,7 @@ func (w *Writer) addUsage(usage *agui.Usage) {
 	if usage.ContextLimit > w.Run.Usage.ContextLimit {
 		w.Run.Usage.ContextLimit = usage.ContextLimit
 	}
+	w.lastAccountedChars = utf8.RuneCountInString(w.Run.Text())
 }
 
 func (w *Writer) Error(message string) {

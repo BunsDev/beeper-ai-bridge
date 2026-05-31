@@ -26,6 +26,8 @@ type OpenAICompletionsOptions struct {
 	ReasoningEffort *ai.ThinkingLevel
 }
 
+var sharedOpenAIHTTPClient = &http.Client{Transport: defaultOpenAIHTTPTransport()}
+
 func StreamSimpleOpenAICompletions(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
 	if options.APIKey == "" {
 		options.APIKey = getEnvAPIKey(model.Provider)
@@ -180,6 +182,8 @@ func applyCompleteOpenAICompletions(output *ai.Message, model ai.Model, raw map[
 	}
 	choices, _ := raw["choices"].([]any)
 	if len(choices) == 0 {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = "OpenAI response contained no choices"
 		return
 	}
 	choice, _ := choices[0].(map[string]any)
@@ -494,12 +498,16 @@ func newClient(model ai.Model, llmContext ai.Context, options ai.StreamOptions) 
 }
 
 func defaultOpenAIHTTPClient() *http.Client {
+	return sharedOpenAIHTTPClient
+}
+
+func defaultOpenAIHTTPTransport() http.RoundTripper {
 	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = transport.Clone()
 		transport.ResponseHeaderTimeout = 10 * time.Minute
-		return &http.Client{Transport: transport}
+		return transport
 	}
-	return &http.Client{Transport: http.DefaultTransport}
+	return http.DefaultTransport
 }
 
 func buildOpenAIClientConfig(model ai.Model, llmContext ai.Context, options ai.StreamOptions) (openAIClientConfig, error) {

@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,11 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
+)
+
+var (
+	errProviderReadOnly = errors.New("provider is managed by Beeper AI")
+	errProviderNotFound = errors.New("provider not found")
 )
 
 type ProviderInput struct {
@@ -83,12 +89,20 @@ func (c *Connector) SaveProviderConfig(ctx context.Context, login *bridgev2.User
 		return fmt.Errorf("provider id is required")
 	}
 	if provider.ID == aiid.DefaultProvider {
-		return fmt.Errorf("provider %q is managed by Beeper AI", aiid.DefaultProvider)
+		return fmt.Errorf("%w: %s", errProviderReadOnly, aiid.DefaultProvider)
 	}
 	if login == nil {
 		return fmt.Errorf("login is required")
 	}
-	meta := login.Metadata.(*aiid.UserLoginMetadata)
+	c.providerConfigMu.Lock()
+	defer c.providerConfigMu.Unlock()
+	if err := c.ensureAIChatsMetadata(ctx, login); err != nil {
+		return err
+	}
+	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
+	if !ok || meta == nil {
+		return fmt.Errorf("login metadata is invalid")
+	}
 	if meta.Providers == nil {
 		meta.Providers = map[string]aiid.ProviderConfig{}
 	}
@@ -108,14 +122,22 @@ func (c *Connector) DeleteProvider(ctx context.Context, login *bridgev2.UserLogi
 		return fmt.Errorf("provider id is required")
 	}
 	if providerID == aiid.DefaultProvider {
-		return fmt.Errorf("provider %q is managed by Beeper AI", aiid.DefaultProvider)
+		return fmt.Errorf("%w: %s", errProviderReadOnly, aiid.DefaultProvider)
 	}
 	if login == nil {
 		return fmt.Errorf("login is required")
 	}
-	meta := login.Metadata.(*aiid.UserLoginMetadata)
+	c.providerConfigMu.Lock()
+	defer c.providerConfigMu.Unlock()
+	if err := c.ensureAIChatsMetadata(ctx, login); err != nil {
+		return err
+	}
+	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
+	if !ok || meta == nil {
+		return fmt.Errorf("login metadata is invalid")
+	}
 	if _, ok := meta.Providers[providerID]; !ok {
-		return fmt.Errorf("provider %s not found", providerID)
+		return fmt.Errorf("%w: %s", errProviderNotFound, providerID)
 	}
 	delete(meta.Providers, providerID)
 	if client, ok := login.Client.(*Client); ok {

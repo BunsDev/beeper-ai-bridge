@@ -45,11 +45,25 @@ func addBuiltInToolsToPayload(payload any, builtInTools []string) (any, bool) {
 
 func appendBuiltInTool(tools []any, toolType string) []any {
 	for _, tool := range tools {
-		if toolMap, ok := tool.(map[string]any); ok && toolMap["type"] == toolType {
-			return tools
+		if toolMap, ok := tool.(map[string]any); ok {
+			if toolMap["type"] == toolType || toolMap["name"] == toolType {
+				return tools
+			}
+			if toolMap["type"] == "function" && toolMap["name"] == builtInToolFunctionName(toolType) {
+				return tools
+			}
 		}
 	}
 	return append(tools, map[string]any{"type": toolType})
+}
+
+func builtInToolFunctionName(toolType string) string {
+	switch toolType {
+	case "image_generation":
+		return "image_generation"
+	default:
+		return toolType
+	}
 }
 
 func toolsAsAny(raw any) []any {

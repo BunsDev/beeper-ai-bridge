@@ -113,11 +113,13 @@ type assistantStreamState struct {
 }
 
 type streamPublishCursor struct {
-	mu        sync.Mutex
-	published int
-	nextSeq   int
-	started   bool
-	persist   func(context.Context, *aistream.Run) error
+	mu              sync.Mutex
+	published       int
+	nextSeq         int
+	started         bool
+	lastPersisted   int
+	lastPersistedAt time.Time
+	persist         func(context.Context, *aistream.Run) error
 }
 
 var _ bridgev2.NetworkAPI = (*Client)(nil)
@@ -521,21 +523,23 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 			if overflowRecoveryAttempted {
 				err := errors.New("Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.")
 				active.failConsumed(ctx, cl, err)
-				break
-			}
-			overflowRecoveryAttempted = true
-			if last := active.lastAssistant(); last != nil {
-				result, compacted := cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
-				if compacted && result.Reason == autocompact.ReasonOverflow {
-					promptResult, err = agentHarness.ContinueWithResult(ctx, harness.ContinueOptions{DropTrailingAssistantError: true})
-					if err != nil {
-						cl.logMatrixMessageError(msg, err, "AI harness continuation failed")
-						active.failConsumed(ctx, cl, err)
-						active.failAll(ctx, cl, err)
-						active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
-						return
+				assistantMessage.StopReason = ai.StopReasonError
+				assistantMessage.ErrorMessage = err.Error()
+			} else {
+				overflowRecoveryAttempted = true
+				if last := active.lastAssistant(); last != nil {
+					result, compacted := cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
+					if compacted && result.Reason == autocompact.ReasonOverflow {
+						promptResult, err = agentHarness.ContinueWithResult(ctx, harness.ContinueOptions{DropTrailingAssistantError: true})
+						if err != nil {
+							cl.logMatrixMessageError(msg, err, "AI harness continuation failed")
+							active.failConsumed(ctx, cl, err)
+							active.failAll(ctx, cl, err)
+							active.failOpenAssistant(ctx, cl, provider.ID, model.ID, err)
+							return
+						}
+						continue
 					}
-					continue
 				}
 			}
 		}
@@ -1001,7 +1005,10 @@ func (cl *Client) queueAssistantStreamAnchor(ctx context.Context, portal *bridge
 	if result.EventID != "" {
 		return result.EventID, nil
 	}
-	return cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 5*time.Second)
+	if cl.Main != nil && cl.Main.Bridge != nil && cl.Main.Bridge.Matrix != nil {
+		return cl.Main.Bridge.Matrix.GenerateDeterministicEventID(portal.MXID, portal.PortalKey, messageID, aiid.PartID("text")), nil
+	}
+	return cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 30*time.Second)
 }
 
 func (cl *Client) waitForMessageEventID(ctx context.Context, portal *bridgev2.Portal, messageID networkid.MessageID, partID networkid.PartID, timeout time.Duration) (id.EventID, error) {
@@ -1179,10 +1186,29 @@ func (cl *Client) publishNewStreamEvents(ctx context.Context, publisher bridgev2
 	}
 	cursor.nextSeq = aistream.NextSeq(carriers)
 	cursor.published = len(run.Events)
-	if cursor.persist != nil {
+	if cursor.persist != nil && shouldPersistStreamRun(run, cursor) {
+		cursor.lastPersisted = len(run.Events)
+		cursor.lastPersistedAt = time.Now()
 		return cursor.persist(ctx, run)
 	}
 	return nil
+}
+
+func shouldPersistStreamRun(run *aistream.Run, cursor *streamPublishCursor) bool {
+	if run == nil || cursor == nil {
+		return false
+	}
+	switch run.Status.State {
+	case "complete", "interrupted", "aborted", "error":
+		return false
+	}
+	if cursor.lastPersisted == 0 {
+		return true
+	}
+	if len(run.Events)-cursor.lastPersisted >= 25 {
+		return true
+	}
+	return time.Since(cursor.lastPersistedAt) >= 2*time.Second
 }
 
 func (cl *Client) persistActiveStream(ctx context.Context, portal *bridgev2.Portal, providerID string, modelID string, active *activeAIRun, stream *assistantStreamState, run *aistream.Run) error {
@@ -1893,12 +1919,8 @@ func (cl *Client) finishActiveStreamRecord(ctx context.Context, record aidb.Acti
 	}
 	switch record.Run.Status.State {
 	case "complete", "interrupted", "aborted", "error":
-		if record.Run.Status.State == "complete" {
-			record.Metadata.StreamStatus = "done"
-		} else if record.Metadata.StreamStatus == "" || record.Metadata.StreamStatus == "streaming" {
-			record.Metadata.StreamStatus = record.Run.Status.State
-		}
-		cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(record.PortalKey, record.MessageID, record.ProviderID, record.ModelID, record.Run, &record.Metadata))
+		// The terminal Matrix edit may already have been queued before the crash.
+		// Stale active-stream recovery is only authoritative for non-terminal rows.
 	default:
 		cl.queueAssistantRunError(record.PortalKey, record.MessageID, record.ProviderID, record.ModelID, record.RunID, record.Run, &record.Metadata, err)
 		cl.sendActiveStreamRetriableStatus(ctx, record, err)

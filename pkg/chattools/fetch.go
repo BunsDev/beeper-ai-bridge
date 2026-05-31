@@ -145,7 +145,10 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	if client == nil {
 		client = &http.Client{Timeout: options.Timeout}
 	}
-	target, _ := url.Parse(rawURL)
+	target, err := url.Parse(rawURL)
+	if err != nil || target == nil || target.Scheme == "" || target.Host == "" {
+		return FetchResult{}, fmt.Errorf("invalid URL")
+	}
 	log := toolHTTPLog(ctx, "fetch", http.MethodPost, options.ExaEndpoint).
 		With().
 		Str("fetch_method", "exa").
@@ -229,9 +232,9 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	result.Subpages = item.Subpages
 	result.Entities = item.Entities
 	result.Extras = item.Extras
-	if len([]rune(result.Text)) > options.MaxChars {
+	if len([]rune(result.Text)) > textMaxChars {
 		runes := []rune(result.Text)
-		result.Text = string(runes[:options.MaxChars])
+		result.Text = string(runes[:textMaxChars])
 		result.Truncated = true
 	}
 	log.Debug().
@@ -318,10 +321,11 @@ func toolHTTPLog(ctx context.Context, tool string, method string, rawURL string)
 	logCtx := zerolog.Ctx(ctx).With().
 		Str("action", "ai_tool_http").
 		Str("tool", tool).
-		Str("method", method).
-		Str("url", rawURL)
+		Str("method", method)
 	if parsed, err := url.Parse(rawURL); err == nil {
-		logCtx = logCtx.Str("host", parsed.Host).Str("path", parsed.EscapedPath())
+		logCtx = logCtx.Str("url", parsed.Redacted()).Str("host", parsed.Host).Str("path", parsed.EscapedPath())
+	} else {
+		logCtx = logCtx.Str("url", rawURL)
 	}
 	return logCtx.Logger()
 }

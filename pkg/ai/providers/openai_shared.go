@@ -668,7 +668,7 @@ func applyCompletionsThinkingParams(params map[string]any, model ai.Model, effor
 			params["reasoning_effort"] = mappedThinkingLevel(model, *effort)
 		}
 	case "a8c":
-		if enabled {
+		if enabled && ai.ModelThinkingLevel(*effort) != ai.ModelThinkingLevelOff {
 			params["include_reasoning"] = true
 			params["reasoning_effort"] = mappedA8CThinkingLevel(model, *effort)
 		} else {

@@ -105,7 +105,7 @@ func ConvertGoogleMessages(model ai.Model, llmContext ai.Context) []map[string]a
 					}
 					parts = append(parts, part)
 				case "image":
-					if isSameProviderAndModel && modelSupportsImage(model) {
+					if isSameProviderAndModel && (modelSupportsImage(model) || modelOutputsImage(model)) {
 						parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": block.MimeType, "data": block.Data}})
 					}
 				}

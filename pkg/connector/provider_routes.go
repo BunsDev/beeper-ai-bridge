@@ -3,10 +3,12 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -48,7 +50,7 @@ func (c *Connector) handleProvidersList(provisioning bridgev2.IProvisioningAPI) 
 			writeProviderError(w, providerErrorStatus(err), err)
 			return
 		}
-		writeProviderJSON(w, http.StatusOK, providersListResponse{Providers: sortedProviderResponses(c.providersForLogin(login))})
+		writeProviderJSON(r.Context(), w, http.StatusOK, providersListResponse{Providers: sortedProviderResponses(c.providersForLogin(login))})
 	}
 }
 
@@ -65,7 +67,7 @@ func (c *Connector) handleProvidersGet(provisioning bridgev2.IProvisioningAPI) h
 			mautrix.MNotFound.WithMessage("Provider not found").Write(w)
 			return
 		}
-		writeProviderJSON(w, http.StatusOK, providerSingleResponse{Provider: providerResponse(provider)})
+		writeProviderJSON(r.Context(), w, http.StatusOK, providerSingleResponse{Provider: providerResponse(provider)})
 	}
 }
 
@@ -112,7 +114,7 @@ func (c *Connector) handleProviderUpsert(w http.ResponseWriter, r *http.Request,
 	if routeProviderID != "" {
 		status = http.StatusOK
 	}
-	writeProviderJSON(w, status, providerSingleResponse{Provider: providerResponse(provider)})
+	writeProviderJSON(r.Context(), w, status, providerSingleResponse{Provider: providerResponse(provider)})
 }
 
 func (c *Connector) handleProvidersDelete(provisioning bridgev2.IProvisioningAPI) http.HandlerFunc {
@@ -124,13 +126,7 @@ func (c *Connector) handleProvidersDelete(provisioning bridgev2.IProvisioningAPI
 		}
 		err = c.DeleteProvider(r.Context(), login, r.PathValue("providerID"))
 		if err != nil {
-			if strings.Contains(err.Error(), "managed by Beeper AI") {
-				mautrix.MForbidden.WithMessage(err.Error()).Write(w)
-			} else if strings.Contains(err.Error(), "not found") {
-				mautrix.MNotFound.WithMessage(err.Error()).Write(w)
-			} else {
-				writeProviderError(w, http.StatusInternalServerError, err)
-			}
+			writeProviderError(w, providerErrorStatus(err), err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -155,20 +151,22 @@ func (c *Connector) loginForProviderRequest(ctx context.Context, user *bridgev2.
 	return login, nil
 }
 
-func writeProviderJSON(w http.ResponseWriter, status int, body any) {
+func writeProviderJSON(ctx context.Context, w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		zerolog.Ctx(ctx).Debug().Err(err).Int("status", status).Msg("Failed to write provider JSON response")
+	}
 }
 
 func providerErrorStatus(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
-	if strings.Contains(err.Error(), "not found") {
+	if errors.Is(err, errProviderNotFound) {
 		return http.StatusNotFound
 	}
-	if strings.Contains(err.Error(), "managed by Beeper AI") {
+	if errors.Is(err, errProviderReadOnly) {
 		return http.StatusForbidden
 	}
 	return http.StatusInternalServerError

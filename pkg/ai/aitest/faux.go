@@ -379,7 +379,7 @@ func streamWithDeltas(ctx context.Context, stream *ai.AssistantMessageEventStrea
 		return
 	}
 	stream.Push(ai.AssistantMessageEvent{Type: "start", Partial: &partial})
-	for index, block := range contentBlocks(message.Content) {
+	for _, block := range contentBlocks(message.Content) {
 		if ctx.Err() != nil {
 			aborted := abortedMessage(partial)
 			stream.Push(ai.AssistantMessageEvent{Type: "error", Reason: ai.StopReasonAborted, Error: &aborted})
@@ -388,6 +388,7 @@ func streamWithDeltas(ctx context.Context, stream *ai.AssistantMessageEventStrea
 		switch block.Type {
 		case "thinking":
 			partialBlocks := contentBlocks(partial.Content)
+			index := len(partialBlocks)
 			partialBlocks = append(partialBlocks, ai.ContentBlock{Type: "thinking"})
 			partial.Content = partialBlocks
 			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: index, Partial: &partial})
@@ -405,6 +406,7 @@ func streamWithDeltas(ctx context.Context, stream *ai.AssistantMessageEventStrea
 			stream.Push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: index, Content: block.Thinking, Partial: &partial})
 		case "text":
 			partialBlocks := contentBlocks(partial.Content)
+			index := len(partialBlocks)
 			partialBlocks = append(partialBlocks, ai.ContentBlock{Type: "text"})
 			partial.Content = partialBlocks
 			stream.Push(ai.AssistantMessageEvent{Type: "text_start", ContentIndex: index, Partial: &partial})
@@ -422,6 +424,7 @@ func streamWithDeltas(ctx context.Context, stream *ai.AssistantMessageEventStrea
 			stream.Push(ai.AssistantMessageEvent{Type: "text_end", ContentIndex: index, Content: block.Text, Partial: &partial})
 		case "toolCall":
 			partialBlocks := contentBlocks(partial.Content)
+			index := len(partialBlocks)
 			partialBlocks = append(partialBlocks, ai.ContentBlock{Type: "toolCall", ID: block.ID, Name: block.Name, Arguments: map[string]any{}})
 			partial.Content = partialBlocks
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: index, Partial: &partial})
@@ -472,16 +475,17 @@ func splitStringByTokenSize(text string, minTokenSize int, maxTokenSize int) []s
 	if text == "" {
 		return []string{""}
 	}
+	runes := []rune(text)
 	chunks := []string{}
 	index := 0
-	for index < len(text) {
+	for index < len(runes) {
 		tokenSize := minTokenSize
 		if maxTokenSize > minTokenSize {
 			tokenSize += rand.Intn(maxTokenSize - minTokenSize + 1)
 		}
-		charSize := max(1, tokenSize*4)
-		end := min(len(text), index+charSize)
-		chunks = append(chunks, text[index:end])
+		runeSize := max(1, tokenSize*4)
+		end := min(len(runes), index+runeSize)
+		chunks = append(chunks, string(runes[index:end]))
 		index = end
 	}
 	return chunks

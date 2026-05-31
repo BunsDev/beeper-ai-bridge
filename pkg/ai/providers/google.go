@@ -35,7 +35,10 @@ func StreamSimpleGoogle(ctx context.Context, model ai.Model, llmContext ai.Conte
 	clamped := ai.ClampThinkingLevel(model, ai.ModelThinkingLevel(*options.Reasoning))
 	effort := ai.ThinkingLevel(clamped)
 	if clamped == ai.ModelThinkingLevelOff {
-		effort = ai.ThinkingLevelHigh
+		return StreamGoogle(ctx, model, llmContext, GoogleOptions{
+			StreamOptions: base,
+			Thinking:      &GoogleThinkingOptions{Enabled: false},
+		})
 	}
 	if isGoogleGemini3ProModel(model) || isGoogleGemini3FlashModel(model) || isGoogleGemma4Model(model) {
 		return StreamGoogle(ctx, model, llmContext, GoogleOptions{

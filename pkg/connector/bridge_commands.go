@@ -194,6 +194,7 @@ func (c *Connector) handleBridgeProviderUpsert(ce *commands.Event, action string
 		ce.Reply("Usage: `$cmdprefix provider %s <id> <api> <base_url> <api_key> [default_model]`", action)
 		return
 	}
+	ce.Redact()
 	input := ProviderInput{
 		ID:           fields[0],
 		API:          ai.Api(fields[1]),

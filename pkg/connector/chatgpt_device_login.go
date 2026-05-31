@@ -86,7 +86,7 @@ func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, err
 		log.Err(err).Msg("ChatGPT device login polling failed")
 		return nil, err
 	}
-	credentials, err := exchangeChatGPTAuthorizationCode(ctx, token.AuthorizationCode, token.CodeVerifier, chatGPTDeviceRedirectURI)
+	credentials, err := exchangeChatGPTAuthorizationCode(waitCtx, token.AuthorizationCode, token.CodeVerifier, chatGPTDeviceRedirectURI)
 	if err != nil {
 		log.Err(err).Msg("ChatGPT device login token exchange failed")
 		return nil, err
@@ -96,13 +96,13 @@ func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, err
 		log.Err(err).Msg("Failed to build ChatGPT provider config")
 		return nil, err
 	}
-	login, err := l.Main.EnsureAIChatsLogin(ctx, l.User)
+	login, err := l.Main.EnsureAIChatsLogin(waitCtx, l.User)
 	if err != nil {
 		err = fmt.Errorf("failed to load AI bridge login: %w", err)
 		log.Err(err).Msg("Failed to load AI bridge login")
 		return nil, err
 	}
-	err = l.Main.SaveProviderConfig(ctx, login, provider)
+	err = l.Main.SaveProviderConfig(waitCtx, login, provider)
 	if err != nil {
 		err = fmt.Errorf("failed to save ChatGPT provider: %w", err)
 		log.Err(err).Msg("Failed to save ChatGPT provider")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aidb"
@@ -23,6 +24,7 @@ type Connector struct {
 	HomeserverURL   string
 
 	providerRoutesRegistered bool
+	providerConfigMu         sync.Mutex
 }
 
 var _ bridgev2.NetworkConnector = (*Connector)(nil)
@@ -148,7 +150,10 @@ func (c *Connector) perUserDefaultLoginID(mxid id.UserID) networkid.UserLoginID 
 func (c *Connector) bridgeDefaultLoginID() networkid.UserLoginID {
 	if c.Bridge != nil && c.Bridge.Bot != nil {
 		if localpart := c.Bridge.Bot.GetMXID().Localpart(); localpart != "" {
-			return networkid.UserLoginID(strings.TrimSuffix(localpart, "bot"))
+			trimmed, ok := strings.CutSuffix(localpart, "bot")
+			if ok && trimmed != "" {
+				return networkid.UserLoginID(trimmed)
+			}
 		}
 	}
 	return ""
