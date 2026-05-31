@@ -10,9 +10,12 @@ import (
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -68,6 +71,36 @@ func TestModelForProviderPassesCustomOpenAIProviderModelIDDirectly(t *testing.T)
 	}
 }
 
+func TestModelForProviderFillsCustomListedModelInputFromCatalog(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:       "custom-openai",
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  "https://custom.test/v1",
+		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+	}
+	model := conn.ModelForProvider(provider, "gpt-5.5")
+	if !isImageModel(model) {
+		t.Fatalf("expected catalog-backed GPT-5.5 to support image input, got %#v", model.Input)
+	}
+}
+
+func TestModelForProviderFillsCustomPrefixedOpenAIInputFromCatalog(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:       "custom-openai",
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  "https://custom.test/v1",
+		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+	}
+	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
+	if !isImageModel(model) {
+		t.Fatalf("expected prefixed catalog-backed GPT-5.5 to support image input, got %#v", model.Input)
+	}
+}
+
 func TestModelForProviderPreservesNonOpenAIBeeperProviderModelID(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
@@ -82,7 +115,21 @@ func TestModelForProviderPreservesNonOpenAIBeeperProviderModelID(t *testing.T) {
 	}
 }
 
-func TestTitleGenerationModelUsesDefaultGPTMini(t *testing.T) {
+func TestModelForProviderResolvesCatalogModelAlias(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		Models:   []ai.Model{{ID: "openai/gpt-5-mini", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses, Input: []string{"text", "image"}}},
+	}
+	model := conn.ModelForProvider(provider, "gpt-5-mini")
+	if model.ID != "openai/gpt-5-mini" || !isImageModel(model) {
+		t.Fatalf("expected catalog model alias to resolve, got %#v", model)
+	}
+}
+
+func TestTitleGenerationModelUsesDefaultMini(t *testing.T) {
 	conn := &Connector{}
 	client := &Client{Main: conn}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
@@ -92,7 +139,35 @@ func TestTitleGenerationModelUsesDefaultGPTMini(t *testing.T) {
 	}
 }
 
-func TestTitleGenerationModelUsesOpenRouterGPTMini(t *testing.T) {
+func TestTitleGenerationModelUsesCatalogResolvedDefaultMini(t *testing.T) {
+	client := &Client{Main: &Connector{}}
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		Models:   []ai.Model{{ID: "openai/gpt-4.1-mini", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses, Input: []string{"text", "image"}}},
+	}
+	model := client.titleGenerationModel(provider, ai.Model{ID: defaultBeeperAIModel})
+	if model.ID != "openai/gpt-4.1-mini" || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses || model.Reasoning {
+		t.Fatalf("unexpected title model %#v", model)
+	}
+}
+
+func TestTitleGenerationModelFallsBackToGPT5Mini(t *testing.T) {
+	client := &Client{Main: &Connector{}}
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		Models:   []ai.Model{{ID: "openai/gpt-5-mini", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+	}
+	model := client.titleGenerationModel(provider, ai.Model{ID: defaultBeeperAIModel})
+	if model.ID != "openai/gpt-5-mini" || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
+		t.Fatalf("unexpected title model %#v", model)
+	}
+}
+
+func TestTitleGenerationModelUsesOpenRouterMini(t *testing.T) {
 	client := &Client{Main: &Connector{}}
 	provider := aiid.ProviderConfig{
 		ID:       "openrouter",
@@ -240,21 +315,134 @@ func TestDefaultProviderBaseURLRejectsUserHomeserverMismatch(t *testing.T) {
 	}
 }
 
-func TestDefaultProviderIgnoresPersistedMetadata(t *testing.T) {
+func TestDefaultProviderReadsAIChatsLoginMetadata(t *testing.T) {
 	conn := &Connector{}
+	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		UserMXID: "@alice:beeper.localtest.me",
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
+	}}
+	got := conn.providersForLogin(login)[aiid.DefaultProvider]
+	if got.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
+		t.Fatalf("expected persisted default provider, got %#v", got)
+	}
+}
+
+func TestProvidersForLoginReadsProviderMap(t *testing.T) {
+	conn := &Connector{}
+	beeper := conn.defaultProviderConfig("@alice:beeper.com")
+	custom := aiid.ProviderConfig{
+		ID:           "custom",
+		DisplayName:  "Custom",
+		API:          ai.ApiOpenAIResponses,
+		Provider:     "custom",
+		BaseURL:      "https://example.test/v1",
+		APIKey:       "secret-key",
+		DefaultModel: "model-a",
+		Models:       []ai.Model{{ID: "model-a"}},
+	}
+	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		UserMXID: "@alice:beeper.com",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			aiid.DefaultProvider: {
-				ID:      aiid.DefaultProvider,
-				BaseURL: "https://ai-services.megahungry-proxy.megahungry/proxy/openai/v1",
-			},
+			beeper.ID: beeper,
+			custom.ID: custom,
 		}},
 	}}
-	ensureMetadata(login.Metadata.(*aiid.UserLoginMetadata))
-	provider := conn.providersForLogin(login)[aiid.DefaultProvider]
-	if provider.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
-		t.Fatalf("expected computed default provider, got %#v", provider)
+	providers := conn.providersForLogin(login)
+	if providers[aiid.DefaultProvider].BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
+		t.Fatalf("default provider missing from provider map: %#v", providers)
+	}
+	if providers["custom"].APIKey != "secret-key" || providers["custom"].DefaultModel != "model-a" {
+		t.Fatalf("custom provider missing from provider map: %#v", providers)
+	}
+}
+
+func TestLoadUserLoginAlwaysCreatesAIClient(t *testing.T) {
+	conn := &Connector{}
+	userMXID := id.UserID("@alice:beeper.com")
+	provider := conn.defaultProviderConfig(userMXID)
+	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		ID:       conn.defaultLoginID(userMXID),
+		UserMXID: userMXID,
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+			provider.ID: provider,
+		}},
+	}}
+	if err := conn.LoadUserLogin(context.Background(), login); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := login.Client.(*Client); !ok {
+		t.Fatalf("expected AI client for login, got %T", login.Client)
+	}
+}
+
+func TestLoadUserLoginDoesNotRecoverPersistedActiveStreams(t *testing.T) {
+	ctx := context.Background()
+	store := testAIStore(t)
+	conn := &Connector{Store: store}
+	userMXID := id.UserID("@alice:beeper.com")
+	loginID := conn.defaultLoginID(userMXID)
+	provider := conn.defaultProviderConfig(userMXID)
+	run := aistream.NewRun("run-1", "session-1", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	if err := store.UpsertActiveStream(ctx, aidb.ActiveStreamRecord{
+		RunID:      run.RunID,
+		LoginID:    loginID,
+		PortalKey:  networkid.PortalKey{ID: "chat:1", Receiver: loginID},
+		RoomID:     "!room:beeper.com",
+		EventID:    "$event",
+		MessageID:  "assistant:run",
+		ProviderID: "beeper",
+		ModelID:    "fake",
+		Run:        *run,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		ID:       loginID,
+		UserMXID: userMXID,
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+			provider.ID: provider,
+		}},
+	}}
+	if err := conn.LoadUserLogin(ctx, login); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.ListActiveStreams(ctx, loginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].RunID != run.RunID {
+		t.Fatalf("LoadUserLogin should not recover active streams, got %#v", records)
+	}
+}
+
+func TestProviderResponseRedactsSecrets(t *testing.T) {
+	response := providerResponse(aiid.ProviderConfig{
+		ID:           "custom",
+		DisplayName:  "Custom",
+		API:          ai.ApiOpenAIResponses,
+		Provider:     "custom",
+		BaseURL:      "https://example.test/v1",
+		APIKey:       "secret-key",
+		RefreshToken: "refresh-secret",
+		Headers:      map[string]string{"Authorization": "Bearer header-secret"},
+		DefaultModel: "model-a",
+	})
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, secret := range []string{"secret-key", "refresh-secret", "header-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("provider response leaked %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "model-a") {
+		t.Fatalf("provider response lost public fields: %s", text)
 	}
 }
 
@@ -275,8 +463,12 @@ func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 	if !caps.Provisioning.ResolveIdentifier.ContactList || !caps.Provisioning.ResolveIdentifier.Search || !caps.Provisioning.ResolveIdentifier.CreateDM {
 		t.Fatalf("expected contact list/search/create DM capabilities, got %#v", caps.Provisioning.ResolveIdentifier)
 	}
+	groupCaps := caps.Provisioning.GroupCreation["ai"]
+	if !groupCaps.Disappear.Allowed || groupCaps.Disappear.DisappearSettings == nil {
+		t.Fatalf("expected initial disappearing timer support, got %#v", groupCaps.Disappear)
+	}
 	_, capVersion := conn.GetBridgeInfoVersion()
-	if capVersion < 3 {
+	if capVersion < 6 {
 		t.Fatalf("capability version must bump when provisioning capabilities change, got %d", capVersion)
 	}
 }
@@ -298,13 +490,26 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	client := &Client{}
 	caps := client.GetCapabilities(context.Background(), nil)
 	if caps.ID != "" {
-		t.Fatalf("expected room features to use content-derived ID, got %q", caps.ID)
-	}
-	if caps.GetID() == "" {
-		t.Fatalf("expected room features to expose a dedupe ID")
+		if caps.GetID() != caps.ID {
+			t.Fatalf("expected explicit capability ID to be used as dedupe ID, got id=%q dedupe=%q", caps.ID, caps.GetID())
+		}
+	} else if caps.GetID() == "" {
+		t.Fatalf("expected room features to expose an ID")
 	}
 	if caps.Reaction != event.CapLevelUnsupported {
 		t.Fatalf("expected reactions to be unsupported, got %d", caps.Reaction)
+	}
+	if caps.State[event.StateRoomName.Type] == nil || caps.State[event.StateRoomName.Type].Level != event.CapLevelFullySupported {
+		t.Fatalf("expected room name support, got %#v", caps.State[event.StateRoomName.Type])
+	}
+	if caps.State[event.StateTopic.Type] == nil || caps.State[event.StateTopic.Type].Level != event.CapLevelFullySupported {
+		t.Fatalf("expected room topic support, got %#v", caps.State[event.StateTopic.Type])
+	}
+	if caps.State[event.StateBeeperDisappearingTimer.Type] == nil || caps.State[event.StateBeeperDisappearingTimer.Type].Level != event.CapLevelFullySupported {
+		t.Fatalf("expected disappearing timer support, got %#v", caps.State[event.StateBeeperDisappearingTimer.Type])
+	}
+	if !caps.DeleteChat {
+		t.Fatalf("expected delete chat support")
 	}
 	if !caps.TypingNotifications {
 		t.Fatalf("expected assistant typing notifications")
@@ -317,6 +522,34 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	}
 	if caps.File[event.MsgFile] == nil || caps.File[event.MsgFile].MimeTypes["text/*"] != event.CapLevelFullySupported {
 		t.Fatalf("expected text file support, got %#v", caps.File[event.MsgFile])
+	}
+	if caps.LocationMessage != event.CapLevelFullySupported {
+		t.Fatalf("expected location message support, got %d", caps.LocationMessage)
+	}
+	for _, mimeType := range []string{"text/calendar", "application/csv", "application/x-subrip"} {
+		if caps.File[event.MsgFile].MimeTypes[mimeType] != event.CapLevelFullySupported {
+			t.Fatalf("expected %s file support, got %#v", mimeType, caps.File[event.MsgFile])
+		}
+	}
+	for feature, level := range caps.Formatting {
+		if level != event.CapLevelFullySupported {
+			t.Fatalf("expected %s formatting to be fully supported, got %d", feature, level)
+		}
+	}
+	for _, feature := range []event.FormattingFeature{
+		event.FmtBold,
+		event.FmtUnderline,
+		event.FmtSyntaxHighlighting,
+		event.FmtInlineLink,
+		event.FmtUserLink,
+		event.FmtSpoiler,
+		event.FmtTextForegroundColor,
+		event.FmtHeaders,
+		event.FmtTable,
+	} {
+		if caps.Formatting[feature] != event.CapLevelFullySupported {
+			t.Fatalf("expected %s formatting support, got %d", feature, caps.Formatting[feature])
+		}
 	}
 	for _, stateType := range []string{aiid.RoomToolsType, aiid.RoomModelType, aiid.RoomPromptType} {
 		if caps.State[stateType] != nil {
@@ -344,6 +577,9 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 	if visionCaps.File[event.MsgImage] == nil {
 		t.Fatalf("vision model should advertise image input")
 	}
+	if visionCaps.File[event.CapMsgGIF] != nil || visionCaps.File[event.MsgImage].MimeTypes["image/gif"] != event.CapLevelUnsupported {
+		t.Fatalf("vision model should not advertise GIF input, got gif=%#v image/gif=%d", visionCaps.File[event.CapMsgGIF], visionCaps.File[event.MsgImage].MimeTypes["image/gif"])
+	}
 	if visionCaps.File[event.MsgAudio] != nil {
 		t.Fatalf("vision-only model should not advertise audio input")
 	}
@@ -358,6 +594,25 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 	}
 	if audioCaps.File[event.MsgAudio].Caption != event.CapLevelFullySupported {
 		t.Fatalf("audio model should advertise caption support, got %#v", audioCaps.File[event.MsgAudio])
+	}
+}
+
+func TestRoomFeaturesUseDeterministicIDs(t *testing.T) {
+	first := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, true)
+	second := roomFeaturesForModel(ai.Model{ID: "model-b", Input: []string{"text", "image"}}, true)
+	if first.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+state+image" {
+		t.Fatalf("expected deterministic image capability ID, got %q", first.ID)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("same feature values should produce same ID, got %q and %q", first.ID, second.ID)
+	}
+	textOnly := roomFeaturesForModel(ai.Model{Input: []string{"text"}}, true)
+	if textOnly.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+state" {
+		t.Fatalf("expected deterministic text capability ID, got %q", textOnly.ID)
+	}
+	withoutState := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, false)
+	if withoutState.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+image" {
+		t.Fatalf("expected deterministic image capability ID without AI state, got %q", withoutState.ID)
 	}
 }
 
@@ -412,9 +667,10 @@ func TestFetchProviderModelsVerifiesAndBuildsModels(t *testing.T) {
 func TestFetchProviderModelsRespectsPublishedProviderRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[
-			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
-			{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}}
-		]}`))
+				{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
+				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
+				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","provider":{"id":"wpcom_google","model_id":"gemini-2.5-flash","api":"openai-responses"}}
+			]}`))
 	}))
 	defer server.Close()
 
@@ -431,6 +687,9 @@ func TestFetchProviderModelsRespectsPublishedProviderRoutes(t *testing.T) {
 	}
 	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
 		t.Fatalf("unexpected Vertex route %#v", got)
+	}
+	if got := byID["google/gemini-2.5-flash"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
+		t.Fatalf("unexpected legacy Google route %#v", got)
 	}
 }
 
@@ -499,19 +758,16 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 
 func TestResolveProviderRequiresListedModelWhenModelListExists(t *testing.T) {
 	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:           "custom",
+		Provider:     "custom",
+		API:          ai.ApiOpenAIResponses,
+		DefaultModel: "allowed",
+		Models:       []ai.Model{{ID: "allowed", Provider: "custom", API: ai.ApiOpenAIResponses}},
+	}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{
-			Providers: map[string]aiid.ProviderConfig{
-				"custom": {
-					ID:           "custom",
-					Provider:     "custom",
-					API:          ai.ApiOpenAIResponses,
-					DefaultModel: "allowed",
-					Models:       []ai.Model{{ID: "allowed", Provider: "custom", API: ai.ApiOpenAIResponses}},
-				},
-			},
-		},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
 	_, _, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
 	if err == nil {
@@ -568,20 +824,38 @@ func TestDefaultReasoningLevelClampsForMandatoryReasoningModel(t *testing.T) {
 	}
 }
 
-func TestNormalizeProviderModelInheritsCatalogReasoningMetadata(t *testing.T) {
+func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *testing.T) {
 	model := normalizeProviderModel(ai.Model{
-		ID:                   "minimax/minimax-m2.7",
-		Provider:             ai.ProviderOpenRouter,
-		Reasoning:            true,
-		DefaultThinkingLevel: ai.ModelThinkingLevelLow,
-		ThinkingLevelMap:     map[ai.ModelThinkingLevel]*string{ai.ModelThinkingLevelOff: nil},
+		ID:       "minimax/minimax-m2.7",
+		Provider: ai.ProviderOpenRouter,
 	}, aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
 		BaseURL:  "https://ai-services.test/proxy/openrouter/v1",
 	})
+	if model.Reasoning || model.DefaultThinkingLevel != "" || len(model.ThinkingLevelMap) != 0 {
+		t.Fatalf("expected default provider model to rely only on AI Services metadata, got %#v", model)
+	}
+	if len(model.Input) != 1 || model.Input[0] != "text" {
+		t.Fatalf("expected default provider missing input to fall back to text only, got %#v", model.Input)
+	}
+}
+
+func TestNormalizeProviderModelInheritsCustomProviderCatalogReasoningMetadata(t *testing.T) {
+	model := normalizeProviderModel(ai.Model{
+		ID:       "gpt-5.5",
+		Provider: ai.ProviderOpenAI,
+	}, aiid.ProviderConfig{
+		ID:       "custom-openai",
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  "https://custom.test/v1",
+	})
+	if !model.Reasoning || len(model.ThinkingLevelMap) == 0 {
+		t.Fatalf("expected custom provider model to inherit local catalog reasoning metadata, got %#v", model)
+	}
 	if roomThinkingLevelSupported(model, ai.ModelThinkingLevelOff) {
-		t.Fatalf("expected normalized MiniMax M2.7 catalog model to reject off reasoning")
+		t.Fatalf("expected normalized GPT-5.5 custom provider model to reject off reasoning")
 	}
 }

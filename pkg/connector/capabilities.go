@@ -11,15 +11,35 @@ import (
 
 var roomCaps = &event.RoomFeatures{
 	Formatting: event.FormattingFeatureMap{
-		event.FmtBold:          event.CapLevelPartialSupport,
-		event.FmtItalic:        event.CapLevelPartialSupport,
-		event.FmtStrikethrough: event.CapLevelPartialSupport,
-		event.FmtInlineCode:    event.CapLevelPartialSupport,
-		event.FmtCodeBlock:     event.CapLevelPartialSupport,
-		event.FmtBlockquote:    event.CapLevelPartialSupport,
-		event.FmtInlineLink:    event.CapLevelPartialSupport,
-		event.FmtUnorderedList: event.CapLevelPartialSupport,
-		event.FmtOrderedList:   event.CapLevelPartialSupport,
+		event.FmtBold:                event.CapLevelFullySupported,
+		event.FmtItalic:              event.CapLevelFullySupported,
+		event.FmtUnderline:           event.CapLevelFullySupported,
+		event.FmtStrikethrough:       event.CapLevelFullySupported,
+		event.FmtInlineCode:          event.CapLevelFullySupported,
+		event.FmtCodeBlock:           event.CapLevelFullySupported,
+		event.FmtSyntaxHighlighting:  event.CapLevelFullySupported,
+		event.FmtBlockquote:          event.CapLevelFullySupported,
+		event.FmtInlineLink:          event.CapLevelFullySupported,
+		event.FmtUserLink:            event.CapLevelFullySupported,
+		event.FmtRoomLink:            event.CapLevelFullySupported,
+		event.FmtEventLink:           event.CapLevelFullySupported,
+		event.FmtAtRoomMention:       event.CapLevelFullySupported,
+		event.FmtUnorderedList:       event.CapLevelFullySupported,
+		event.FmtOrderedList:         event.CapLevelFullySupported,
+		event.FmtListStart:           event.CapLevelFullySupported,
+		event.FmtListJumpValue:       event.CapLevelFullySupported,
+		event.FmtCustomEmoji:         event.CapLevelFullySupported,
+		event.FmtSpoiler:             event.CapLevelFullySupported,
+		event.FmtSpoilerReason:       event.CapLevelFullySupported,
+		event.FmtTextForegroundColor: event.CapLevelFullySupported,
+		event.FmtTextBackgroundColor: event.CapLevelFullySupported,
+		event.FmtHorizontalLine:      event.CapLevelFullySupported,
+		event.FmtHeaders:             event.CapLevelFullySupported,
+		event.FmtSuperscript:         event.CapLevelFullySupported,
+		event.FmtSubscript:           event.CapLevelFullySupported,
+		event.FmtMath:                event.CapLevelFullySupported,
+		event.FmtDetailsSummary:      event.CapLevelFullySupported,
+		event.FmtTable:               event.CapLevelFullySupported,
 	},
 	File: event.FileFeatureMap{
 		event.MsgFile: textFileFeatures(),
@@ -32,10 +52,11 @@ var roomCaps = &event.RoomFeatures{
 		event.StateTopic.Type:                   {Level: event.CapLevelFullySupported},
 		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
 	},
-	MaxTextLength: 20000,
-	Reply:         event.CapLevelFullySupported,
-	Edit:          event.CapLevelRejected,
-	Delete:        event.CapLevelPartialSupport,
+	MaxTextLength:   20000,
+	LocationMessage: event.CapLevelFullySupported,
+	Reply:           event.CapLevelFullySupported,
+	Edit:            event.CapLevelRejected,
+	Delete:          event.CapLevelFullySupported,
 	DisappearingTimer: &event.DisappearingTimerCapability{
 		Types: []event.DisappearingType{
 			event.DisappearingTypeAfterSend,
@@ -45,22 +66,30 @@ var roomCaps = &event.RoomFeatures{
 	Reaction:            event.CapLevelUnsupported,
 	ReadReceipts:        false,
 	TypingNotifications: true,
+	DeleteChat:          true,
 }
+
+const roomFeaturesIDBase = "com.beeper.ai.capabilities.2026_05_31.location_text"
 
 func roomFeaturesForModel(model ai.Model, supportsAIState bool) *event.RoomFeatures {
 	caps := roomCaps.Clone()
+	caps.ID = roomFeaturesIDBase
 	if !supportsAIState {
 		delete(caps.State, aiid.RoomToolsType)
 		delete(caps.State, aiid.RoomModelType)
 		delete(caps.State, aiid.RoomPromptType)
+	} else {
+		caps.ID += "+state"
 	}
 	if isImageModel(model) {
 		caps.File[event.MsgImage] = imageFileFeatures()
+		caps.ID += "+image"
 	}
 	if isAudioModel(model) {
 		audioFeatures := audioFileFeatures()
 		caps.File[event.MsgAudio] = audioFeatures
 		caps.File[event.CapMsgVoice] = audioFeatures.Clone()
+		caps.ID += "+audio"
 	}
 	return caps
 }
@@ -71,7 +100,6 @@ func imageFileFeatures() *event.FileFeatures {
 			"image/png":  event.CapLevelFullySupported,
 			"image/jpeg": event.CapLevelFullySupported,
 			"image/webp": event.CapLevelFullySupported,
-			"image/gif":  event.CapLevelPartialSupport,
 		},
 		MaxSize:          20 * 1024 * 1024,
 		Caption:          event.CapLevelFullySupported,
@@ -97,6 +125,8 @@ func textFileFeatures() *event.FileFeatures {
 	return &event.FileFeatures{
 		MimeTypes: map[string]event.CapabilitySupportLevel{
 			"text/*":                    event.CapLevelFullySupported,
+			"text/calendar":             event.CapLevelFullySupported,
+			"application/csv":           event.CapLevelFullySupported,
 			"application/json":          event.CapLevelFullySupported,
 			"application/ld+json":       event.CapLevelFullySupported,
 			"application/manifest+json": event.CapLevelFullySupported,
@@ -109,6 +139,7 @@ func textFileFeatures() *event.FileFeatures {
 			"application/javascript":    event.CapLevelFullySupported,
 			"application/ecmascript":    event.CapLevelFullySupported,
 			"application/sql":           event.CapLevelFullySupported,
+			"application/x-subrip":      event.CapLevelFullySupported,
 		},
 		MaxSize:          512 * 1024,
 		Caption:          event.CapLevelFullySupported,
@@ -118,6 +149,7 @@ func textFileFeatures() *event.FileFeatures {
 
 func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 	return &bridgev2.NetworkGeneralCapabilities{
+		DisappearingMessages: true,
 		Provisioning: bridgev2.ProvisioningCapabilities{
 			ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
 				CreateDM:       true,
@@ -134,7 +166,7 @@ func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 					Avatar:          bridgev2.GroupFieldCapability{Allowed: false},
 					Username:        bridgev2.GroupFieldCapability{Allowed: false},
 					Parent:          bridgev2.GroupFieldCapability{Allowed: false},
-					Disappear:       bridgev2.GroupFieldCapability{Allowed: false},
+					Disappear:       bridgev2.GroupFieldCapability{Allowed: true, DisappearSettings: roomCaps.DisappearingTimer},
 				},
 			},
 		},

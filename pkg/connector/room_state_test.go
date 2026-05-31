@@ -1,12 +1,23 @@
 package connector
 
-import "testing"
+import (
+	"testing"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+)
 
 func TestApplyRoomModelConfigUsesProviderModelRefAndReasoning(t *testing.T) {
 	config := RoomConfig{}
 	applyRoomModelConfig(&config, map[string]any{"model": "openrouter/openai/gpt-5", "reasoning": "high"})
 	if config.ProviderID != "openrouter" || config.ModelID != "openai/gpt-5" || config.ThinkingLevel != "high" {
 		t.Fatalf("unexpected model config %#v", config)
+	}
+}
+
+func TestRoomModelStateContentIncludesCatalogName(t *testing.T) {
+	content := roomModelStateContent(ai.Model{ID: "openai/gpt-5.5", Name: "GPT-5.5"}, "beeper/openai/gpt-5.5", "medium")
+	if content["model"] != "beeper/openai/gpt-5.5" || content["name"] != "GPT-5.5" || content["reasoning"] != "medium" {
+		t.Fatalf("unexpected room model content %#v", content)
 	}
 }
 

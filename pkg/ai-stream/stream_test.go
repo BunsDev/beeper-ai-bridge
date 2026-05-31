@@ -280,47 +280,109 @@ func TestFinalBeeperAIMessagePreservesInterleavedTextAndToolOrder(t *testing.T) 
 	}
 }
 
-func TestPackRunPreservesLargeOpaqueStreamEvents(t *testing.T) {
+func TestFinalBeeperAIMessagePreservesTextChunksAfterToolCalls(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
-	run.Events = append(run.Events, builder.Custom("com.beeper.debug", map[string]any{"ok": true}))
-	run.Events[0].Set("rawEvent", strings.Repeat("x", FinalMessageBudgetBytes))
-
-	carriers, err := PackRun(*run)
-	if err != nil {
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "first "),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "text"),
+		builder.ToolCallStart(run.MessageID, "tool-1", "fetch", nil),
+		builder.ToolCallEnd("tool-1", "fetch", map[string]any{"query": "events"}, agui.ToolStateInputComplete),
+		builder.ToolCallResult("tool-tool-1", "tool-1", `{"ok":true}`, agui.ToolResultStateComplete, agui.RoleTool),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "second "),
+		builder.TextMessageChunk(run.MessageID, agui.RoleAssistant, "text"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	part := carriers[0].Envelopes[0].Event
-	if part.Get("rawEventTruncated") != nil {
-		t.Fatalf("stream packing must not truncate rawEvent: %#v", part)
+
+	messages := run.Messages(false)
+	if len(messages) == 0 || messages[0].Content != "first textsecond text" {
+		t.Fatalf("final snapshot messages dropped text chunks: %#v", messages)
 	}
-	if got, _ := part.Get("rawEvent").(string); len(got) != FinalMessageBudgetBytes {
-		t.Fatalf("rawEvent length = %d", len(got))
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		switch part["type"] {
+		case "text":
+			got = append(got, fmt.Sprintf("text:%s", part["content"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["toolCallId"]))
+		}
+	}
+	want := []string{
+		"text:first text",
+		"tool-call:tool-1",
+		"text:second text",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage text chunk order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
-func TestPackRunPreservesLargeRawAGUIEvent(t *testing.T) {
+func TestFinalBeeperAIMessageShowsHiddenReasoningInOrder(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
-	run.Events = append(run.Events, builder.Raw(map[string]any{
-		"type": "response.large",
-		"data": strings.Repeat("x", FinalMessageBudgetBytes),
-	}, "openai"))
-
-	carriers, err := PackRun(*run)
-	if err != nil {
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.TextMessageContent(run.MessageID, "first text"),
+		builder.ToolCallStart(run.MessageID, "tool-1", "fetch", nil),
+		builder.ReasoningMessageStart(run.MessageID+"-reasoning-0"),
+		builder.ReasoningMessageEnd(run.MessageID+"-reasoning-0"),
+		builder.TextMessageContent(run.MessageID, "second text"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	part := carriers[0].Envelopes[0].Event
-	if part.Get("rawEventTruncated") != nil {
-		t.Fatalf("stream packing must not truncate raw AG-UI event: %#v", part)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		switch part["type"] {
+		case "text", "thinking":
+			got = append(got, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["toolCallId"]))
+		}
 	}
-	raw, ok := part.Get("event").(map[string]any)
-	if !ok {
-		t.Fatalf("missing raw event payload: %#v", part)
+	want := []string{
+		"text:first text",
+		"tool-call:tool-1",
+		"thinking:Thinking...",
+		"text:second text",
 	}
-	if got, _ := raw["data"].(string); len(got) != FinalMessageBudgetBytes {
-		t.Fatalf("raw event data length = %d", len(got))
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final hidden reasoning order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessagePreservesStepsAsThinking(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.StepStarted(run.MessageID, "Search docs"),
+		builder.StepFinished(run.MessageID, "Search docs"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			got = append(got, fmt.Sprintf("thinking:%s:%s:%s", part["stepId"], part["content"], part["state"]))
+		}
+	}
+	want := []string{"thinking:Search docs:Search docs:done"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage step mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
@@ -440,13 +502,72 @@ func TestFinalBeeperAIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	}
 }
 
+func TestFinalBeeperAIMessageFailsPendingApprovalWhenRunFails(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "get_session", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	run.Status = Status{State: "error", Error: map[string]any{"message": "AI stream was interrupted before completion"}}
+
+	message := run.FinalBeeperAIMessage(0, true)
+	if len(message.Parts) != 1 {
+		t.Fatalf("expected one tool part, got %#v", message.Parts)
+	}
+	if message.Parts[0]["state"] != agui.ToolStateInputComplete {
+		t.Fatalf("pending approval should be finalized as input-complete on error: %#v", message.Parts[0])
+	}
+	output, ok := message.Parts[0]["output"].(map[string]any)
+	if !ok || output["status"] != "failed" || output["reason"] != "run failed before tool completed" {
+		t.Fatalf("pending approval should carry failed output, got %#v", message.Parts[0])
+	}
+}
+
+func TestFinalBeeperAIMessageKeepsPendingApprovalWhenInterrupted(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "get_session", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+
+	message := run.FinalBeeperAIMessage(0, true)
+	if len(message.Parts) != 1 || message.Parts[0]["state"] != ToolStateApprovalRequested {
+		t.Fatalf("interrupted run should keep approval pending: %#v", message.Parts)
+	}
+	if _, hasOutput := message.Parts[0]["output"]; hasOutput {
+		t.Fatalf("interrupted approval should not synthesize failed output: %#v", message.Parts[0])
+	}
+}
+
+func TestFinalLifecycleEventsPreferTerminalErrorOverPreviousInterrupt(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "get_session", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	run.Status = Status{State: "error", Error: map[string]any{"message": "AI stream was interrupted before completion"}}
+
+	payload := run.AI(AIKindFinal)
+	if len(payload.Events) != 1 {
+		t.Fatalf("expected one final lifecycle event, got %#v", payload.Events)
+	}
+	event := payload.Events[0].Event
+	if event.Type() != agui.EventRunError {
+		t.Fatalf("final lifecycle should be RUN_ERROR, got %#v", event)
+	}
+	if event.Get("message") != "AI stream was interrupted before completion" {
+		t.Fatalf("final RUN_ERROR carried wrong message: %#v", event)
+	}
+}
+
 func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Custom("com.beeper.source", map[string]any{
-		"sourceId": "source-1",
-		"url":      "https://example.com/source",
-		"title":    "Example Source",
+		"sourceId":    "source-1",
+		"url":         "https://example.com/source",
+		"title":       "Example Source",
+		"description": "Source from example.com",
+		"siteName":    "example.com",
+		"imageUrl":    "https://example.com/favicon.ico",
+		"appearances": []map[string]any{{"kind": "provider", "cited": true}},
 	})
 	writer.Custom("com.beeper.document", map[string]any{
 		"id":        "doc-1",
@@ -654,20 +775,21 @@ func TestBeeperAIOwnsMatrixPayloadShape(t *testing.T) {
 	if payload.Agent.ID != "agent-1" || payload.Agent.DisplayName != "Agent" {
 		t.Fatalf("bad agent metadata: %#v", payload.Agent)
 	}
-	if payload.Terminal == nil {
-		t.Fatalf("missing terminal payload: %#v", payload)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunFinished {
+		t.Fatalf("missing final AG-UI lifecycle event: %#v", payload.Events)
 	}
-	if payload.Terminal.State != "complete" || payload.Terminal.FinishReason != agui.FinishReasonStop {
-		t.Fatalf("bad terminal state: %#v", payload.Terminal)
+	terminal := payload.Events[0].Event
+	if terminal.Get("finishReason") != agui.FinishReasonStop {
+		t.Fatalf("bad final finish reason: %#v", terminal)
 	}
-	if payload.Terminal.Usage != run.Usage {
-		t.Fatalf("bad terminal usage: %#v", payload.Terminal.Usage)
+	if terminal.Get("usage") != run.Usage {
+		t.Fatalf("bad final usage: %#v", terminal.Get("usage"))
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), `"metadata"`) || strings.Contains(string(encoded), `"status"`) || strings.Contains(string(encoded), `"usageDetails"`) {
+	if strings.Contains(string(encoded), `"metadata"`) || strings.Contains(string(encoded), `"status"`) || strings.Contains(string(encoded), `"usageDetails"`) || strings.Contains(string(encoded), `"terminal"`) {
 		t.Fatalf("payload includes removed sidecar fields: %s", encoded)
 	}
 }
@@ -700,38 +822,6 @@ func TestMessagesSnapshotSurvivesJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
-	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
-	run.MessageID = "msg-run-1"
-	message := UIMessage{
-		ID:   run.MessageID,
-		Role: "assistant",
-		Parts: []MessagePart{
-			{"type": "text", "id": "part-1", "content": strings.Repeat("a", 400)},
-			{"type": "text", "id": "part-2", "content": strings.Repeat("b", 400)},
-			{"type": "text", "id": "part-3", "content": strings.Repeat("c", 400)},
-		},
-	}
-	maxMetadata := FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(message.Parts), Count: len(message.Parts)}
-	budget := finalSegmentPayloadSize(*run, message, message.Parts[:2], maxMetadata)
-	if finalSegmentPayloadSize(*run, message, message.Parts, maxMetadata) <= budget {
-		t.Fatal("test budget should require more than one segment")
-	}
-
-	segments := packFinalSegments(*run, message, message.Parts, budget)
-	assignFinalSegmentMetadata(*run, segments)
-
-	if len(segments) != 2 {
-		t.Fatalf("expected two packed segments, got %d: %#v", len(segments), segments)
-	}
-	if len(segments[0].Message.Parts) != 2 || len(segments[1].Message.Parts) != 1 {
-		t.Fatalf("segments were not packed to budget: %#v", segments)
-	}
-	if segments[0].Metadata.Count != 2 || segments[1].Metadata.Count != 2 || segments[1].Metadata.Index != 1 {
-		t.Fatalf("bad segment metadata: %#v %#v", segments[0].Metadata, segments[1].Metadata)
-	}
-}
-
 func TestApprovalResponseClearsResolvedInterrupt(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
@@ -744,10 +834,16 @@ func TestApprovalResponseClearsResolvedInterrupt(t *testing.T) {
 	if len(run.Interrupts) != 0 {
 		t.Fatalf("approval response left stale interrupts: %#v", run.Interrupts)
 	}
+	if run.Status.State != "streaming" {
+		t.Fatalf("approval response should reopen the stream, got state %q", run.Status.State)
+	}
 	writer.ToolApprovalRequested("tool-2", "fetch", map[string]any{}, ToolApproval{ID: "approval-2", NeedsApproval: true})
 	writer.ToolDenied("tool-2", "fetch", map[string]any{}, "approval-2", "denied")
 	if len(run.Interrupts) != 0 {
 		t.Fatalf("approval denial left stale interrupts: %#v", run.Interrupts)
+	}
+	if run.Status.State != "streaming" {
+		t.Fatalf("approval denial should reopen the stream, got state %q", run.Status.State)
 	}
 }
 

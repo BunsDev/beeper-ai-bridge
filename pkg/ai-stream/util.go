@@ -39,6 +39,21 @@ func PreviewFromText(text string, budget int) Preview {
 	return Preview{Text: preview, Truncated: len(preview) < len(text)}
 }
 
+func ErrorFallbackPlaintext(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ErrorFallbackText
+	}
+	return message
+}
+
+func ErrorVisibleText(value any) string {
+	if err := terminalError(value); err != nil {
+		return ErrorFallbackPlaintext(err.Message)
+	}
+	return ErrorFallbackText
+}
+
 func BoundedPreview(text string, budget int) string {
 	text = strings.TrimSpace(text)
 	if budget <= 0 || len(text) <= budget {

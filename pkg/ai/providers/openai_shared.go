@@ -132,6 +132,7 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 	isMoonshot := provider == "moonshotai" || provider == "moonshotai-cn" || strings.Contains(baseURL, "api.moonshot.")
 	isCloudflareWorkersAI := provider == "cloudflare-workers-ai" || strings.Contains(baseURL, "api.cloudflare.com")
 	isCloudflareAIGateway := provider == "cloudflare-ai-gateway" || strings.Contains(baseURL, "gateway.ai.cloudflare.com")
+	isA8C := provider == "a8c" || strings.Contains(baseURL, "/proxy/a8c/")
 	isNonStandard := provider == "cerebras" ||
 		strings.Contains(baseURL, "cerebras.ai") ||
 		provider == "xai" ||
@@ -155,6 +156,8 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 		thinkingFormat = "zai"
 	} else if isTogether {
 		thinkingFormat = "together"
+	} else if isA8C {
+		thinkingFormat = "a8c"
 	} else if provider == "openrouter" || strings.Contains(baseURL, "openrouter.ai") {
 		thinkingFormat = "openrouter"
 	}
@@ -664,6 +667,13 @@ func applyCompletionsThinkingParams(params map[string]any, model ai.Model, effor
 		if enabled && compat.SupportsReasoningEffort {
 			params["reasoning_effort"] = mappedThinkingLevel(model, *effort)
 		}
+	case "a8c":
+		if enabled && ai.ModelThinkingLevel(*effort) != ai.ModelThinkingLevelOff {
+			params["include_reasoning"] = true
+			params["reasoning_effort"] = mappedA8CThinkingLevel(model, *effort)
+		} else {
+			params["include_reasoning"] = false
+		}
 	default:
 		if enabled && compat.SupportsReasoningEffort {
 			params["reasoning_effort"] = mappedThinkingLevel(model, *effort)
@@ -680,6 +690,14 @@ func mappedThinkingLevel(model ai.Model, level ai.ThinkingLevel) string {
 		}
 	}
 	return string(level)
+}
+
+func mappedA8CThinkingLevel(model ai.Model, level ai.ThinkingLevel) string {
+	mapped := mappedThinkingLevel(model, level)
+	if mapped == string(ai.ThinkingLevelMinimal) {
+		return string(ai.ThinkingLevelLow)
+	}
+	return mapped
 }
 
 func simpleReasoningEffort(model ai.Model, requested *ai.ThinkingLevel) *ai.ThinkingLevel {
@@ -778,6 +796,10 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			output.Content = s.blocks
 			toolCall := ai.ToolCall{Type: "toolCall", ID: id, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+		case "image_generation_call":
+			s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
+			s.currentIndex = len(s.blocks) - 1
+			output.Content = s.blocks
 		}
 	case "response.reasoning_summary_part.added":
 		if s.currentItemType == "reasoning" {
@@ -856,7 +878,7 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 	case "response.output_item.done":
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
-		if s.currentIndex < 0 {
+		if s.currentIndex < 0 && itemType != "image_generation_call" {
 			return
 		}
 		switch itemType {
@@ -890,6 +912,15 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+			s.currentIndex = -1
+		case "image_generation_call":
+			if s.currentIndex < 0 || s.currentIndex >= len(s.blocks) || s.blocks[s.currentIndex].Type != "image" {
+				s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
+				s.currentIndex = len(s.blocks) - 1
+			} else {
+				s.blocks[s.currentIndex] = imageBlockFromGenerationItem(item, s.blocks[s.currentIndex])
+			}
+			output.Content = s.blocks
 			s.currentIndex = -1
 		}
 	case "response.completed":
@@ -952,6 +983,35 @@ func messageTextFromItem(item map[string]any) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func imageBlockFromGenerationItem(item map[string]any, fallback ai.ContentBlock) ai.ContentBlock {
+	block := fallback
+	block.Type = "image"
+	if block.MimeType == "" {
+		block.MimeType = "image/png"
+	}
+	if block.Name == "" {
+		block.Name = "image.png"
+	}
+	if id, ok := item["id"].(string); ok && id != "" {
+		block.ID = id
+	}
+	if result, ok := item["result"].(string); ok && result != "" {
+		block.MimeType, block.Data = normalizeGeneratedImageData(result, block.MimeType)
+	}
+	return block
+}
+
+func normalizeGeneratedImageData(data string, fallbackMime string) (string, string) {
+	if prefix, value, ok := strings.Cut(data, ","); ok && strings.Contains(prefix, ";base64") {
+		mimeType := strings.TrimPrefix(strings.Split(prefix, ";")[0], "data:")
+		if mimeType == "" {
+			mimeType = fallbackMime
+		}
+		return mimeType, value
+	}
+	return fallbackMime, data
 }
 
 func parseResponsesUsageMap(rawUsage map[string]any, model ai.Model) ai.Usage {

@@ -14,6 +14,8 @@ const (
 	BeeperBridgeType = "ai"
 	DefaultLoginName = "beeper"
 	DefaultProvider  = "beeper"
+	ModelPrefix      = "model:"
+	ModelProviderSep = ":"
 	RoomToolsType    = "com.beeper.ai.tools"
 	RoomModelType    = "com.beeper.ai.model"
 	RoomPromptType   = "com.beeper.ai.additional_prompt"
@@ -22,26 +24,6 @@ const (
 
 func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {
 	return networkid.UserLoginID("default:" + encode(string(mxid)))
-}
-
-func ProviderLoginID(parent networkid.UserLoginID, providerID string) networkid.UserLoginID {
-	return networkid.UserLoginID("provider:" + encode(string(parent)) + ":" + sanitizeID(providerID))
-}
-
-func ParseProviderLoginID(loginID networkid.UserLoginID) (parent networkid.UserLoginID, providerID string, ok bool) {
-	rest, ok := strings.CutPrefix(string(loginID), "provider:")
-	if !ok {
-		return "", "", false
-	}
-	encodedParent, providerID, ok := strings.Cut(rest, ":")
-	if !ok || encodedParent == "" || providerID == "" {
-		return "", "", false
-	}
-	decodedParent, err := decode(encodedParent)
-	if err != nil || decodedParent == "" {
-		return "", "", false
-	}
-	return networkid.UserLoginID(decodedParent), providerID, true
 }
 
 func PortalID(roomID id.RoomID) networkid.PortalID {
@@ -57,27 +39,67 @@ func AssistantUserID() networkid.UserID {
 }
 
 func ModelContactID(providerID string, modelID string) networkid.UserID {
-	return networkid.UserID("model:" + encode(providerID) + ":" + encode(modelID))
+	if providerID == "" || providerID == DefaultProvider {
+		return networkid.UserID(ModelPrefix + id.EncodeUserLocalpart(modelID))
+	}
+	return networkid.UserID(ModelPrefix + id.EncodeUserLocalpart(providerID) + ModelProviderSep + id.EncodeUserLocalpart(modelID))
 }
 
 func ParseModelContactID(userID networkid.UserID) (providerID string, modelID string, ok bool) {
-	rest, ok := strings.CutPrefix(string(userID), "model:")
+	rest, ok := strings.CutPrefix(string(userID), ModelPrefix)
 	if !ok {
 		return "", "", false
 	}
-	providerID, modelID, ok = strings.Cut(rest, ":")
-	if !ok || providerID == "" || modelID == "" {
+	if rest == "" {
 		return "", "", false
 	}
-	decodedProvider, err := decode(providerID)
+	providerPart, modelPart, hasProvider := strings.Cut(rest, ModelProviderSep)
+	if !hasProvider {
+		modelID, ok = decodeModelContactPart(rest)
+		if !ok {
+			return "", "", false
+		}
+		return DefaultProvider, modelID, true
+	}
+	if providerPart == "" || modelPart == "" {
+		return "", "", false
+	}
+	providerID, ok = decodeModelContactPart(providerPart)
+	if !ok {
+		return "", "", false
+	}
+	modelID, ok = decodeModelContactPart(modelPart)
+	if !ok {
+		return "", "", false
+	}
+	return providerID, modelID, true
+}
+
+func decodeModelContactPart(part string) (string, bool) {
+	decoded, err := id.DecodeUserLocalpart(part)
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
-	decodedModel, err := decode(modelID)
-	if err != nil {
-		return "", "", false
+	return decoded, decoded != ""
+}
+
+func ProviderModelIdentifier(providerID string, modelID string) string {
+	if providerID == "" || providerID == DefaultProvider {
+		return modelID
 	}
-	return decodedProvider, decodedModel, true
+	return providerID + "/" + modelID
+}
+
+func ModelContactIdentifiers(providerID string, modelID string) []string {
+	identifier := ProviderModelIdentifier(providerID, modelID)
+	if identifier == modelID {
+		return []string{modelID}
+	}
+	return []string{identifier, modelID}
+}
+
+func MatchesModelIdentifier(providerID string, modelID string, identifier string) bool {
+	return identifier == string(ModelContactID(providerID, modelID)) || identifier == modelID
 }
 
 func UserMessageID(entryID string) networkid.MessageID {

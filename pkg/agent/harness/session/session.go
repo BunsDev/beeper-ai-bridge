@@ -34,6 +34,8 @@ type SessionContext struct {
 	Model         *SessionModel        `json:"model"`
 }
 
+const DeletedMessagePlaceholder = "[Deleted message]"
+
 type SessionModel struct {
 	Provider string `json:"provider"`
 	ModelID  string `json:"modelId"`
@@ -141,6 +143,16 @@ func (s *Session) GetSessionName(ctx context.Context) (*string, error) {
 
 func (s *Session) AppendMessage(ctx context.Context, message agent.AgentMessage) (string, error) {
 	return s.appendTypedEntry(ctx, map[string]any{"type": "message", "message": message})
+}
+
+func (s *Session) AppendMessageDeletion(ctx context.Context, targetID string) (string, error) {
+	if _, err := s.storage.GetEntry(ctx, targetID); err != nil {
+		if errors.Is(err, ErrSessionEntryNotFound) {
+			return "", NewSessionError(SessionErrorNotFound, "Entry "+targetID+" not found", nil)
+		}
+		return "", err
+	}
+	return s.appendTypedEntry(ctx, map[string]any{"type": "message_delete", "targetId": targetID})
 }
 
 func (s *Session) AppendThinkingLevelChange(ctx context.Context, thinkingLevel string) (string, error) {
@@ -258,6 +270,7 @@ func BuildSessionContext(pathEntries []json.RawMessage) (SessionContext, error) 
 	thinkingLevel := "off"
 	var model *SessionModel
 	var compaction map[string]any
+	deletedMessages := map[string]bool{}
 
 	parsed := make([]map[string]any, 0, len(pathEntries))
 	for _, raw := range pathEntries {
@@ -287,6 +300,10 @@ func BuildSessionContext(pathEntries []json.RawMessage) (SessionContext, error) 
 			}
 		case "compaction":
 			compaction = entry
+		case "message_delete":
+			if targetID, ok := entry["targetId"].(string); ok && targetID != "" {
+				deletedMessages[targetID] = true
+			}
 		}
 	}
 
@@ -301,6 +318,15 @@ func BuildSessionContext(pathEntries []json.RawMessage) (SessionContext, error) 
 			var message agent.AgentMessage
 			if err := json.Unmarshal(raw, &message); err != nil {
 				return err
+			}
+			if entryID, ok := entry["id"].(string); ok && deletedMessages[entryID] {
+				message.Content = DeletedMessagePlaceholder
+				message.ToolCallID = ""
+				message.ToolName = ""
+				message.Details = nil
+				message.IsError = false
+				message.ErrorMessage = ""
+				message.Diagnostics = nil
 			}
 			messages = append(messages, message)
 		case "custom_message":

@@ -17,7 +17,7 @@ func TestGenerateCleansAndLimitsTitle(t *testing.T) {
 	}
 	title, err := Generate(context.Background(), messages, Options{
 		Model: ai.Model{ID: "gpt-5-mini"},
-		StreamFn: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		CompleteFn: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) ai.Message {
 			if model.ID != "gpt-5-mini" {
 				t.Fatalf("unexpected title model %q", model.ID)
 			}
@@ -27,6 +27,9 @@ func TestGenerateCleansAndLimitsTitle(t *testing.T) {
 			if len(llmContext.Messages) != 1 {
 				t.Fatalf("expected one title prompt message, got %d", len(llmContext.Messages))
 			}
+			if len(llmContext.Tools) != 0 {
+				t.Fatalf("title generation should not expose tools, got %#v", llmContext.Tools)
+			}
 			prompt := assistantText(llmContext.Messages[0])
 			if prompt != "build a Matrix AI bridge" {
 				t.Fatalf("unexpected title prompt %q", prompt)
@@ -34,14 +37,10 @@ func TestGenerateCleansAndLimitsTitle(t *testing.T) {
 			if strings.Contains(prompt, "Conversation title generation task") {
 				t.Fatalf("title prompt should be based only on the first user message")
 			}
-			if options.MaxTokens == nil || *options.MaxTokens != 64 {
+			if options.MaxTokens == nil || *options.MaxTokens != 32 {
 				t.Fatalf("unexpected max tokens %#v", options.MaxTokens)
 			}
-			stream := ai.NewAssistantMessageEventStream()
-			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: `Title: "Matrix AI Bridge Implementation."`}}, StopReason: ai.StopReasonStop}
-			stream.Push(ai.AssistantMessageEvent{Type: "done", Message: &message})
-			stream.End()
-			return stream
+			return ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: `Title: "Matrix AI Bridge Implementation."`}}, StopReason: ai.StopReasonStop}
 		},
 	})
 	if err != nil {
@@ -59,5 +58,70 @@ func TestCleanTitleSanitizesMarkdownLabelsAndLength(t *testing.T) {
 	}
 	if len([]rune(title)) > maxTitleChars {
 		t.Fatalf("title was not truncated: %q", title)
+	}
+	if maxTitleChars != 48 {
+		t.Fatalf("unexpected max title length %d", maxTitleChars)
+	}
+}
+
+func TestGenerateUsesTextCaptionWithoutAttachmentData(t *testing.T) {
+	messages := []agent.AgentMessage{
+		{Role: "user", Content: []ai.ContentBlock{
+			{Type: "text", Text: "what is in this?"},
+			{Type: "image", MimeType: "image/png", Data: "abc", Name: "photo.png"},
+			{Type: "audio", MimeType: "audio/wav", Data: "def", Name: "voice.wav"},
+		}},
+		{Role: "assistant", Content: "A response"},
+	}
+	title, err := Generate(context.Background(), messages, Options{
+		Model: ai.Model{ID: "gpt-5-mini", Input: []string{"text", "image", "audio"}},
+		CompleteFn: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) ai.Message {
+			if len(llmContext.Tools) != 0 {
+				t.Fatalf("title generation should not expose tools, got %#v", llmContext.Tools)
+			}
+			blocks := contentBlocks(llmContext.Messages[0].Content)
+			if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != "what is in this?" {
+				t.Fatalf("expected text-only title prompt, got %#v", blocks)
+			}
+			return ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "Attachment Review"}}, StopReason: ai.StopReasonStop}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Attachment Review" {
+		t.Fatalf("unexpected title %q", title)
+	}
+}
+
+func TestGenerateFallsBackToAttachmentPlaceholder(t *testing.T) {
+	messages := []agent.AgentMessage{
+		{Role: "user", Content: []ai.ContentBlock{{Type: "image", MimeType: "image/png", Data: "abc", Name: "photo.png"}}},
+		{Role: "assistant", Content: "A response"},
+	}
+	title, err := Generate(context.Background(), messages, Options{
+		Model: ai.Model{ID: "text-only", Input: []string{"text"}},
+		CompleteFn: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) ai.Message {
+			prompt := assistantText(llmContext.Messages[0])
+			if prompt != "User attached: image photo.png" {
+				t.Fatalf("unexpected placeholder prompt %q", prompt)
+			}
+			return ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "Image Attachment"}}, StopReason: ai.StopReasonStop}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Image Attachment" {
+		t.Fatalf("unexpected title %q", title)
+	}
+}
+
+func TestAssistantTextReadsGenericJSONBlocks(t *testing.T) {
+	message := ai.Message{Content: []any{
+		map[string]any{"type": "text", "text": "Streaming title"},
+	}}
+	if text := assistantText(message); text != "Streaming title" {
+		t.Fatalf("unexpected assistant text %q", text)
 	}
 }

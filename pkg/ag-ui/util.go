@@ -17,6 +17,8 @@ func NormalizeFinishReason(value string) string {
 		return FinishReasonContentFilter
 	case FinishReasonToolCalls:
 		return FinishReasonToolCalls
+	case FinishReasonCancelled:
+		return FinishReasonCancelled
 	case FinishReasonOther:
 		return FinishReasonOther
 	default:
@@ -26,7 +28,7 @@ func NormalizeFinishReason(value string) string {
 
 func ValidFinishReason(value string) bool {
 	switch value {
-	case FinishReasonStop, FinishReasonLength, FinishReasonContentFilter, FinishReasonToolCalls, FinishReasonOther:
+	case FinishReasonStop, FinishReasonLength, FinishReasonContentFilter, FinishReasonToolCalls, FinishReasonCancelled, FinishReasonOther:
 		return true
 	default:
 		return false

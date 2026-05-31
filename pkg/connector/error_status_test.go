@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"testing"
 
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -53,6 +54,18 @@ func TestMatrixMessageStatusForAIErrorMapsHTTPProviderFailures(t *testing.T) {
 			wantReason: event.MessageStatusNetworkError,
 		},
 		{
+			name:       "formatted provider rate limit",
+			err:        errors.New("OpenAI API error (429): too many requests"),
+			wantStatus: event.MessageStatusRetriable,
+			wantReason: event.MessageStatusNetworkError,
+		},
+		{
+			name:       "ai token quota",
+			err:        errors.New("OpenAI API error (429): AI token limit exceeded. Check /limits"),
+			wantStatus: event.MessageStatusRetriable,
+			wantReason: event.MessageStatusNetworkError,
+		},
+		{
 			name:       "bad request",
 			err:        testHTTPStatusError{StatusCode: http.StatusBadRequest, message: "bad request"},
 			wantStatus: event.MessageStatusFail,
@@ -72,6 +85,31 @@ func TestMatrixMessageStatusForAIErrorMapsHTTPProviderFailures(t *testing.T) {
 				t.Fatalf("unexpected status %#v", status)
 			}
 		})
+	}
+}
+
+func TestMatrixMessageStatusForAIErrorMapsUsageLimitMessage(t *testing.T) {
+	status := matrixMessageStatusForAIError(errors.New("OpenAI API error (429): insufficient_quota: quota exceeded"))
+	if status.Status != event.MessageStatusRetriable || status.ErrorReason != event.MessageStatusNetworkError {
+		t.Fatalf("expected retriable usage-limit status, got %#v", status)
+	}
+	if status.Message != "AI usage limit exceeded. Check /limits" {
+		t.Fatalf("unexpected message %q", status.Message)
+	}
+}
+
+func TestMatrixMessageStatusForAIErrorOverridesWrappedUsageLimit(t *testing.T) {
+	err := bridgev2.WrapErrorInStatus(errors.New("This message exceeds the AI usage limits in your plan. Your limits will reset in 23 hours 17 minutes. You can see details by typing `/limits`")).
+		WithStatus(event.MessageStatusFail).
+		WithErrorReason(event.MessageStatusNoPermission).
+		WithMessage("AI usage limit exceeded. Check /limits")
+
+	status := matrixMessageStatusForAIError(err)
+	if status.Status != event.MessageStatusRetriable || status.ErrorReason != event.MessageStatusNetworkError {
+		t.Fatalf("expected retriable wrapped usage-limit status, got %#v", status)
+	}
+	if status.Message != "AI usage limit exceeded. Check /limits" {
+		t.Fatalf("unexpected message %q", status.Message)
 	}
 }
 

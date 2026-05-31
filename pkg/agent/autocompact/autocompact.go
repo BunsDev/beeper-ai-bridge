@@ -53,6 +53,9 @@ func (r Runner) ShouldCompact(ctx context.Context, assistantMessage ai.Message) 
 	if settings == (harness.CompactionSettings{}) {
 		settings = harness.DefaultCompactionSettings
 	}
+	if !settings.Enabled {
+		return "", false, nil
+	}
 	if aiutils.IsContextOverflow(assistantMessage, contextWindow) {
 		return ReasonOverflow, true, nil
 	}

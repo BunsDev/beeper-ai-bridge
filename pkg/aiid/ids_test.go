@@ -24,32 +24,46 @@ func TestPortalAndAssistantIDsAreStable(t *testing.T) {
 	if got := AssistantUserID(); got != "assistant:ai" {
 		t.Fatalf("unexpected assistant ID %q", got)
 	}
-	providerID, modelID, ok := ParseModelContactID(ModelContactID("beeper/openai", "gpt-5:latest"))
-	if !ok || providerID != "beeper/openai" || modelID != "gpt-5:latest" {
+	if got := ModelContactID(DefaultProvider, "openai/gpt-5.5"); got != "model:openai=2fgpt-5.5" {
+		t.Fatalf("unexpected default model contact ID %q", got)
+	}
+	if got := ModelContactID("openrouter", "openai/gpt-5.5"); got != "model:openrouter:openai=2fgpt-5.5" {
+		t.Fatalf("unexpected custom model contact ID %q", got)
+	}
+	providerID, modelID, ok := ParseModelContactID(ModelContactID("openrouter", "openai/gpt-5.5"))
+	if !ok || providerID != "openrouter" || modelID != "openai/gpt-5.5" {
 		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID(DefaultProvider, "gpt-5+preview"))
+	if !ok || providerID != DefaultProvider || modelID != "gpt-5+preview" {
+		t.Fatalf("default model contact ID did not parse: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID("custom", "gpt-5+preview"))
+	if !ok || providerID != "custom" || modelID != "gpt-5+preview" {
+		t.Fatalf("custom model contact ID did not preserve model separator: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID("provider:with/symbols", "Model (test): v1/2"))
+	if !ok || providerID != "provider:with/symbols" || modelID != "Model (test): v1/2" {
+		t.Fatalf("encoded model contact ID did not parse: %q %q %v", providerID, modelID, ok)
 	}
 	providerID, modelID, ok = ParseModelContactID(ModelContactID("beeper", "gpt-5"))
 	if !ok || providerID != "beeper" || modelID != "gpt-5" {
 		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
 	}
-	providerLogin := ProviderLoginID(loginID, "openai")
-	parent, providerID, ok := ParseProviderLoginID(providerLogin)
-	if !ok || parent != loginID || providerID != "openai" {
-		t.Fatalf("provider login ID did not parse: %q %q %v", parent, providerID, ok)
-	}
 }
 
 func TestMetadataJSONRoundTrip(t *testing.T) {
+	provider := ProviderConfig{
+		ID:           "custom",
+		DisplayName:  "Custom",
+		API:          ai.ApiOpenAIResponses,
+		Provider:     "custom",
+		BaseURL:      "https://example.com/v1/responses",
+		DefaultModel: "gpt-5",
+	}
 	meta := &UserLoginMetadata{
 		Providers: map[string]ProviderConfig{
-			"custom": {
-				ID:           "custom",
-				DisplayName:  "Custom",
-				API:          ai.ApiOpenAIResponses,
-				Provider:     "custom",
-				BaseURL:      "https://example.com/v1/responses",
-				DefaultModel: "gpt-5",
-			},
+			provider.ID: provider,
 		},
 	}
 	raw, err := json.Marshal(meta)
@@ -60,10 +74,11 @@ func TestMetadataJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Providers["custom"].BaseURL != "https://example.com/v1/responses" {
-		t.Fatalf("provider metadata did not round trip: %#v", decoded.Providers["custom"])
+	decodedProvider, ok := decoded.Providers["custom"]
+	if !ok || decodedProvider.BaseURL != "https://example.com/v1/responses" {
+		t.Fatalf("provider metadata did not round trip: %#v", decoded.Providers)
 	}
-	if decoded.Providers["custom"].DefaultModel != "gpt-5" {
+	if decodedProvider.DefaultModel != "gpt-5" {
 		t.Fatalf("metadata did not round trip: %#v", decoded)
 	}
 }

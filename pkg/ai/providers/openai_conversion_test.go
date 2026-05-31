@@ -1,6 +1,8 @@
 package providers
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -36,6 +38,63 @@ func TestConvertMessagesAliasesCompletionsConverter(t *testing.T) {
 	want := ConvertCompletionsMessages(model, context)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected ConvertMessages alias to match completions converter\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestCompleteOpenAICompletionsUsesNonStreamingPayload(t *testing.T) {
+	stopErr := errors.New("stop after payload")
+	called := false
+	result := CompleteOpenAICompletions(context.Background(), ai.Model{
+		ID:       "gpt-4.1-mini",
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenAI,
+	}, ai.Context{Messages: []ai.Message{{Role: "user", Content: "title"}}}, OpenAICompletionsOptions{
+		StreamOptions: ai.StreamOptions{
+			OnPayload: func(payload any, model ai.Model) (any, bool, error) {
+				called = true
+				body := payload.(map[string]any)
+				if body["stream"] != false {
+					t.Fatalf("expected non-streaming completion payload, got %#v", body["stream"])
+				}
+				if _, ok := body["stream_options"]; ok {
+					t.Fatalf("did not expect stream_options in non-streaming completion payload: %#v", body)
+				}
+				return nil, false, stopErr
+			},
+		},
+	})
+	if !called {
+		t.Fatal("expected payload hook")
+	}
+	if result.StopReason != ai.StopReasonError || result.ErrorMessage != stopErr.Error() {
+		t.Fatalf("unexpected result %#v", result)
+	}
+}
+
+func TestCompleteOpenAIResponsesUsesNonStreamingPayload(t *testing.T) {
+	stopErr := errors.New("stop after payload")
+	called := false
+	result := CompleteOpenAIResponses(context.Background(), ai.Model{
+		ID:       "gpt-5-mini",
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+	}, ai.Context{Messages: []ai.Message{{Role: "user", Content: "title"}}}, OpenAIResponsesOptions{
+		StreamOptions: ai.StreamOptions{
+			OnPayload: func(payload any, model ai.Model) (any, bool, error) {
+				called = true
+				body := payload.(map[string]any)
+				if body["stream"] != false {
+					t.Fatalf("expected non-streaming responses payload, got %#v", body["stream"])
+				}
+				return nil, false, stopErr
+			},
+		},
+	})
+	if !called {
+		t.Fatal("expected payload hook")
+	}
+	if result.StopReason != ai.StopReasonError || result.ErrorMessage != stopErr.Error() {
+		t.Fatalf("unexpected result %#v", result)
 	}
 }
 
@@ -468,6 +527,37 @@ func TestBuildCompletionsParamsSupportsTogetherCompat(t *testing.T) {
 	}
 	if _, ok := params["reasoning_effort"]; ok {
 		t.Fatalf("together should omit reasoning_effort by detected compat, got %#v", params["reasoning_effort"])
+	}
+}
+
+func TestBuildCompletionsParamsSupportsA8CReasoningCompat(t *testing.T) {
+	off := "off"
+	model := ai.Model{
+		ID:        "openai/gpt-oss-120b",
+		API:       ai.ApiOpenAICompletions,
+		Provider:  "a8c",
+		BaseURL:   "https://ai-services.example/proxy/a8c/v1",
+		Reasoning: true,
+		Input:     []string{"text"},
+		ThinkingLevelMap: map[ai.ModelThinkingLevel]*string{
+			ai.ModelThinkingLevelOff: &off,
+		},
+	}
+	offParams := BuildCompletionsParams(model, ai.Context{}, OpenAICompletionsOptions{})
+	if offParams["include_reasoning"] != false {
+		t.Fatalf("expected a8c off reasoning to use include_reasoning=false, got %#v", offParams)
+	}
+	if _, ok := offParams["reasoning_effort"]; ok {
+		t.Fatalf("a8c off reasoning should not send rejected reasoning_effort=off, got %#v", offParams["reasoning_effort"])
+	}
+
+	minimal := ai.ThinkingLevelMinimal
+	minimalParams := BuildCompletionsParams(model, ai.Context{}, OpenAICompletionsOptions{ReasoningEffort: &minimal})
+	if minimalParams["include_reasoning"] != true {
+		t.Fatalf("expected a8c enabled reasoning to include reasoning, got %#v", minimalParams)
+	}
+	if minimalParams["reasoning_effort"] != "low" {
+		t.Fatalf("expected a8c minimal to map to low, got %#v", minimalParams["reasoning_effort"])
 	}
 }
 

@@ -3,7 +3,10 @@ package images
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
@@ -70,5 +73,37 @@ func TestGenerateImagesOpenRouterPayloadError(t *testing.T) {
 	})
 	if output.StopReason != ai.ImagesStopReasonError || output.ErrorMessage != "payload failed" {
 		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestGenerateImagesOpenRouterDoesNotSleepOnHugeRetryAfterByDefault(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "32976")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","code":429}}`))
+	}))
+	defer server.Close()
+
+	started := time.Now()
+	output := GenerateImagesOpenRouter(context.Background(), ai.ImagesModel{
+		API:      ai.ImagesApiOpenRouter,
+		Provider: ai.ImagesProviderOpenRouter,
+		ID:       "openrouter/auto",
+		BaseURL:  server.URL,
+	}, ai.ImagesContext{Input: []ai.ContentBlock{{Type: "text", Text: "draw"}}}, ai.ImagesOptions{
+		APIKey: "key",
+	})
+	elapsed := time.Since(started)
+	if output.StopReason != ai.ImagesStopReasonError || output.ErrorMessage == "" {
+		t.Fatalf("expected terminal provider error, got %#v", output)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected one attempt, got %d", attempts)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected no retry sleep, took %s", elapsed)
 	}
 }

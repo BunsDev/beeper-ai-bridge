@@ -2,19 +2,29 @@ package connector
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	agent "github.com/beeper/ai-bridge/pkg/agent"
+	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
+	"github.com/beeper/ai-bridge/pkg/aidb"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
+	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -62,6 +72,41 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamPublisherFailsAfterIdleTimeout(t *testing.T) {
+	ctx := context.Background()
+	oldTimeout := activeStreamIdleTimeout
+	activeStreamIdleTimeout = 20 * time.Millisecond
+	defer func() {
+		activeStreamIdleTimeout = oldTimeout
+	}()
+	testAPI := ai.Api("test-stream-timeout")
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			<-ctx.Done()
+			stream.End()
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	result := client.streamPublisher(publisher, "!room:example.com", "$event", run)(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+
+	if result.StopReason != ai.StopReasonError || !strings.Contains(result.ErrorMessage, "timed out") {
+		t.Fatalf("expected timeout error result, got %#v", result)
+	}
+	if run.Status.State != "error" {
+		t.Fatalf("expected run to be marked error, got %#v", run.Status)
+	}
+	if len(publisher.updates) < 2 {
+		t.Fatalf("expected start and timeout stream updates, got %#v", publisher.updates)
+	}
+}
+
 func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	ctx := context.Background()
 	toolAPI := ai.Api("test-stream-tool")
@@ -74,6 +119,7 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 				Role:       "assistant",
 				Content:    []ai.ContentBlock{{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments}},
 				StopReason: ai.StopReasonToolUse,
+				Usage:      ai.Usage{Input: 10, Output: 1, ReasoningTokens: 2, TotalTokens: 11},
 			}
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: toolCall})
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ToolCall: toolCall})
@@ -84,7 +130,12 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
 		stream := ai.NewAssistantMessageEventStream()
 		go func() {
-			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "hello"}}, StopReason: ai.StopReasonStop}
+			message := ai.Message{
+				Role:       "assistant",
+				Content:    []ai.ContentBlock{{Type: "text", Text: "hello"}},
+				StopReason: ai.StopReasonStop,
+				Usage:      ai.Usage{Input: 3, Output: 2, ReasoningTokens: 1, TotalTokens: 5},
+			}
 			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "hello"})
 			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
 		}()
@@ -103,6 +154,14 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	if toolResult.StopReason != ai.StopReasonToolUse {
 		t.Fatalf("unexpected tool stream result %#v", toolResult)
 	}
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventRunFinished {
+			t.Fatalf("tool-use provider stop must not finish a continued AG-UI run: %#v", run.Events)
+		}
+		if evt.Type() == agui.EventToolCallResult {
+			t.Fatalf("provider toolcall_end must not emit a tool result before the tool runs: %#v", run.Events)
+		}
+	}
 	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
 	if answerResult.StopReason != ai.StopReasonStop {
 		t.Fatalf("unexpected answer stream result %#v", answerResult)
@@ -117,6 +176,18 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	if runStarted != 1 {
 		t.Fatalf("expected one run start event, got %d in %#v", runStarted, run.Events)
 	}
+	runFinished := 0
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventRunFinished {
+			runFinished++
+		}
+	}
+	if runFinished != 1 {
+		t.Fatalf("expected one terminal run finish after continuation, got %d in %#v", runFinished, run.Events)
+	}
+	if run.Usage != (agui.Usage{PromptTokens: 13, CompletionTokens: 3, ReasoningTokens: 3, TotalTokens: 16}) {
+		t.Fatalf("continued run usage was not accumulated: %#v", run.Usage)
+	}
 	message := run.FinalBeeperAIMessage(0, true)
 	if message.ID != "assistant:run" || len(message.Parts) != 2 {
 		t.Fatalf("expected one assistant UI message with text and tool parts, got %#v", message)
@@ -126,6 +197,360 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	}
 	if message.Parts[1]["type"] != "text" || message.Parts[1]["content"] != "hello" {
 		t.Fatalf("expected final answer text after tool call, got %#v", message.Parts)
+	}
+}
+
+func TestFinalizedAssistantRunPreservesAccumulatedStreamUsage(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.Usage = agui.Usage{PromptTokens: 13, CompletionTokens: 3, ReasoningTokens: 3, TotalTokens: 16}
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: ai.StopReasonStop,
+		Usage:      ai.Usage{Input: 3, Output: 2, ReasoningTokens: 1, TotalTokens: 5},
+	}
+
+	final := finalizedAssistantRun(run, message, 400000)
+	want := run.Usage
+	want.ContextLimit = 400000
+	if final.Usage != want {
+		t.Fatalf("finalization overwrote accumulated usage: got %#v want %#v", final.Usage, want)
+	}
+}
+
+func TestFinalizedAssistantRunUsesModelContextLimit(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: ai.StopReasonStop,
+		Usage:      ai.Usage{Input: 80, Output: 10, TotalTokens: 90},
+	}
+
+	final := finalizedAssistantRun(run, message, 100)
+	want := agui.Usage{PromptTokens: 80, CompletionTokens: 10, TotalTokens: 90, ContextLimit: 100}
+	if final.Usage != want {
+		t.Fatalf("final usage = %#v, want %#v", final.Usage, want)
+	}
+	payload := final.AI(aistream.AIKindFinal)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Get("usage") != want {
+		t.Fatalf("final RUN_FINISHED usage = %#v, want %#v", payload.Events, want)
+	}
+}
+
+func TestFinalizedAssistantRunCompletesAfterApprovalInterrupt(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(&run, timeNow)
+	writer.Start()
+	writer.ToolApprovalRequested("call-session", "get_session", map[string]any{}, aistream.ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	writer.ToolApprovalResponded("call-session", "get_session", map[string]any{}, aistream.ToolApprovalResponse{ID: "approval-1", Approved: true})
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "done"}},
+		StopReason: ai.StopReasonStop,
+	}
+
+	final := finalizedAssistantRun(run, message, 0)
+	if final.Status.State != "complete" {
+		t.Fatalf("finalized interrupted run state = %q, want complete", final.Status.State)
+	}
+	payload := final.AI(aistream.AIKindFinal)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunFinished {
+		t.Fatalf("missing final RUN_FINISHED event: %#v", payload.Events)
+	}
+	terminal := payload.Events[0].Event
+	if terminal.Get("finishReason") != agui.FinishReasonStop {
+		t.Fatalf("final finish reason = %#v, want stop", terminal.Get("finishReason"))
+	}
+	if outcome, ok := terminal.Get("outcome").(agui.RunFinishedOutcome); !ok || outcome.Type != agui.OutcomeSuccess {
+		t.Fatalf("final outcome should be success, got %#v", terminal.Get("outcome"))
+	}
+}
+
+func TestDoneEventAfterApprovalDoesNotDuplicateStreamedText(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.ToolApprovalRequested("call-session", "get_session", map[string]any{}, aistream.ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+	writer.ToolApprovalResponded("call-session", "get_session", map[string]any{}, aistream.ToolApprovalResponse{ID: "approval-1", Approved: true})
+
+	text := "First tool call done. Now I'm sending text in between."
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: text}},
+		StopReason: ai.StopReasonStop,
+	}
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: text})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	textParts := 0
+	for _, part := range uiMessage.Parts {
+		if part["type"] != "text" {
+			continue
+		}
+		textParts++
+		if part["content"] != text {
+			t.Fatalf("unexpected text part content: %#v", part)
+		}
+	}
+	if textParts != 1 {
+		t.Fatalf("expected one text part after approval resume, got %d parts: %#v", textParts, uiMessage.Parts)
+	}
+	if strings.Count(run.Preview.Text, text) != 1 {
+		t.Fatalf("preview duplicated streamed text: %q", run.Preview.Text)
+	}
+}
+
+func TestInterruptedStreamRunsRemainRecoverable(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.Status.State = "interrupted"
+	cursor := &streamPublishCursor{lastPersisted: 1, lastPersistedAt: time.Now()}
+
+	if !shouldPersistStreamRun(run, cursor) {
+		t.Fatal("interrupted stream should stay persisted while waiting for approval")
+	}
+}
+
+func TestTerminalStreamRunsRemainRecoverableUntilFinalEdit(t *testing.T) {
+	for _, state := range []string{"complete", "aborted", "error"} {
+		run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+		run.Status.State = state
+		cursor := &streamPublishCursor{lastPersisted: len(run.Events), lastPersistedAt: time.Now()}
+
+		if !shouldPersistStreamRun(run, cursor) {
+			t.Fatalf("%s stream should stay persisted until final edit deletes it", state)
+		}
+	}
+}
+
+func TestPublishNewStreamEventsPersistsTerminalRun(t *testing.T) {
+	ctx := context.Background()
+	publisher := &recordingStreamPublisher{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	persistedStates := []string{}
+	cursor := &streamPublishCursor{
+		nextSeq: 1,
+		persist: func(ctx context.Context, run *aistream.Run) error {
+			persistedStates = append(persistedStates, run.Status.State)
+			return nil
+		},
+	}
+	client := &Client{}
+	if err := client.publishNewStreamEvents(ctx, publisher, "!room:example.com", "$event", run, cursor); err != nil {
+		t.Fatal(err)
+	}
+	writer.Finish(agui.FinishReasonStop)
+	if err := client.publishNewStreamEvents(ctx, publisher, "!room:example.com", "$event", run, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if len(persistedStates) != 2 || persistedStates[0] != "streaming" || persistedStates[1] != "complete" {
+		t.Fatalf("expected streaming and terminal states to persist, got %#v", persistedStates)
+	}
+}
+
+func TestAssistantStreamPublisherDoesNotCreateAnchorAfterTerminalError(t *testing.T) {
+	ctx := context.Background()
+	portalKey := aiid.PortalKey(id.RoomID("!room:example.com"), "login")
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.Error("usage limit exceeded")
+	active := &activeAIRun{
+		portalKey: portalKey,
+		last: &assistantStreamState{
+			messageID: "assistant:run",
+			runID:     run.RunID,
+			run:       run,
+		},
+	}
+	client := &Client{}
+	client.setActiveRun(portalKey, active)
+	publisher := &recordingStreamPublisher{}
+	portal := &bridgev2.Portal{Portal: &database.Portal{
+		PortalKey: portalKey,
+		MXID:      id.RoomID("!room:example.com"),
+	}}
+
+	result := client.assistantStreamPublisher(
+		publisher,
+		portal,
+		&aiid.PortalMetadata{SessionID: "thread"},
+		aiid.ProviderConfig{ID: "beeper"},
+		ai.Model{ID: "fake"},
+	)(ctx, ai.Model{ID: "fake"}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+
+	if result.StopReason != ai.StopReasonError || !strings.Contains(result.ErrorMessage, "usage limit exceeded") {
+		t.Fatalf("expected existing terminal error result, got %#v", result)
+	}
+	if publisher.descriptorCalls != 0 || len(publisher.updates) != 0 {
+		t.Fatalf("terminal error should not create a new stream descriptor or publish carriers, descriptorCalls=%d updates=%#v", publisher.descriptorCalls, publisher.updates)
+	}
+}
+
+func TestFinalizeInterruptedSessionTurnClosesToolUseTurn(t *testing.T) {
+	ctx := context.Background()
+	store := testAIStore(t)
+	loginID := networkid.UserLoginID("login")
+	agentSession, err := store.CreateSession(ctx, loginID, session.SQLiteSessionCreateOptions{ID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = agentSession.AppendMessage(ctx, ai.Message{Role: "user", Content: "hi", Timestamp: 1}); err != nil {
+		t.Fatal(err)
+	}
+	assistantEntryID, err := agentSession.AppendMessage(ctx, ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:      "toolCall",
+			ID:        "call-session",
+			Name:      "get_session",
+			Arguments: map[string]any{},
+		}},
+		StopReason: ai.StopReasonToolUse,
+		Timestamp:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := aistream.NewRun("run-1", "session-1", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.ToolStart("call-session", "get_session", 0, nil)
+	writer.ToolApprovalRequested("call-session", "get_session", map[string]any{}, aistream.ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.InterruptWithUsage(nil)
+
+	client := &Client{
+		Main: &Connector{Store: store},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			ID: loginID,
+		}},
+	}
+	client.finalizeInterruptedSessionTurn(ctx, aidb.ActiveStreamRecord{
+		RunID:      run.RunID,
+		LoginID:    loginID,
+		EntryID:    assistantEntryID,
+		Run:        *run,
+		ProviderID: "beeper",
+		ModelID:    "fake",
+	}, errors.New("AI stream was interrupted before completion"))
+
+	context, err := agentSession.BuildContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.Messages) != 4 {
+		t.Fatalf("expected recovered turn to have 4 messages, got %#v", context.Messages)
+	}
+	toolResult := context.Messages[2]
+	if toolResult.Role != "toolResult" || toolResult.ToolCallID != "call-session" || !toolResult.IsError {
+		t.Fatalf("expected failed tool result after interrupted tool call, got %#v", toolResult)
+	}
+	final := context.Messages[3]
+	if final.Role != "assistant" || final.StopReason != ai.StopReasonError || !strings.Contains(final.ErrorMessage, "interrupted") {
+		t.Fatalf("expected assistant error to close interrupted turn, got %#v", final)
+	}
+}
+
+func TestFinalizeInterruptedSessionTurnWithEmptyEntryIDIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := testAIStore(t)
+	loginID := networkid.UserLoginID("login")
+	agentSession, err := store.CreateSession(ctx, loginID, session.SQLiteSessionCreateOptions{ID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = agentSession.AppendMessage(ctx, ai.Message{Role: "user", Content: "hi", Timestamp: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	run := aistream.NewRun("run-1", "session-1", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+
+	client := &Client{
+		Main: &Connector{Store: store},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			ID: loginID,
+		}},
+	}
+	record := aidb.ActiveStreamRecord{
+		RunID:      run.RunID,
+		LoginID:    loginID,
+		Run:        *run,
+		ProviderID: "beeper",
+		ModelID:    "fake",
+	}
+	cause := errors.New("AI stream was interrupted before completion")
+	client.finalizeInterruptedSessionTurn(ctx, record, cause)
+	client.finalizeInterruptedSessionTurn(ctx, record, cause)
+
+	context, err := agentSession.BuildContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryCount := 0
+	for _, message := range context.Messages {
+		if message.Role == "assistant" && message.ErrorMessage == cause.Error() {
+			recoveryCount++
+		}
+	}
+	if recoveryCount != 1 {
+		t.Fatalf("expected one recovered assistant error, got %d in %#v", recoveryCount, context.Messages)
+	}
+}
+
+func TestFinalizedAssistantRunErrorUsesGenericPreviewAndTerminalReason(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	message := ai.Message{
+		Role:         "assistant",
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: "OpenAI API error (403): This model is not available",
+	}
+
+	final := finalizedAssistantRun(run, message, 0)
+	wantVisible := message.ErrorMessage
+	if final.Preview.Text != wantVisible {
+		t.Fatalf("error preview = %q, want %q", final.Preview.Text, wantVisible)
+	}
+	payload := final.AI(aistream.AIKindFinal)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunError {
+		t.Fatalf("missing final RUN_ERROR event: %#v", payload.Events)
+	}
+	if payload.Events[0].Event.Get("message") != message.ErrorMessage {
+		t.Fatalf("missing RUN_ERROR message: %#v", payload.Events[0].Event)
+	}
+}
+
+func TestDoneEventAddsFinalTextWhenProviderDidNotStreamDeltas(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "final only"}},
+		StopReason: ai.StopReasonStop,
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	if got := len(uiMessage.Parts); got != 1 {
+		t.Fatalf("expected final text part, got %d parts: %#v", got, uiMessage.Parts)
+	}
+	if uiMessage.Parts[0]["type"] != "text" || uiMessage.Parts[0]["content"] != "final only" {
+		t.Fatalf("final-only provider text was not preserved as a UI part: %#v", uiMessage.Parts)
 	}
 }
 
@@ -178,11 +603,17 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 			Details: map[string]any{
 				"results": []any{
 					map[string]any{
-						"title":       "One",
-						"url":         "https://example.com/one",
-						"description": "desc",
-						"published":   "2026-01-01",
-						"siteName":    "Example",
+						"id":              "doc_1",
+						"title":           "One",
+						"url":             "https://example.com/one",
+						"description":     "desc",
+						"published":       "2026-01-01",
+						"siteName":        "Example",
+						"highlights":      []any{"hit"},
+						"highlightScores": []any{0.5},
+						"summary":         "sum",
+						"subpages":        []any{map[string]any{"title": "Sub", "url": "https://example.com/sub"}},
+						"extras":          map[string]any{"links": []any{"https://example.com/link"}},
 					},
 				},
 			},
@@ -200,12 +631,15 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 	if source == nil {
 		t.Fatalf("expected source-url part, got %#v", message.Parts)
 	}
-	if source["url"] != "https://example.com/one" || source["title"] != "One" {
+	if source["url"] != "https://example.com/one" || source["title"] != "One" || source["sourceId"] != "https://example.com/one" {
 		t.Fatalf("unexpected source part %#v", source)
 	}
-	meta, ok := source["providerMetadata"].(map[string]any)
-	if !ok || meta["description"] != "desc" || meta["published"] != "2026-01-01" || meta["siteName"] != "Example" {
-		t.Fatalf("missing source metadata: %#v", source["providerMetadata"])
+	if source["description"] != "desc" || source["publishedAt"] != "2026-01-01" || source["siteName"] != "Example" || source["imageUrl"] == "" {
+		t.Fatalf("missing canonical source metadata: %#v", source)
+	}
+	appearances, ok := source["appearances"].([]map[string]any)
+	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "web_search" || appearances[0]["toolCallId"] != "call-search" || appearances[0]["rank"] != 1 {
+		t.Fatalf("missing source appearances: %#v", source["appearances"])
 	}
 }
 
@@ -247,10 +681,11 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		t.Fatalf("metadata was not finalized through shared pointer: %#v", partMetadata)
 	}
 
-	edit := client.assistantFinalEdit(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", "run", *run, ai.Message{
+	finalRun := finalizedAssistantRun(*run, ai.Message{
 		Role:       "assistant",
 		StopReason: ai.StopReasonStop,
-	}, metadata)
+	}, 0)
+	edit := client.assistantFinalEditWithProjection(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", finalRun, metadata)
 	if edit.Sender.Sender != aiid.AssistantUserID() {
 		t.Fatalf("assistant final edit used sender %q", edit.Sender.Sender)
 	}
@@ -265,14 +700,13 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 }
 
 func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:     "custom",
+		Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
+	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "login",
-		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"custom": {
-				ID:     "custom",
-				Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
-			},
-		}},
+		ID:       "login",
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}}
 	content := &event.MessageEventContent{}
 	client.applyModelProfile(context.Background(), content, "custom", "gpt-5.5")
@@ -295,16 +729,14 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 			UserMXID: "@test:beeper.com",
-			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-				"beeper": {
-					ID:           aiid.DefaultProvider,
-					DisplayName:  "Beeper AI",
-					API:          ai.ApiOpenAIResponses,
-					Provider:     ai.ProviderOpenAI,
-					BaseURL:      server.URL + "/proxy/openai/v1",
-					DefaultModel: "beeper/default",
-				},
-			}},
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{aiid.DefaultProvider: {
+				ID:           aiid.DefaultProvider,
+				DisplayName:  "Beeper AI",
+				API:          ai.ApiOpenAIResponses,
+				Provider:     ai.ProviderOpenAI,
+				BaseURL:      server.URL + "/proxy/openai/v1",
+				DefaultModel: "beeper/default",
+			}}},
 		}},
 	}
 	content := &event.MessageEventContent{}
@@ -327,9 +759,9 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 		Message: &ai.Message{
 			Usage: ai.Usage{Input: 10, Output: 5, ReasoningTokens: 4, TotalTokens: 15},
 		},
-	})
+	}, 400000)
 
-	want := agui.Usage{PromptTokens: 10, CompletionTokens: 5, ReasoningTokens: 4, TotalTokens: 15}
+	want := agui.Usage{PromptTokens: 10, CompletionTokens: 5, ReasoningTokens: 4, TotalTokens: 15, ContextLimit: 400000}
 	if run.Usage != want {
 		t.Fatalf("run usage = %#v, want %#v", run.Usage, want)
 	}
@@ -341,6 +773,12 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 	}
 	if finished != want {
 		t.Fatalf("RUN_FINISHED usage = %#v, want %#v", finished, want)
+	}
+}
+
+func TestAGUIFinishReasonFromAIMapsAbortedToCancelled(t *testing.T) {
+	if got := aguiFinishReasonFromAI(ai.StopReasonAborted); got != agui.FinishReasonCancelled {
+		t.Fatalf("aborted finish reason = %q, want %q", got, agui.FinishReasonCancelled)
 	}
 }
 
@@ -378,18 +816,66 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 	}
 }
 
-func TestApplyAIStreamEventPublishesRawProviderEvent(t *testing.T) {
+func TestApplyAIStreamEventSkipsEmptyToolCallDelta(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:      "toolCall",
+			ID:        "call-1",
+			Name:      "web_search",
+			Arguments: map[string]any{"query": "what is god"},
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 0, Partial: partial})
+
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventToolCallArgs {
+			t.Fatalf("empty tool delta emitted TOOL_CALL_ARGS: %#v", evt)
+		}
+	}
+	if _, err := aistream.PackRun(*run); err != nil {
+		t.Fatalf("expected stream to remain packable: %v", err)
+	}
+}
+
+func TestApplyAIStreamEventDoesNotPublishReasoningSignaturesToAGUI(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:              "thinking",
+			Thinking:          "hidden continuity",
+			ThinkingSignature: "opaque-reasoning-state",
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "hidden continuity", Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "hidden continuity", Partial: partial})
+
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventReasoningEncrypted {
+			t.Fatalf("reasoning signatures must not be published as AG-UI events: %#v", run.Events)
+		}
+	}
+}
+
+func TestApplyAIStreamEventIgnoresRawProviderEvent(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	writer := aistream.NewWriter(run, timeNow)
 	raw := map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-1"}}
 
 	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "raw", RawEvent: raw, RawSource: "openai"})
 
-	if len(run.Events) != 1 || run.Events[0].Type() != agui.EventRaw || run.Events[0].Get("source") != "openai" {
-		t.Fatalf("expected AG-UI RAW event, got %#v", run.Events)
-	}
-	if event, ok := run.Events[0].Get("event").(map[string]any); !ok || event["type"] != "response.created" {
-		t.Fatalf("raw provider event was not preserved: %#v", run.Events[0])
+	if len(run.Events) != 0 {
+		t.Fatalf("raw provider events must not be published as AG-UI events: %#v", run.Events)
 	}
 }
 
@@ -437,11 +923,59 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	}
 }
 
+func TestPublishNewStreamEventsSuppressesMautrixRequestBodyLogs(t *testing.T) {
+	logger := zerolog.New(io.Discard).Level(zerolog.DebugLevel)
+	ctx := logger.WithContext(context.Background())
+	publisher := &recordingStreamPublisher{}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.Text("hello")
+
+	err := (&Client{}).publishNewStreamEvents(ctx, publisher, "!room:example.com", "$event", run, &streamPublishCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.publishLogLevels) != 1 {
+		t.Fatalf("expected one stream publish, got %d", len(publisher.publishLogLevels))
+	}
+	if publisher.publishLogLevels[0] < zerolog.FatalLevel {
+		t.Fatalf("stream carrier publish should suppress mautrix request body logs, got level %s", publisher.publishLogLevels[0])
+	}
+}
+
+func testAIStore(t *testing.T) *aidb.Store {
+	t.Helper()
+	rawDB, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = rawDB.Close()
+	})
+	db, err := dbutil.NewWithDB(rawDB, "sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	store := aidb.NewStore(db, networkid.BridgeID("bridge"), dbutil.ZeroLogger(zerolog.Nop()))
+	if err := store.Upgrade(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 type recordingStreamPublisher struct {
-	updates []map[string]any
+	updates          []map[string]any
+	publishLogLevels []zerolog.Level
+	descriptorCalls  int
 }
 
 func (p *recordingStreamPublisher) NewDescriptor(ctx context.Context, roomID id.RoomID, streamType string) (*event.BeeperStreamInfo, error) {
+	p.descriptorCalls++
 	return &event.BeeperStreamInfo{UserID: "@bot:example.com", Type: streamType}, nil
 }
 
@@ -451,6 +985,7 @@ func (p *recordingStreamPublisher) Register(ctx context.Context, roomID id.RoomI
 
 func (p *recordingStreamPublisher) Publish(ctx context.Context, roomID id.RoomID, eventID id.EventID, delta map[string]any) error {
 	p.updates = append(p.updates, delta)
+	p.publishLogLevels = append(p.publishLogLevels, zerolog.Ctx(ctx).GetLevel())
 	return nil
 }
 

@@ -140,9 +140,11 @@ type Model struct {
 	ThinkingLevelMap     map[ModelThinkingLevel]*string `json:"thinkingLevelMap,omitempty"`
 	DefaultThinkingLevel ModelThinkingLevel             `json:"defaultThinkingLevel,omitempty"`
 	Input                []string                       `json:"input"`
+	Output               []string                       `json:"output,omitempty"`
 	Cost                 ModelCost                      `json:"cost"`
 	ContextWindow        int                            `json:"contextWindow"`
 	MaxTokens            int                            `json:"maxTokens"`
+	BuiltInTools         []string                       `json:"builtInTools,omitempty"`
 	Headers              map[string]string              `json:"headers,omitempty"`
 	Compat               map[string]any                 `json:"compat,omitempty"`
 }
@@ -286,12 +288,14 @@ type AssistantMessageEvent struct {
 
 type APIStreamFunction func(context.Context, Model, Context, StreamOptions) *AssistantMessageEventStream
 type APIStreamSimpleFunction func(context.Context, Model, Context, SimpleStreamOptions) *AssistantMessageEventStream
+type APICompleteSimpleFunction func(context.Context, Model, Context, SimpleStreamOptions) Message
 type StreamFunction = APIStreamSimpleFunction
 
 type APIProvider struct {
-	API          Api
-	Stream       APIStreamFunction
-	StreamSimple APIStreamSimpleFunction
+	API            Api
+	Stream         APIStreamFunction
+	StreamSimple   APIStreamSimpleFunction
+	CompleteSimple APICompleteSimpleFunction
 }
 
 type OpenAICompletionsCompat struct {

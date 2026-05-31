@@ -57,6 +57,7 @@ func GenerateImagesOpenRouter(ctx context.Context, model ai.ImagesModel, imageCo
 		option.WithAPIKey(apiKey),
 		option.WithBaseURL(model.BaseURL),
 		option.WithResponseInto(&rawResponse),
+		option.WithHTTPClient(aiutils.WithAIServicesLogging(nil)),
 	}
 	for key, value := range model.Headers {
 		requestOptions = append(requestOptions, option.WithHeader(key, value))
@@ -69,6 +70,8 @@ func GenerateImagesOpenRouter(ctx context.Context, model ai.ImagesModel, imageCo
 	}
 	if options.MaxRetries != nil {
 		requestOptions = append(requestOptions, option.WithMaxRetries(*options.MaxRetries))
+	} else {
+		requestOptions = append(requestOptions, option.WithMaxRetries(0))
 	}
 
 	client := openaisdk.NewClient()

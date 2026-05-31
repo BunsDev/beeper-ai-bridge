@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -26,8 +25,9 @@ import (
 const defaultCodexBaseURL = "https://chatgpt.com/backend-api"
 const jwtClaimPath = "https://api.openai.com/auth"
 const openAIBetaResponsesWebSockets = "responses_websockets=2026-02-06"
-const maxCodexRetries = 3
+const maxCodexRetries = 0
 const baseCodexRetryDelay = time.Second
+const defaultMaxCodexRetryDelayMs = 60000
 
 type OpenAICodexResponsesOptions struct {
 	OpenAIResponsesOptions
@@ -805,51 +805,30 @@ func parseCodexSSE(ctx context.Context, body io.Reader, stream *ai.AssistantMess
 	events := make(chan map[string]any)
 	go func() {
 		defer close(events)
-		scanner := bufio.NewScanner(body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-		dataLines := []string{}
-		flush := func() bool {
-			if len(dataLines) == 0 {
-				return true
-			}
-			data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-			dataLines = nil
+		err := iterateSSE(body, func(sse serverSentEvent) error {
+			data := strings.TrimSpace(sse.Data)
 			if data == "" || data == "[DONE]" {
-				return true
+				return nil
 			}
 			var event map[string]any
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
 				output.StopReason = ai.StopReasonError
 				output.ErrorMessage = "Invalid Codex SSE JSON: " + err.Error()
-				return false
+				return err
 			}
 			select {
 			case <-ctx.Done():
 				output.StopReason = ai.StopReasonAborted
 				output.ErrorMessage = ctx.Err().Error()
-				return false
+				return ctx.Err()
 			case events <- event:
-				return true
+				return nil
 			}
-		}
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				if !flush() {
-					return
-				}
-				continue
-			}
-			if strings.HasPrefix(line, "data:") {
-				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			}
-		}
-		if err := scanner.Err(); err != nil {
+		})
+		if err != nil && output.StopReason == "" {
 			output.StopReason = ai.StopReasonError
 			output.ErrorMessage = err.Error()
-			return
 		}
-		_ = flush()
 	}()
 	return events
 }
@@ -887,6 +866,9 @@ func normalizeCodexStatus(status string) string {
 }
 
 func isRetryableCodexError(status int, errorText string) bool {
+	if isTerminalCodexUsageLimitError(errorText) {
+		return false
+	}
 	if status == http.StatusTooManyRequests || status == http.StatusInternalServerError || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout {
 		return true
 	}
@@ -899,13 +881,29 @@ func isRetryableCodexError(status int, errorText string) bool {
 		strings.Contains(lower, "connection refused")
 }
 
+func isTerminalCodexUsageLimitError(errorText string) bool {
+	lower := strings.ToLower(errorText)
+	return strings.Contains(lower, "gousagelimiterror") ||
+		strings.Contains(lower, "freeusagelimiterror") ||
+		strings.Contains(lower, "monthly usage limit reached") ||
+		strings.Contains(lower, "available balance") ||
+		strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "out of budget") ||
+		strings.Contains(lower, "quota exceeded") ||
+		strings.Contains(lower, "billing")
+}
+
 func codexRetryDelay(attempt int, response *http.Response, maxRetryDelayMs *int) time.Duration {
 	delay := baseCodexRetryDelay * time.Duration(1<<attempt)
 	if requested, ok := RequestedRetryDelay(response, time.Now()); ok {
 		delay = requested
 	}
-	if maxRetryDelayMs != nil && *maxRetryDelayMs >= 0 {
-		maxDelay := time.Duration(*maxRetryDelayMs) * time.Millisecond
+	maxDelayMs := defaultMaxCodexRetryDelayMs
+	if maxRetryDelayMs != nil {
+		maxDelayMs = *maxRetryDelayMs
+	}
+	if maxDelayMs >= 0 {
+		maxDelay := time.Duration(maxDelayMs) * time.Millisecond
 		if delay > maxDelay {
 			return maxDelay
 		}

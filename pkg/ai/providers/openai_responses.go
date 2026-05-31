@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/openai/openai-go/v3/option"
@@ -29,6 +30,69 @@ func StreamSimpleOpenAIResponses(ctx context.Context, model ai.Model, llmContext
 		return stream
 	}
 	return StreamOpenAIResponses(ctx, model, llmContext, OpenAIResponsesOptions{StreamOptions: options.StreamOptions, ReasoningEffort: simpleReasoningEffort(model, options.Reasoning)})
+}
+
+func CompleteSimpleOpenAIResponses(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) ai.Message {
+	if options.APIKey == "" {
+		options.APIKey = getEnvAPIKey(model.Provider)
+	}
+	if options.APIKey == "" {
+		output := newAssistant(model)
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = "No API key for provider: " + string(model.Provider)
+		return output
+	}
+	return CompleteOpenAIResponses(ctx, model, llmContext, OpenAIResponsesOptions{StreamOptions: options.StreamOptions, ReasoningEffort: simpleReasoningEffort(model, options.Reasoning)})
+}
+
+func CompleteOpenAIResponses(ctx context.Context, model ai.Model, llmContext ai.Context, options OpenAIResponsesOptions) ai.Message {
+	output := newAssistant(model)
+	params := BuildResponsesParams(model, llmContext, options)
+	params["stream"] = false
+	if options.OnPayload != nil {
+		if next, ok, err := options.OnPayload(params, model); err != nil {
+			output.StopReason = ai.StopReasonError
+			output.ErrorMessage = err.Error()
+			return output
+		} else if ok {
+			nextParams, ok := next.(map[string]any)
+			if !ok {
+				output.StopReason = ai.StopReasonError
+				output.ErrorMessage = "onPayload returned unsupported OpenAI request body"
+				return output
+			}
+			params = nextParams
+		}
+	}
+	var rawResponse *http.Response
+	client, requestOptions, err := newClient(model, llmContext, options.StreamOptions)
+	if err != nil {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = err.Error()
+		return output
+	}
+	requestOptions = append(requestOptions, option.WithResponseInto(&rawResponse))
+	response, err := client.Responses.New(ctx, param.Override[responses.ResponseNewParams](params), requestOptions...)
+	if err != nil {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = formatOpenAIError(err)
+		return output
+	}
+	if options.OnResponse != nil && rawResponse != nil {
+		if err := options.OnResponse(providerResponse(rawResponse), model); err != nil {
+			output.StopReason = ai.StopReasonError
+			output.ErrorMessage = err.Error()
+			return output
+		}
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(response.RawJSON()), &raw); err != nil {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = err.Error()
+		return output
+	}
+	applyCompleteOpenAIResponses(&output, model, options, raw)
+	return output
 }
 
 func StreamOpenAIResponses(ctx context.Context, model ai.Model, llmContext ai.Context, options OpenAIResponsesOptions) *ai.AssistantMessageEventStream {
@@ -83,6 +147,62 @@ func StreamOpenAIResponses(ctx context.Context, model ai.Model, llmContext ai.Co
 		finishResponsesStream(stream, &output, state)
 	}()
 	return stream
+}
+
+func applyCompleteOpenAIResponses(output *ai.Message, model ai.Model, options OpenAIResponsesOptions, raw map[string]any) {
+	if id, ok := raw["id"].(string); ok {
+		output.ResponseID = id
+	}
+	if responseModel, ok := raw["model"].(string); ok && responseModel != "" && responseModel != model.ID {
+		output.ResponseModel = responseModel
+	}
+	if usage, ok := raw["usage"].(map[string]any); ok {
+		output.Usage = parseResponsesUsageMap(usage, model)
+	}
+	status, _ := raw["status"].(string)
+	output.StopReason = mapResponsesStopReason(status)
+	blocks := []ai.ContentBlock{}
+	if items, ok := raw["output"].([]any); ok {
+		for _, rawItem := range items {
+			item, _ := rawItem.(map[string]any)
+			switch itemType, _ := item["type"].(string); itemType {
+			case "reasoning":
+				thinking := reasoningTextFromItem(item, "")
+				if thinking != "" {
+					blocks = append(blocks, ai.ContentBlock{Type: "thinking", Thinking: thinking, ThinkingSignature: mustJSON(item)})
+				}
+			case "message":
+				if text := messageTextFromItem(item); text != "" {
+					block := ai.ContentBlock{Type: "text", Text: text}
+					if id, ok := item["id"].(string); ok && id != "" {
+						block.TextSignature = mustJSON(map[string]any{"v": 1, "id": id})
+					}
+					blocks = append(blocks, block)
+				}
+			case "function_call":
+				id := fmt.Sprintf("%v|%v", item["call_id"], item["id"])
+				args, _ := item["arguments"].(string)
+				blocks = append(blocks, ai.ContentBlock{Type: "toolCall", ID: id, Name: fmt.Sprint(item["name"]), Arguments: parseJSONMap(args)})
+			case "image_generation_call":
+				blocks = append(blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
+			}
+		}
+	}
+	output.Content = blocks
+	for _, block := range blocks {
+		if block.Type == "toolCall" && output.StopReason == ai.StopReasonStop {
+			output.StopReason = ai.StopReasonToolUse
+			break
+		}
+	}
+	serviceTier := options.ServiceTier
+	if responseTier, ok := raw["service_tier"].(string); ok && responseTier != "" {
+		serviceTier = responseTier
+	}
+	applyServiceTierPricing(&output.Usage, model, serviceTier)
+	if output.StopReason == ai.StopReasonError {
+		output.ErrorMessage = responseFailedMessage(map[string]any{"response": raw})
+	}
 }
 
 func finishResponsesStream(stream *ai.AssistantMessageEventStream, output *ai.Message, state *responsesStreamState) {

@@ -1,7 +1,12 @@
 package providers
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
@@ -214,6 +219,72 @@ func TestResponsesStreamStateStreamsTextDeltasWithoutContentPartPrelude(t *testi
 	}
 }
 
+func TestResponsesStreamStateFinalizesImageGenerationCall(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "image_generation_call", "id": "ig_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":   "image_generation_call",
+			"id":     "ig_1",
+			"status": "completed",
+			"result": "data:image/webp;base64,abc123",
+		},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":     "response.completed",
+		"response": map[string]any{"status": "completed"},
+	})
+
+	if len(state.blocks) != 1 {
+		t.Fatalf("expected image block, got %#v", state.blocks)
+	}
+	block := state.blocks[0]
+	if block.Type != "image" || block.ID != "ig_1" || block.MimeType != "image/webp" || block.Data != "abc123" {
+		t.Fatalf("unexpected image block: %#v", block)
+	}
+	if output.StopReason != ai.StopReasonStop {
+		t.Fatalf("expected stop reason, got %q", output.StopReason)
+	}
+}
+
+func TestResponsesStreamStateFinalizesMultipleImageGenerationCalls(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	for _, item := range []map[string]any{
+		{"type": "image_generation_call", "id": "ig_1", "result": "first"},
+		{"type": "image_generation_call", "id": "ig_2", "result": "second"},
+	} {
+		state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+			"type": "response.output_item.added",
+			"item": map[string]any{"type": item["type"], "id": item["id"]},
+		})
+		state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+			"type": "response.output_item.done",
+			"item": item,
+		})
+	}
+
+	if len(state.blocks) != 2 {
+		t.Fatalf("expected two image blocks, got %#v", state.blocks)
+	}
+	if state.blocks[0].ID != "ig_1" || state.blocks[0].Data != "first" || state.blocks[1].ID != "ig_2" || state.blocks[1].Data != "second" {
+		t.Fatalf("unexpected image blocks: %#v", state.blocks)
+	}
+}
+
 func TestResponsesStreamStateSeedsFunctionCallArgumentsFromAddedItem(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()
@@ -255,6 +326,42 @@ func TestFinishResponsesStreamEmitsErrorForFailedResponse(t *testing.T) {
 	}
 	if event.Error == nil || event.Error.StopReason != ai.StopReasonError || event.Error.ErrorMessage != "bad_request: nope" {
 		t.Fatalf("expected failed response error event, got %#v", event)
+	}
+}
+
+func TestOpenAIResponsesStreamDoesNotSleepOnHugeRetryAfterByDefault(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "32976")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"AI token limit exceeded","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	result := StreamOpenAIResponses(ctx, ai.Model{
+		ID:       "gpt-test",
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  server.URL,
+		Input:    []string{"text"},
+	}, ai.Context{Messages: []ai.Message{{Role: "user", Content: "hi"}}}, OpenAIResponsesOptions{
+		StreamOptions: ai.StreamOptions{APIKey: "key"},
+	}).Result()
+	elapsed := time.Since(started)
+
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("stream waited on Retry-After before returning: %s", elapsed)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected no implicit retry attempts, got %d", attempts)
+	}
+	if result.StopReason != ai.StopReasonError || !strings.Contains(result.ErrorMessage, "429") {
+		t.Fatalf("expected terminal 429 error result, got %#v", result)
 	}
 }
 

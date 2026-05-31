@@ -6,6 +6,7 @@ type CompactionErrorCode string
 
 const (
 	CompactionErrorAborted             CompactionErrorCode = "aborted"
+	CompactionErrorNothingToCompact    CompactionErrorCode = "nothing_to_compact"
 	CompactionErrorSummarizationFailed CompactionErrorCode = "summarization_failed"
 	CompactionErrorInvalidSession      CompactionErrorCode = "invalid_session"
 	CompactionErrorUnknown             CompactionErrorCode = "unknown"

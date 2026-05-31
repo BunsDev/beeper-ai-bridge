@@ -15,14 +15,14 @@ const (
 	BeeperAISchema      = "com.beeper.ai.v1"
 	BeeperAIApprovalKey = "com.beeper.ai.approval"
 	DefaultModel        = "dummybridge/ag-ui"
+	ErrorFallbackText   = "Something went wrong"
 	PreviewBudgetBytes  = 4096
 )
 
 const (
-	AIKindAnchor  = "anchor"
-	AIKindStream  = "stream"
-	AIKindFinal   = "final"
-	AIKindSegment = "segment"
+	AIKindAnchor = "anchor"
+	AIKindStream = "stream"
+	AIKindFinal  = "final"
 )
 
 type Run struct {
@@ -49,7 +49,6 @@ type Run struct {
 type Status struct {
 	State        string `json:"state"`
 	FinishReason string `json:"finishReason,omitempty"`
-	Terminal     any    `json:"terminal"`
 	Error        any    `json:"error"`
 }
 
@@ -59,37 +58,23 @@ type Preview struct {
 }
 
 type BeeperAI struct {
-	Schema     string                `json:"schema"`
-	Protocol   string                `json:"protocol"`
-	Kind       string                `json:"kind"`
-	ThreadID   string                `json:"threadId"`
-	RunID      string                `json:"runId"`
-	MessageID  string                `json:"messageId"`
-	Agent      AgentMetadata         `json:"agent,omitempty"`
-	Model      string                `json:"model,omitempty"`
-	Message    *UIMessage            `json:"message,omitempty"`
-	Events     []Envelope            `json:"events,omitempty"`
-	Approvals  []ApprovalSummary     `json:"approvals,omitempty"`
-	Interrupts []agui.Interrupt      `json:"interrupts,omitempty"`
-	Artifacts  ArtifactSummary       `json:"artifacts,omitempty"`
-	Data       map[string]any        `json:"data,omitempty"`
-	Preview    Preview               `json:"preview,omitempty"`
-	Terminal   *RunTerminal          `json:"terminal,omitempty"`
-	Final      *FinalDelivery        `json:"final,omitempty"`
-	Segment    *FinalSegmentMetadata `json:"segment,omitempty"`
+	Schema    string         `json:"schema"`
+	Protocol  string         `json:"protocol"`
+	Kind      string         `json:"kind"`
+	ThreadID  string         `json:"threadId"`
+	RunID     string         `json:"runId"`
+	MessageID string         `json:"messageId"`
+	Agent     AgentMetadata  `json:"agent,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	Message   *UIMessage     `json:"message,omitempty"`
+	Events    []Envelope     `json:"events,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+	Final     *FinalDelivery `json:"final,omitempty"`
 }
 
 type AgentMetadata struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-}
-
-type RunTerminal struct {
-	State        string     `json:"state"`
-	FinishReason string     `json:"finishReason,omitempty"`
-	Usage        agui.Usage `json:"usage,omitempty"`
-	Outcome      any        `json:"outcome,omitempty"`
-	Error        *RunError  `json:"error,omitempty"`
 }
 
 type RunError struct {
@@ -98,8 +83,28 @@ type RunError struct {
 }
 
 type FinalDelivery struct {
-	Delivery     string `json:"delivery"`
-	SegmentCount int    `json:"segmentCount"`
+	Delivery      string         `json:"delivery"`
+	TextComplete  *bool          `json:"textComplete,omitempty"`
+	PartsComplete bool           `json:"partsComplete"`
+	PartsRef      *FinalPartsRef `json:"partsRef,omitempty"`
+}
+
+type FinalPartsRef struct {
+	Schema     string `json:"schema"`
+	MediaType  string `json:"mediaType"`
+	URL        string `json:"url,omitempty"`
+	File       any    `json:"file,omitempty"`
+	ByteSize   int    `json:"byteSize"`
+	SHA256     string `json:"sha256"`
+	PartsCount int    `json:"partsCount"`
+}
+
+type FinalPartsPayload struct {
+	Schema    string    `json:"schema"`
+	ThreadID  string    `json:"threadId"`
+	RunID     string    `json:"runId"`
+	MessageID string    `json:"messageId"`
+	Message   UIMessage `json:"message"`
 }
 
 func terminalOutcome(status Status, interrupts []agui.Interrupt) any {
@@ -138,20 +143,32 @@ func terminalError(value any) *RunError {
 }
 
 type ApprovalSummary struct {
-	ID         string         `json:"id"`
-	ToolCallID string         `json:"toolCallId"`
-	State      string         `json:"state"`
-	Always     bool           `json:"always"`
-	Reason     string         `json:"reason,omitempty"`
-	EditedArgs map[string]any `json:"editedArgs,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	ID          string         `json:"id"`
+	ToolCallID  string         `json:"toolCallId"`
+	ToolName    string         `json:"toolName,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	ExpiresAt   string         `json:"expiresAt,omitempty"`
+	State       string         `json:"state"`
+	Always      bool           `json:"always"`
+	Choice      string         `json:"choice,omitempty"`
+	Persisted   bool           `json:"persisted,omitempty"`
+	RespondedAt string         `json:"respondedAt,omitempty"`
+	Reason      string         `json:"reason,omitempty"`
+	EditedArgs  map[string]any `json:"editedArgs,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type ApprovalPrompt struct {
-	ID         string
-	ToolCallID string
-	ToolName   string
-	SeqStart   int
+	ID          string
+	ToolCallID  string
+	ToolName    string
+	Title       string
+	Description string
+	PlanText    string
+	ExpiresAt   string
+	SeqStart    int
+	Metadata    map[string]any
 }
 
 type ArtifactSummary struct {
@@ -170,6 +187,7 @@ type Writer struct {
 	reasoningPhaseID          string
 	reasoningPhaseOpen        bool
 	nextSyntheticReasoningIdx int
+	lastAccountedChars        int
 	previewText               string
 }
 
@@ -208,14 +226,15 @@ func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *R
 
 func NewWriter(run *Run, now func() time.Time) *Writer {
 	return &Writer{
-		Run:               run,
-		builder:           agui.NewEventBuilder(run.Model, now),
-		textMessages:      map[int]string{},
-		textOpen:          map[int]bool{},
-		reasoningMessages: map[int]string{},
-		reasoningOpen:     map[int]bool{},
-		reasoningPhaseID:  "reasoning-" + run.RunID,
-		previewText:       run.Text(),
+		Run:                run,
+		builder:            agui.NewEventBuilder(run.Model, now),
+		textMessages:       map[int]string{},
+		textOpen:           map[int]bool{},
+		reasoningMessages:  map[int]string{},
+		reasoningOpen:      map[int]bool{},
+		reasoningPhaseID:   "reasoning-" + run.RunID,
+		lastAccountedChars: utf8.RuneCountInString(run.Text()),
+		previewText:        run.Text(),
 	}
 }
 
@@ -304,8 +323,7 @@ func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApp
 
 func (w *Writer) ToolStartWithMetadata(toolCallID, name string, index int, approval *ToolApproval, metadata map[string]any) {
 	idx := index
-	parentMessageID := w.ensureTextMessage(0)
-	w.Add(w.builder.ToolCallStartWithMetadata(parentMessageID, toolCallID, name, &idx, metadata))
+	w.Add(w.builder.ToolCallStartWithMetadata(w.Run.MessageID, toolCallID, name, &idx, metadata))
 	if approval != nil {
 		w.recordApprovalRequest(toolCallID, name, approval)
 	}
@@ -318,6 +336,17 @@ func (w *Writer) ToolApprovalRequested(toolCallID, name string, input any, appro
 func (w *Writer) ToolApprovalRequestedWithMetadata(toolCallID, name string, input any, approval ToolApproval, metadata map[string]any) {
 	w.recordApprovalRequest(toolCallID, name, &approval)
 	w.recordInterrupt(NewApprovalInterrupt(*w.Run, toolCallID, name, input, approval, metadata))
+}
+
+func (w *Writer) ToolApprovalRequestedWithRequest(request ApprovalRequest) {
+	approval := request.Approval
+	if approval.ID == "" {
+		approval.ID = request.ID
+	}
+	approval.NeedsApproval = true
+	request.Approval = approval
+	w.recordApprovalRequestFromRequest(request)
+	w.recordInterrupt(NewApprovalInterruptFromRequest(*w.Run, request))
 }
 
 func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *ToolApproval) {
@@ -334,12 +363,57 @@ func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *ToolAp
 	w.Run.Approvals = append(w.Run.Approvals, ApprovalSummary{
 		ID:         approval.ID,
 		ToolCallID: toolCallID,
+		ToolName:   name,
 		State:      "requested",
 	})
 	w.Run.Prompts = append(w.Run.Prompts, ApprovalPrompt{ID: approval.ID, ToolCallID: toolCallID, ToolName: name})
 }
 
+func (w *Writer) recordApprovalRequestFromRequest(request ApprovalRequest) {
+	approval := request.Approval
+	if approval.ID == "" {
+		approval.ID = request.ID
+	}
+	if approval.ID == "" {
+		return
+	}
+	w.Run.ToolCallID = request.ToolCallID
+	w.Run.ApprovalID = approval.ID
+	expiresAt := ""
+	if !request.ExpiresAt.IsZero() {
+		expiresAt = request.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	for _, existing := range w.Run.Approvals {
+		if existing.ID == approval.ID {
+			return
+		}
+	}
+	w.Run.Approvals = append(w.Run.Approvals, ApprovalSummary{
+		ID:          approval.ID,
+		ToolCallID:  request.ToolCallID,
+		ToolName:    request.ToolName,
+		Title:       request.Title,
+		Description: request.Description,
+		ExpiresAt:   expiresAt,
+		State:       "requested",
+		Metadata:    request.Metadata,
+	})
+	w.Run.Prompts = append(w.Run.Prompts, ApprovalPrompt{
+		ID:          approval.ID,
+		ToolCallID:  request.ToolCallID,
+		ToolName:    request.ToolName,
+		Title:       request.Title,
+		Description: request.Description,
+		PlanText:    request.PlanText,
+		ExpiresAt:   expiresAt,
+		Metadata:    request.Metadata,
+	})
+}
+
 func (w *Writer) ToolArgs(toolCallID, delta string, args any) {
+	if delta == "" {
+		return
+	}
 	w.Add(w.builder.ToolCallArgs(toolCallID, delta, args))
 }
 
@@ -358,14 +432,23 @@ func (w *Writer) ToolApprovalInputComplete(toolCallID, name string, input any) {
 	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
 }
 
+func (w *Writer) ToolInputComplete(toolCallID, name string, input any) {
+	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
+}
+
 func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, response ToolApprovalResponse) {
 	for i := range w.Run.Approvals {
 		if w.Run.Approvals[i].ID == response.ID {
 			w.Run.Approvals[i].State = approvalSummaryState(response)
 			w.Run.Approvals[i].Always = response.Always
+			w.Run.Approvals[i].Choice = response.Choice
+			w.Run.Approvals[i].Persisted = response.Persisted
+			w.Run.Approvals[i].RespondedAt = response.RespondedAt
 			w.Run.Approvals[i].Reason = response.Reason
 			w.Run.Approvals[i].EditedArgs = response.EditedArgs
-			w.Run.Approvals[i].Metadata = response.Metadata
+			if response.Metadata != nil {
+				w.Run.Approvals[i].Metadata = response.Metadata
+			}
 		}
 	}
 	result := ApprovalToolResultFromResponse(response)
@@ -374,6 +457,7 @@ func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, respo
 		state = agui.ToolResultStateError
 	}
 	w.resolveInterrupt(response.ID, toolCallID)
+	w.Run.Status = Status{State: "streaming"}
 	w.ToolResult(toolCallID, asString(jsonString(result)), state)
 }
 
@@ -401,16 +485,9 @@ func (w *Writer) ToolDenied(toolCallID, name string, input any, approvalID, reas
 		}
 	}
 	w.resolveInterrupt(approvalID, toolCallID)
+	w.Run.Status = Status{State: "streaming"}
 	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
 	w.ToolResult(toolCallID, asString(jsonString(DeniedApprovalToolResult(approvalID, reason))), agui.ToolResultStateError)
-}
-
-func (w *Writer) StateSnapshot(state map[string]any) {
-	w.Add(w.builder.StateSnapshot(state))
-}
-
-func (w *Writer) StateDelta(delta any) {
-	w.Add(w.builder.StateDelta(delta))
 }
 
 func (w *Writer) MessagesSnapshot(messages []agui.Message) {
@@ -421,8 +498,8 @@ func (w *Writer) Custom(name string, value any) {
 	w.Add(w.builder.Custom(name, value))
 }
 
-func (w *Writer) Raw(event any, source string) {
-	w.Add(w.builder.Raw(event, source))
+func (w *Writer) StateDelta(delta any) {
+	w.Add(w.builder.StateDelta(delta))
 }
 
 func (w *Writer) Finish(reason string) {
@@ -431,21 +508,19 @@ func (w *Writer) Finish(reason string) {
 
 func (w *Writer) FinishWithUsage(reason string, usage *agui.Usage) {
 	reason = agui.NormalizeFinishReason(reason)
-	text := w.Run.Text()
 	w.finishReasoning()
 	w.finishText()
-	if usage != nil {
-		w.Run.Usage = *usage
-	} else {
-		w.Run.Usage = agui.Usage{
-			PromptTokens:     1,
-			CompletionTokens: utf8.RuneCountInString(text),
-			TotalTokens:      utf8.RuneCountInString(text) + 1,
-		}
-	}
+	w.addUsage(usage)
 	w.Run.Status = Status{State: "complete", FinishReason: reason}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunFinished(w.Run.ThreadID, w.Run.RunID, reason, w.Run.Usage))
+}
+
+func (w *Writer) AwaitToolUseWithUsage(usage *agui.Usage) {
+	w.finishReasoning()
+	w.finishText()
+	w.addUsage(usage)
+	w.Run.Status = Status{State: "streaming"}
 }
 
 func (w *Writer) Interrupt() {
@@ -457,18 +532,9 @@ func (w *Writer) InterruptWithUsage(usage *agui.Usage) {
 		w.FinishWithUsage(agui.FinishReasonStop, usage)
 		return
 	}
-	text := w.Run.Text()
 	w.finishReasoning()
 	w.finishText()
-	if usage != nil {
-		w.Run.Usage = *usage
-	} else {
-		w.Run.Usage = agui.Usage{
-			PromptTokens:     1,
-			CompletionTokens: utf8.RuneCountInString(text),
-			TotalTokens:      utf8.RuneCountInString(text) + 1,
-		}
-	}
+	w.addUsage(usage)
 	w.Run.Status = Status{State: "interrupted", FinishReason: agui.FinishReasonToolCalls}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunFinishedWithOutcome(
@@ -480,10 +546,42 @@ func (w *Writer) InterruptWithUsage(usage *agui.Usage) {
 	))
 }
 
+func (w *Writer) addUsage(usage *agui.Usage) {
+	if usage == nil {
+		text := w.Run.Text()
+		currentChars := utf8.RuneCountInString(text)
+		completionChars := currentChars - w.lastAccountedChars
+		if completionChars < 0 {
+			completionChars = 0
+		}
+		promptTokens := 0
+		if w.Run.Usage.PromptTokens == 0 {
+			promptTokens = 1
+		}
+		usage = &agui.Usage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionChars,
+			TotalTokens:      completionChars + promptTokens,
+		}
+	}
+	w.Run.Usage.PromptTokens += usage.PromptTokens
+	w.Run.Usage.CompletionTokens += usage.CompletionTokens
+	w.Run.Usage.ReasoningTokens += usage.ReasoningTokens
+	w.Run.Usage.TotalTokens += usage.TotalTokens
+	if usage.ContextLimit > w.Run.Usage.ContextLimit {
+		w.Run.Usage.ContextLimit = usage.ContextLimit
+	}
+	w.lastAccountedChars = utf8.RuneCountInString(w.Run.Text())
+}
+
 func (w *Writer) Error(message string) {
 	w.finishReasoning()
 	w.finishText()
 	w.Run.Status = Status{State: "error", Error: map[string]any{"message": message}}
+	if w.Run.Text() == "" {
+		w.Run.Preview = PreviewFromText(ErrorFallbackPlaintext(message), PreviewBudgetBytes)
+		w.previewText = w.Run.Preview.Text
+	}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunError(w.Run.ThreadID, w.Run.RunID, message))
 }
@@ -493,7 +591,7 @@ func (w *Writer) Abort(message string) {
 	w.finishText()
 	w.Run.Status = Status{State: "aborted", Error: map[string]any{"message": message}}
 	w.addFinalSnapshot()
-	w.Add(w.builder.RunError(w.Run.ThreadID, w.Run.RunID, message))
+	w.Add(w.builder.RunErrorWithCode(w.Run.ThreadID, w.Run.RunID, message, agui.FinishReasonCancelled))
 }
 
 func (w *Writer) addFinalSnapshot() {
@@ -674,7 +772,7 @@ func (w *Writer) applySummary(evt agui.Event) {
 		value, _ := evt.Get("value").(map[string]any)
 		switch name {
 		case "com.beeper.source":
-			w.Run.Artifacts.Sources = append(w.Run.Artifacts.Sources, value)
+			w.Run.Artifacts.Sources = upsertArtifact(w.Run.Artifacts.Sources, value)
 		case "com.beeper.document":
 			w.Run.Artifacts.Documents = append(w.Run.Artifacts.Documents, value)
 		case "com.beeper.file":
@@ -685,6 +783,29 @@ func (w *Writer) applySummary(evt agui.Event) {
 			}
 		}
 	}
+}
+
+func upsertArtifact(items []map[string]any, value map[string]any) []map[string]any {
+	id := firstArtifactString(value["sourceId"], value["id"], value["url"])
+	if id == "" {
+		return append(items, value)
+	}
+	for index, item := range items {
+		if firstArtifactString(item["sourceId"], item["id"], item["url"]) == id {
+			items[index] = value
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func firstArtifactString(values ...any) string {
+	for _, value := range values {
+		if text, ok := value.(string); ok && text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (w *Writer) appendPreviewText(delta string) {

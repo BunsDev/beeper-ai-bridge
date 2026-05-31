@@ -44,14 +44,15 @@ func StreamSimpleGoogleVertex(ctx context.Context, model ai.Model, llmContext ai
 	if options.Reasoning == nil {
 		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{
 			StreamOptions: base,
-			Thinking:      &GoogleThinkingOptions{Enabled: false},
 		})
 	}
 	clamped := ai.ClampThinkingLevel(model, ai.ModelThinkingLevel(*options.Reasoning))
-	effort := ai.ThinkingLevel(clamped)
 	if clamped == ai.ModelThinkingLevelOff {
-		effort = ai.ThinkingLevelHigh
+		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{
+			StreamOptions: base,
+		})
 	}
+	effort := ai.ThinkingLevel(clamped)
 	geminiModel := model
 	if isGoogleGemini3ProModel(geminiModel) || isGoogleGemini3FlashModel(geminiModel) {
 		return StreamGoogleVertex(ctx, model, llmContext, GoogleVertexOptions{
@@ -128,7 +129,10 @@ func BuildGoogleVertexParams(model ai.Model, llmContext ai.Context, options Goog
 	if options.MaxTokens != nil {
 		config["maxOutputTokens"] = *options.MaxTokens
 	}
-	if options.Thinking != nil && model.Reasoning {
+	if modalities := googleResponseModalities(model); len(modalities) > 0 {
+		config["responseModalities"] = modalities
+	}
+	if options.Thinking != nil && model.Reasoning && !modelOutputsImage(model) {
 		if options.Thinking.Enabled {
 			thinking := map[string]any{"includeThoughts": true}
 			if options.Thinking.Level != "" {
@@ -201,6 +205,7 @@ func doGoogleVertexRequest(ctx context.Context, model ai.Model, options GoogleVe
 	if options.TimeoutMs != nil && *options.TimeoutMs > 0 {
 		client = &http.Client{Timeout: time.Duration(*options.TimeoutMs) * time.Millisecond}
 	}
+	client = aiutils.WithAIServicesLogging(client)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -410,6 +415,11 @@ func (s *googleVertexStreamState) apply(stream *ai.AssistantMessageEventStream, 
 
 func (s *googleVertexStreamState) applyPart(stream *ai.AssistantMessageEventStream, output *ai.Message, part map[string]any) {
 	if part == nil {
+		return
+	}
+	if image, ok := googleImagePart(part); ok {
+		finishGoogleCurrentBlock(stream, output, &s.currentBlockIndex)
+		appendContentBlock(output, image)
 		return
 	}
 	if text, ok := part["text"].(string); ok {

@@ -353,6 +353,7 @@ func doAnthropicRequest(ctx context.Context, model ai.Model, llmContext ai.Conte
 	if options.TimeoutMs != nil && *options.TimeoutMs > 0 {
 		client = &http.Client{Timeout: time.Duration(*options.TimeoutMs) * time.Millisecond}
 	}
+	client = aiutils.WithAIServicesLogging(client)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

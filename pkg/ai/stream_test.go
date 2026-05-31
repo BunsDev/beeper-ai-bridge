@@ -63,6 +63,40 @@ func TestStreamDispatchesFullProviderWithStreamOptions(t *testing.T) {
 	}
 }
 
+func TestCompleteSimplePrefersRegisteredCompleteFunction(t *testing.T) {
+	ClearAPIProviders()
+	defer ClearAPIProviders()
+	streamCalled := false
+	completeCalled := false
+	RegisterAPIProviderWithSource(APIProvider{
+		API: "test-api",
+		StreamSimple: func(ctx context.Context, model Model, llmContext Context, options SimpleStreamOptions) *AssistantMessageEventStream {
+			streamCalled = true
+			stream := NewAssistantMessageEventStream()
+			go func() {
+				message := Message{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "stream"}}, StopReason: StopReasonStop}
+				stream.Push(AssistantMessageEvent{Type: "done", Reason: StopReasonStop, Message: &message})
+			}()
+			return stream
+		},
+		CompleteSimple: func(ctx context.Context, model Model, llmContext Context, options SimpleStreamOptions) Message {
+			completeCalled = true
+			return Message{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "complete"}}, StopReason: StopReasonStop}
+		},
+	}, "test")
+
+	result := CompleteSimple(context.Background(), Model{ID: "m", API: "test-api", Provider: "p"}, Context{}, SimpleStreamOptions{})
+	if !completeCalled {
+		t.Fatal("expected CompleteSimple hook to be called")
+	}
+	if streamCalled {
+		t.Fatal("did not expect CompleteSimple to drain StreamSimple when complete hook exists")
+	}
+	if result.Content.([]ContentBlock)[0].Text != "complete" {
+		t.Fatalf("unexpected complete result %#v", result)
+	}
+}
+
 func TestStreamSimpleUnregisteredProviderPanics(t *testing.T) {
 	ClearAPIProviders()
 	assertPanicMessage(t, "No API provider registered for api: missing", func() {

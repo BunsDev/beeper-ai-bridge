@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 )
@@ -37,6 +38,10 @@ func (c *Connector) registerAICommands() {
 		c.bridgeAICommand("model", "Show or set the AI model for this room.", "[model]"),
 		c.bridgeAICommand("reasoning", "Show or set the reasoning level for this room.", "[off|minimal|low|medium|high|xhigh]"),
 		c.bridgeAICommand("system-prompt", "Show, set, or clear this room's additional system prompt.", "[prompt|clear]"),
+		c.bridgeAICommand("abort", "Abort the active AI response or compaction.", ""),
+		c.bridgeAICommand("stop", "Stop the active AI response or compaction.", ""),
+		c.bridgeProviderListCommand(),
+		c.bridgeProviderCommand(),
 		c.bridgeAICommand("ai-help", "Show available AI Bridge commands.", "[command]"),
 	)
 }
@@ -61,10 +66,7 @@ func (c *Connector) handleBridgeAICommand(ce *commands.Event) {
 	if ce == nil {
 		return
 	}
-	defName := ce.Command
-	if defName == "ai-help" {
-		defName = "help"
-	}
+	defName := canonicalAICommandName(ce.Command)
 	def, ok := aiSlashCommandByName(defName)
 	if !ok {
 		ce.Reply("Unknown AI command.")
@@ -91,19 +93,198 @@ func (c *Connector) handleBridgeAICommand(ce *commands.Event) {
 	}
 	err = def.run(cl, ce.Ctx, ce.Portal, roomConfig, arg, bridgeCommandResponder{ce: ce})
 	if err != nil {
+		logEvt := ce.Log.Err(err).
+			Str("action", "ai_bridge_command").
+			Str("command", def.name).
+			Bool("arg_present", arg != "")
+		if ce.Portal != nil {
+			logEvt = logEvt.
+				Str("portal_id", string(ce.Portal.ID)).
+				Str("portal_receiver", string(ce.Portal.Receiver)).
+				Str("portal_mxid", string(ce.Portal.MXID))
+		}
 		if def.noticeErrors {
+			logEvt.Msg("AI bridge command rejected")
 			ce.Reply(err.Error())
 		} else {
-			ce.Log.Err(err).Msg("AI command failed")
+			logEvt.Msg("AI bridge command failed")
 			ce.Reply("AI command failed: %v", err)
 		}
 	}
 }
 
-func (c *Connector) clientForBridgeAICommand(ce *commands.Event) (*Client, error) {
-	if ce.Portal == nil {
-		return nil, errors.New("This command can only be used in AI portal rooms.")
+func (c *Connector) bridgeProviderListCommand() *commands.FullHandler {
+	return &commands.FullHandler{
+		Func: func(ce *commands.Event) {
+			c.handleBridgeProvidersCommand(ce)
+		},
+		Name: "providers",
+		Help: commands.HelpMeta{
+			Section:     aiCommandHelpSection,
+			Description: "List configured AI providers.",
+			Args:        "",
+		},
+		RequiresLoginPermission: true,
 	}
+}
+
+func (c *Connector) bridgeProviderCommand() *commands.FullHandler {
+	return &commands.FullHandler{
+		Func: func(ce *commands.Event) {
+			c.handleBridgeProviderCommand(ce)
+		},
+		Name: "provider",
+		Help: commands.HelpMeta{
+			Section:     aiCommandHelpSection,
+			Description: "Show, add, update, or delete an AI provider.",
+			Args:        "<show|add|update|delete> ...",
+		},
+		RequiresLoginPermission: true,
+	}
+}
+
+func (c *Connector) handleBridgeProvidersCommand(ce *commands.Event) {
+	login, err := c.loginForBridgeProviderCommand(ce)
+	if err != nil {
+		ce.Reply(err.Error())
+		return
+	}
+	ce.Reply(providerListText(sortedProviderResponses(c.providersForLogin(login))))
+}
+
+func (c *Connector) handleBridgeProviderCommand(ce *commands.Event) {
+	fields := strings.Fields(ce.RawArgs)
+	if len(fields) == 0 {
+		ce.Reply("Usage: `$cmdprefix provider <show|add|update|delete> ...`")
+		return
+	}
+	switch fields[0] {
+	case "show":
+		c.handleBridgeProviderShow(ce, fields[1:])
+	case "add", "update":
+		c.handleBridgeProviderUpsert(ce, fields[0], fields[1:])
+	case "delete":
+		c.handleBridgeProviderDelete(ce, fields[1:])
+	default:
+		ce.Reply("Usage: `$cmdprefix provider <show|add|update|delete> ...`")
+	}
+}
+
+func (c *Connector) handleBridgeProviderShow(ce *commands.Event, fields []string) {
+	if len(fields) != 1 {
+		ce.Reply("Usage: `$cmdprefix provider show <id>`")
+		return
+	}
+	login, err := c.loginForBridgeProviderCommand(ce)
+	if err != nil {
+		ce.Reply(err.Error())
+		return
+	}
+	provider, ok := c.providerForLogin(login, fields[0])
+	if !ok {
+		ce.Reply("Provider `%s` not found.", fields[0])
+		return
+	}
+	ce.Reply(providerText(providerResponse(provider)))
+}
+
+func (c *Connector) handleBridgeProviderUpsert(ce *commands.Event, action string, fields []string) {
+	if len(fields) < 4 || len(fields) > 5 {
+		ce.Reply("Usage: `$cmdprefix provider %s <id> <api> <base_url> <api_key> [default_model]`", action)
+		return
+	}
+	ce.Redact()
+	input := ProviderInput{
+		ID:           fields[0],
+		API:          ai.Api(fields[1]),
+		BaseURL:      fields[2],
+		APIKey:       fields[3],
+		DefaultModel: "",
+	}
+	if len(fields) == 5 {
+		input.DefaultModel = fields[4]
+	}
+	provider, err := c.VerifyProviderConfig(ce.Ctx, input)
+	if err != nil {
+		ce.Reply("Provider rejected: %v", err)
+		return
+	}
+	login, err := c.loginForBridgeProviderCommand(ce)
+	if err != nil {
+		ce.Reply(err.Error())
+		return
+	}
+	if err = c.SaveProviderConfig(ce.Ctx, login, provider); err != nil {
+		ce.Reply("Provider save failed: %v", err)
+		return
+	}
+	if action == "add" {
+		ce.Reply("Provider `%s` added with default model `%s`.", provider.ID, provider.DefaultModel)
+	} else {
+		ce.Reply("Provider `%s` updated with default model `%s`.", provider.ID, provider.DefaultModel)
+	}
+}
+
+func (c *Connector) handleBridgeProviderDelete(ce *commands.Event, fields []string) {
+	if len(fields) != 1 {
+		ce.Reply("Usage: `$cmdprefix provider delete <id>`")
+		return
+	}
+	login, err := c.loginForBridgeProviderCommand(ce)
+	if err != nil {
+		ce.Reply(err.Error())
+		return
+	}
+	if err := c.DeleteProvider(ce.Ctx, login, fields[0]); err != nil {
+		ce.Reply("Provider delete failed: %v", err)
+		return
+	}
+	ce.Reply("Provider `%s` deleted.", fields[0])
+}
+
+func providerListText(providers []ProviderResponse) string {
+	if len(providers) == 0 {
+		return "No AI providers are configured."
+	}
+	var text strings.Builder
+	text.WriteString("AI providers:")
+	for _, provider := range providers {
+		fmt.Fprintf(&text, "\n- `%s` - %s", provider.ID, provider.DisplayName)
+		if provider.DefaultModel != "" {
+			fmt.Fprintf(&text, " (default `%s`)", provider.DefaultModel)
+		}
+		if provider.ReadOnly {
+			text.WriteString(" [read-only]")
+		}
+	}
+	return text.String()
+}
+
+func providerText(provider ProviderResponse) string {
+	var text strings.Builder
+	fmt.Fprintf(&text, "Provider `%s`\n", provider.ID)
+	fmt.Fprintf(&text, "- Name: `%s`\n", provider.DisplayName)
+	fmt.Fprintf(&text, "- API: `%s`\n", provider.API)
+	fmt.Fprintf(&text, "- Route: `%s`\n", provider.Provider)
+	fmt.Fprintf(&text, "- Base URL: `%s`\n", provider.BaseURL)
+	if provider.DefaultModel != "" {
+		fmt.Fprintf(&text, "- Default model: `%s`\n", provider.DefaultModel)
+	}
+	fmt.Fprintf(&text, "- Models: `%d`", len(provider.Models))
+	if provider.ReadOnly {
+		text.WriteString("\n- Read-only: `true`")
+	}
+	return text.String()
+}
+
+func (c *Connector) loginForBridgeProviderCommand(ce *commands.Event) (*bridgev2.UserLogin, error) {
+	if ce != nil && ce.Portal != nil {
+		return c.loginForBridgePortalCommand(ce)
+	}
+	return c.EnsureAIChatsLogin(ce.Ctx, ce.User)
+}
+
+func (c *Connector) loginForBridgePortalCommand(ce *commands.Event) (*bridgev2.UserLogin, error) {
 	login, _, err := ce.Portal.FindPreferredLogin(ce.Ctx, ce.User, false)
 	if errors.Is(err, bridgev2.ErrNotLoggedIn) {
 		return nil, errors.New("You're not logged in for this AI room.")
@@ -111,9 +292,20 @@ func (c *Connector) clientForBridgeAICommand(ce *commands.Event) (*Client, error
 		ce.Log.Err(err).Msg("Failed to find preferred AI login for command")
 		return nil, errors.New("Failed to find the AI login for this room.")
 	}
+	return login, nil
+}
+
+func (c *Connector) clientForBridgeAICommand(ce *commands.Event) (*Client, error) {
+	if ce.Portal == nil {
+		return nil, errors.New("This command can only be used in AI portal rooms.")
+	}
+	login, err := c.loginForBridgePortalCommand(ce)
+	if err != nil {
+		return nil, err
+	}
 	cl, ok := login.Client.(*Client)
 	if !ok {
-		return nil, fmt.Errorf("Login %s is a provider account, not the Beeper AI room login.", login.ID)
+		return nil, fmt.Errorf("login %s is not loaded as an AI client", login.ID)
 	}
 	return cl, nil
 }

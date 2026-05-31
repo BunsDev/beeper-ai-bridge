@@ -1,12 +1,13 @@
 package matrix
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
-	"github.com/beeper/ai-bridge/pkg/ai-stream"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -29,31 +30,8 @@ func TestAnchorContentUsesVisibleTextAndAIProfile(t *testing.T) {
 	if !ok || ai.Message == nil || ai.Message.ID == "" || len(ai.Message.Parts) != 1 {
 		t.Fatalf("bad compact AI message: %#v", extra[aistream.BeeperAIKey])
 	}
-	if ai.Message.Parts[0]["type"] != "text" || ai.Message.Parts[0]["content"] != "visible preview" {
-		t.Fatalf("anchor AI message should include preview text part: %#v", ai.Message.Parts)
-	}
 	if ai.Kind != aistream.AIKindAnchor || ai.Protocol != "ag-ui" || ai.RunID != run.RunID {
 		t.Fatalf("bad AI metadata: %#v", ai)
-	}
-}
-
-func TestAnchorContentKeepsLongRunsCompact(t *testing.T) {
-	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
-	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
-	writer.Start()
-	writer.Text(strings.Repeat("a", 70*1024))
-	writer.Finish(agui.FinishReasonStop)
-
-	content, extra := AnchorContent(*run)
-	if len(content.Body) > aistream.PreviewBudgetBytes {
-		t.Fatalf("anchor body length = %d, want <= %d", len(content.Body), aistream.PreviewBudgetBytes)
-	}
-	ai := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if ai.Message == nil {
-		t.Fatalf("missing anchor AI message: %#v", ai)
-	}
-	if !ai.Preview.Truncated || len(ai.Preview.Text) > aistream.PreviewBudgetBytes {
-		t.Fatalf("bad bounded preview: %#v", ai.Preview)
 	}
 }
 
@@ -71,20 +49,7 @@ func TestStreamingAnchorDoesNotIncludePreviewPart(t *testing.T) {
 	}
 }
 
-func TestAnchorContentRendersFinalPreviewAsMatrixHTML(t *testing.T) {
-	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
-	run.Preview = aistream.Preview{Text: "Use **bold** and `code`"}
-
-	content, _ := AnchorContent(*run)
-	if content.Format != event.FormatHTML {
-		t.Fatalf("format = %q, want Matrix HTML", content.Format)
-	}
-	if !strings.Contains(content.FormattedBody, "<strong>bold</strong>") || !strings.Contains(content.FormattedBody, "<code>code</code>") {
-		t.Fatalf("formatted body did not render markdown: %q", content.FormattedBody)
-	}
-}
-
-func TestFinalContentIncludesFinalUIParts(t *testing.T) {
+func TestFinalContentIncludesAllPartsInlineWhenTheyFit(t *testing.T) {
 	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Start()
@@ -93,38 +58,143 @@ func TestFinalContentIncludesFinalUIParts(t *testing.T) {
 	writer.Finish(agui.FinishReasonStop)
 
 	content, extra := FinalContent(*run)
-	if content.Body != "final **preview**" || content.Format != event.FormatHTML {
-		t.Fatalf("bad final preview content: %#v", content)
+	if content.Format != event.FormatHTML || !strings.Contains(content.FormattedBody, "<strong>preview</strong>") {
+		t.Fatalf("bad final Matrix HTML: %#v", content)
 	}
-	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if !ok || ai.Message == nil || len(ai.Message.Parts) != 2 || ai.Message.Parts[0]["type"] != "thinking" || ai.Message.Parts[1]["type"] != "text" {
-		t.Fatalf("final edit must include concrete UI parts: %#v", extra[aistream.BeeperAIKey])
+	ai := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if ai.Message == nil || len(ai.Message.Parts) != 2 || ai.Message.Parts[0]["type"] != "thinking" || ai.Message.Parts[1]["type"] != "text" {
+		t.Fatalf("final edit should include all fitting UI parts: %#v", ai.Message)
 	}
-	if ai.Message.Parts[0]["content"] != "hidden reasoning" || ai.Message.Parts[1]["content"] == "" {
-		t.Fatalf("final edit must preserve reasoning and text parts: %#v", ai.Message.Parts)
+	if ai.Final == nil || ai.Final.Delivery != "inline" || !ai.Final.PartsComplete || ai.Final.PartsRef != nil {
+		t.Fatalf("small final payload should stay inline: %#v", ai.Final)
 	}
 }
 
-func TestFinalContentDoesNotTruncateUIParts(t *testing.T) {
+func TestErrorFinalContentUsesGenericFallbackAndTerminalError(t *testing.T) {
 	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Start()
-	full := strings.Repeat("| Artifact | State | Latency |\n| --- | --- | --- |\n| renderer | active | accepts markdown |\n\n", 100)
-	writer.Text(full)
-	writer.Finish(agui.FinishReasonStop)
-	expected := run.Text()
+	writer.Error("OpenAI API error (403): This model is not available")
 
-	_, extra := FinalContent(*run)
-	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
-	if !ok || ai.Message == nil || len(ai.Message.Parts) == 0 {
-		t.Fatalf("missing final UI message: %#v", extra[aistream.BeeperAIKey])
+	content, extra := FinalContent(*run)
+	wantVisible := "OpenAI API error (403): This model is not available"
+	if content.Body != wantVisible {
+		t.Fatalf("error final body = %q, want %q", content.Body, wantVisible)
 	}
-	textPart := ai.Message.Parts[len(ai.Message.Parts)-1]
-	if textPart["content"] != expected {
-		t.Fatalf("final UI text was truncated: got %d bytes want %d", len(textPart["content"].(string)), len(expected))
+	if strings.Contains(content.Body, aistream.ErrorFallbackText) {
+		t.Fatalf("plain Matrix fallback should not duplicate generic error text: %#v", content.Body)
 	}
-	if metadata, ok := textPart["providerMetadata"]; ok {
-		t.Fatalf("final UI text should not be marked truncated: %#v", metadata)
+	ai := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if len(ai.Events) != 1 || ai.Events[0].Event.Type() != agui.EventRunError {
+		t.Fatalf("missing final RUN_ERROR event: %#v", ai.Events)
+	}
+	if ai.Events[0].Event.Get("message") != "OpenAI API error (403): This model is not available" {
+		t.Fatalf("missing RUN_ERROR message: %#v", ai.Events[0].Event)
+	}
+	if ai.Message == nil || len(ai.Message.Parts) != 0 {
+		t.Fatalf("terminal-only error final should have empty parts: %#v", ai.Message)
+	}
+	raw, err := json.Marshal(ai.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"parts":null`) || !strings.Contains(string(raw), `"parts":[]`) {
+		t.Fatalf("empty UI parts should encode as an array: %s", raw)
+	}
+}
+
+func TestFinalProjectionUsesAttachmentWhenFullPartsDoNotFit(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.ToolStart("tool-1", "search", 0, nil)
+	writer.ToolEnd("tool-1", "search", map[string]any{"query": "beeper"}, map[string]any{
+		"value": strings.Repeat("x", aistream.FinalMessageBudgetBytes*2),
+	})
+	writer.Text("done")
+	writer.Finish(agui.FinishReasonStop)
+
+	projection := ProjectFinal(*run, nil)
+	ai := projection.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !projection.NeedsAttachment {
+		t.Fatal("oversized parts should require an attachment")
+	}
+	if ai.Message == nil || len(ai.Message.Parts) != 0 {
+		t.Fatalf("attachment mode must not include partial inline parts: %#v", ai.Message)
+	}
+	if ai.Final == nil || ai.Final.Delivery != "attachment" || ai.Final.PartsComplete || ai.Final.PartsRef != nil {
+		t.Fatalf("bad pending attachment metadata: %#v", ai.Final)
+	}
+	if size := finalPayloadSize(projection.Content, projection.Extra); size > aistream.FinalMessageBudgetBytes {
+		t.Fatalf("final projection exceeded budget: size=%d budget=%d", size, aistream.FinalMessageBudgetBytes)
+	}
+}
+
+func TestFinalProjectionIncludesPartsRefAfterUpload(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.ToolStart("tool-1", "search", 0, nil)
+	writer.ToolEnd("tool-1", "search", nil, map[string]any{"value": strings.Repeat("x", aistream.FinalMessageBudgetBytes)})
+	writer.Text("done")
+	writer.Finish(agui.FinishReasonStop)
+	ref := &aistream.FinalPartsRef{
+		Schema:     aistream.FinalPartsRefSchema,
+		MediaType:  aistream.FinalPartsMediaType,
+		URL:        "mxc://example/final-parts",
+		ByteSize:   123,
+		SHA256:     "hash",
+		PartsCount: len(run.FinalBeeperAIMessage(0, true).Parts),
+	}
+
+	projection := ProjectFinal(*run, ref)
+	ai := projection.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if projection.NeedsAttachment {
+		t.Fatal("provided partsRef should complete attachment projection")
+	}
+	if ai.Message == nil || len(ai.Message.Parts) != 0 {
+		t.Fatalf("attachment projection should keep inline parts empty: %#v", ai.Message)
+	}
+	if ai.Final == nil || ai.Final.PartsRef == nil || ai.Final.PartsRef.URL != ref.URL {
+		t.Fatalf("missing partsRef: %#v", ai.Final)
+	}
+}
+
+func TestFinalProjectionSacrificesHTMLBeforeMetadata(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text(strings.Repeat("Use **bold** text in a long answer.\n\n", 500))
+	writer.Finish(agui.FinishReasonStop)
+
+	projection := ProjectFinal(*run, nil)
+	ai := projection.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if ai.Final == nil || ai.Final.TextComplete == nil || *ai.Final.TextComplete {
+		t.Fatalf("long HTML should report incomplete text: %#v", ai.Final)
+	}
+	if !strings.Contains(projection.Content.FormattedBody, "See more on supported clients") {
+		t.Fatalf("incomplete Matrix HTML should include supported-client hint: %#v", projection.Content)
+	}
+	if !strings.Contains(projection.Content.FormattedBody, `data-beeper-ai-fallback="final-parts"`) {
+		t.Fatalf("incomplete Matrix HTML should tag supported-client hint: %#v", projection.Content)
+	}
+	if size := finalPayloadSize(projection.Content, projection.Extra); size > aistream.FinalMessageBudgetBytes {
+		t.Fatalf("final projection exceeded budget: size=%d budget=%d", size, aistream.FinalMessageBudgetBytes)
+	}
+}
+
+func TestFinalProjectionUsesLeftoverBudgetForPlaintext(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text("Use **bold** markdown")
+	writer.Finish(agui.FinishReasonStop)
+
+	projection := ProjectFinal(*run, nil)
+	if projection.Content.Body != run.Text() {
+		t.Fatalf("small final payload should include plaintext fallback: %#v", projection.Content)
 	}
 }
 
@@ -163,6 +233,9 @@ func TestApprovalContentIncludesContextAndChoices(t *testing.T) {
 		MessageID:   "msg-run-1",
 		ToolCallID:  "tool-1",
 		ToolName:    "fetch",
+		Title:       "Can I fetch this?",
+		Description: "This will use the network.",
+		ExpiresAt:   "2026-05-31T12:00:00Z",
 		TargetEvent: "$anchor",
 	}
 	choices := aistream.DefaultApprovalChoices()
@@ -178,15 +251,17 @@ func TestApprovalContentIncludesContextAndChoices(t *testing.T) {
 	if meta["schema"] != "com.beeper.ai.approval.v1" || meta["id"] != ctx.ID || meta["messageId"] != ctx.MessageID || meta["toolCallId"] != ctx.ToolCallID || meta["state"] != "requested" {
 		t.Fatalf("bad approval metadata: %#v", meta)
 	}
+	if meta["title"] != ctx.Title || meta["description"] != ctx.Description || meta["expiresAt"] != ctx.ExpiresAt {
+		t.Fatalf("approval metadata missing title/description/expiry: %#v", meta)
+	}
 	if _, ok := meta["runId"]; ok {
 		t.Fatalf("approval event should not duplicate run metadata: %#v", meta)
+	}
+	if strings.Contains(strings.ToLower(content.Body), "react") || !strings.Contains(content.Body, "/approve approval-1 approve") {
+		t.Fatalf("approval fallback should use approve commands, got %q", content.Body)
 	}
 	approvalChoices, ok := meta["choices"].([]any)
 	if !ok || len(approvalChoices) != len(choices) {
 		t.Fatalf("bad approval choices: %#v", meta["choices"])
-	}
-	first := approvalChoices[0].(map[string]any)
-	if first["key"] != aistream.ApprovalChoiceApprove || first["alias"] != "✅" {
-		t.Fatalf("bad first approval choice: %#v", first)
 	}
 }

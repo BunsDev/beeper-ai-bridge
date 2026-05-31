@@ -4,53 +4,82 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	"github.com/beeper/ai-bridge/pkg/aidb/upgrades"
 	"go.mau.fi/util/dbutil"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 )
 
 type Store struct {
-	db *dbutil.Database
+	db       *dbutil.Database
+	bridgeID networkid.BridgeID
 }
 
-func NewStore(db *dbutil.Database, log dbutil.DatabaseLogger) *Store {
-	return &Store{db: db.Child("ai_bridge_version", upgrades.Table, log)}
+func NewStore(db *dbutil.Database, bridgeID networkid.BridgeID, log dbutil.DatabaseLogger) *Store {
+	return &Store{
+		db:       db.Child("ai_bridge_version", upgrades.Table, log),
+		bridgeID: bridgeID,
+	}
 }
 
 func (s *Store) Upgrade(ctx context.Context) error {
 	return s.db.Upgrade(ctx)
 }
 
-func (s *Store) CreateSession(ctx context.Context, options session.SQLiteSessionCreateOptions) (*session.Session, error) {
-	storage, err := CreateSessionStorage(ctx, s.db, options)
+func (s *Store) CreateSession(ctx context.Context, loginID networkid.UserLoginID, options session.SQLiteSessionCreateOptions) (*session.Session, error) {
+	storage, err := CreateSessionStorage(ctx, s.db, s.bridgeID, loginID, options)
 	if err != nil {
 		return nil, err
 	}
 	return session.NewSession(storage), nil
 }
 
-func (s *Store) OpenSession(ctx context.Context, metadata session.SQLiteSessionMetadata) (*session.Session, error) {
-	storage, err := OpenSessionStorage(ctx, s.db, metadata.ID)
+func (s *Store) OpenSession(ctx context.Context, loginID networkid.UserLoginID, metadata session.SQLiteSessionMetadata) (*session.Session, error) {
+	storage, err := OpenSessionStorage(ctx, s.db, s.bridgeID, loginID, metadata.ID)
 	if err != nil {
 		return nil, err
 	}
 	return session.NewSession(storage), nil
+}
+
+func (s *Store) DeleteSession(ctx context.Context, loginID networkid.UserLoginID, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	if loginID == "" {
+		return fmt.Errorf("missing user login ID")
+	}
+	return s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		if _, err := s.db.Exec(ctx, `DELETE FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3`, s.bridgeID, loginID, sessionID); err != nil {
+			return err
+		}
+		_, err := s.db.Exec(ctx, `DELETE FROM ai_session WHERE bridge_id=$1 AND login_id=$2 AND id=$3`, s.bridgeID, loginID, sessionID)
+		return err
+	})
 }
 
 type SessionStorage struct {
 	db       *dbutil.Database
+	bridgeID networkid.BridgeID
+	loginID  networkid.UserLoginID
 	metadata session.SQLiteSessionMetadata
 }
 
 var _ session.SessionStorage = (*SessionStorage)(nil)
 
-func CreateSessionStorage(ctx context.Context, db *dbutil.Database, options session.SQLiteSessionCreateOptions) (*SessionStorage, error) {
+func CreateSessionStorage(ctx context.Context, db *dbutil.Database, bridgeID networkid.BridgeID, loginID networkid.UserLoginID, options session.SQLiteSessionCreateOptions) (*SessionStorage, error) {
+	if loginID == "" {
+		return nil, fmt.Errorf("missing user login ID")
+	}
 	if options.ID == "" {
 		options.ID = session.CreateSessionID()
 	}
 	storage := &SessionStorage{
-		db: db,
+		db:       db,
+		bridgeID: bridgeID,
+		loginID:  loginID,
 		metadata: session.SQLiteSessionMetadata{
 			SessionMetadata: session.SessionMetadata{
 				ID:        options.ID,
@@ -60,22 +89,25 @@ func CreateSessionStorage(ctx context.Context, db *dbutil.Database, options sess
 		},
 	}
 	_, err := db.Exec(ctx, `
-		INSERT INTO ai_session (id, created_at, parent_session_path, leaf_id)
-		VALUES ($1, $2, $3, NULL)
-	`, storage.metadata.ID, storage.metadata.CreatedAt, nullString(storage.metadata.ParentSessionPath))
+		INSERT INTO ai_session (bridge_id, login_id, id, created_at, parent_session_path, leaf_id)
+		VALUES ($1, $2, $3, $4, $5, NULL)
+	`, bridgeID, loginID, storage.metadata.ID, storage.metadata.CreatedAt, nullString(storage.metadata.ParentSessionPath))
 	if err != nil {
 		return nil, err
 	}
 	return storage, nil
 }
 
-func OpenSessionStorage(ctx context.Context, db *dbutil.Database, sessionID string) (*SessionStorage, error) {
-	storage := &SessionStorage{db: db}
+func OpenSessionStorage(ctx context.Context, db *dbutil.Database, bridgeID networkid.BridgeID, loginID networkid.UserLoginID, sessionID string) (*SessionStorage, error) {
+	if loginID == "" {
+		return nil, fmt.Errorf("missing user login ID")
+	}
+	storage := &SessionStorage{db: db, bridgeID: bridgeID, loginID: loginID}
 	row := db.QueryRow(ctx, `
 		SELECT id, created_at, COALESCE(parent_session_path, '')
 		FROM ai_session
-		WHERE id=$1
-	`, sessionID)
+		WHERE bridge_id=$1 AND login_id=$2 AND id=$3
+	`, bridgeID, loginID, sessionID)
 	if err := row.Scan(&storage.metadata.ID, &storage.metadata.CreatedAt, &storage.metadata.ParentSessionPath); err != nil {
 		return nil, err
 	}
@@ -88,14 +120,14 @@ func (s *SessionStorage) GetMetadata(context.Context) (session.SQLiteSessionMeta
 
 func (s *SessionStorage) GetLeafID(ctx context.Context) (*string, error) {
 	var leaf sql.NullString
-	if err := s.db.QueryRow(ctx, `SELECT leaf_id FROM ai_session WHERE id=$1`, s.metadata.ID).Scan(&leaf); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT leaf_id FROM ai_session WHERE bridge_id=$1 AND login_id=$2 AND id=$3`, s.bridgeID, s.loginID, s.metadata.ID).Scan(&leaf); err != nil {
 		return nil, err
 	}
 	if !leaf.Valid {
 		return nil, nil
 	}
 	var exists int
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM ai_session_entry WHERE session_id=$1 AND id=$2`, s.metadata.ID, leaf.String).Scan(&exists); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3 AND id=$4`, s.bridgeID, s.loginID, s.metadata.ID, leaf.String).Scan(&exists); err != nil {
 		return nil, err
 	}
 	if exists == 0 {
@@ -107,7 +139,7 @@ func (s *SessionStorage) GetLeafID(ctx context.Context) (*string, error) {
 func (s *SessionStorage) SetLeafID(ctx context.Context, leafID *string) error {
 	if leafID != nil {
 		var exists int
-		if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM ai_session_entry WHERE session_id=$1 AND id=$2`, s.metadata.ID, *leafID).Scan(&exists); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3 AND id=$4`, s.bridgeID, s.loginID, s.metadata.ID, *leafID).Scan(&exists); err != nil {
 			return err
 		}
 		if exists == 0 {
@@ -135,12 +167,12 @@ func (s *SessionStorage) SetLeafID(ctx context.Context, leafID *string) error {
 	}
 	return s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
 		if _, err := s.db.Exec(ctx, `
-			INSERT INTO ai_session_entry (session_id, id, parent_id, type, timestamp, data)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, s.metadata.ID, entryID, currentLeafID, "leaf", entry["timestamp"], string(raw)); err != nil {
+			INSERT INTO ai_session_entry (bridge_id, login_id, session_id, id, parent_id, type, timestamp, data)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, s.bridgeID, s.loginID, s.metadata.ID, entryID, currentLeafID, "leaf", entry["timestamp"], string(raw)); err != nil {
 			return err
 		}
-		_, err := s.db.Exec(ctx, `UPDATE ai_session SET leaf_id=$1 WHERE id=$2`, leafID, s.metadata.ID)
+		_, err := s.db.Exec(ctx, `UPDATE ai_session SET leaf_id=$1 WHERE bridge_id=$2 AND login_id=$3 AND id=$4`, leafID, s.bridgeID, s.loginID, s.metadata.ID)
 		return err
 	})
 }
@@ -149,7 +181,7 @@ func (s *SessionStorage) CreateEntryID(ctx context.Context) (string, error) {
 	for i := 0; i < 100; i++ {
 		id := session.CreateSessionID()[:8]
 		var exists int
-		if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM ai_session_entry WHERE session_id=$1 AND id=$2`, s.metadata.ID, id).Scan(&exists); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3 AND id=$4`, s.bridgeID, s.loginID, s.metadata.ID, id).Scan(&exists); err != nil {
 			return "", err
 		}
 		if exists == 0 {
@@ -169,9 +201,9 @@ func (s *SessionStorage) AppendEntry(ctx context.Context, raw json.RawMessage) (
 	}
 	err := s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
 		if _, err := s.db.Exec(ctx, `
-			INSERT INTO ai_session_entry (session_id, id, parent_id, type, timestamp, data)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, s.metadata.ID, entry.ID, entry.ParentID, entry.Type, entry.Timestamp, string(raw)); err != nil {
+			INSERT INTO ai_session_entry (bridge_id, login_id, session_id, id, parent_id, type, timestamp, data)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, s.bridgeID, s.loginID, s.metadata.ID, entry.ID, entry.ParentID, entry.Type, entry.Timestamp, string(raw)); err != nil {
 			return err
 		}
 		nextLeafID := &entry.ID
@@ -186,7 +218,7 @@ func (s *SessionStorage) AppendEntry(ctx context.Context, raw json.RawMessage) (
 				nextLeafID = nil
 			}
 		}
-		_, err := s.db.Exec(ctx, `UPDATE ai_session SET leaf_id=$1 WHERE id=$2`, nextLeafID, s.metadata.ID)
+		_, err := s.db.Exec(ctx, `UPDATE ai_session SET leaf_id=$1 WHERE bridge_id=$2 AND login_id=$3 AND id=$4`, nextLeafID, s.bridgeID, s.loginID, s.metadata.ID)
 		return err
 	})
 	if err != nil {
@@ -197,7 +229,7 @@ func (s *SessionStorage) AppendEntry(ctx context.Context, raw json.RawMessage) (
 
 func (s *SessionStorage) GetEntry(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw string
-	err := s.db.QueryRow(ctx, `SELECT data FROM ai_session_entry WHERE session_id=$1 AND id=$2`, s.metadata.ID, id).Scan(&raw)
+	err := s.db.QueryRow(ctx, `SELECT data FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3 AND id=$4`, s.bridgeID, s.loginID, s.metadata.ID, id).Scan(&raw)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, session.ErrSessionEntryNotFound
@@ -208,7 +240,7 @@ func (s *SessionStorage) GetEntry(ctx context.Context, id string) (json.RawMessa
 }
 
 func (s *SessionStorage) FindEntries(ctx context.Context, entryType string) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(ctx, `SELECT data FROM ai_session_entry WHERE session_id=$1 AND type=$2 ORDER BY rowid`, s.metadata.ID, entryType)
+	rows, err := s.db.Query(ctx, `SELECT data FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3 AND type=$4 ORDER BY rowid`, s.bridgeID, s.loginID, s.metadata.ID, entryType)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +273,7 @@ func (s *SessionStorage) GetLabel(ctx context.Context, id string) (*string, erro
 }
 
 func (s *SessionStorage) GetEntries(ctx context.Context) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(ctx, `SELECT data FROM ai_session_entry WHERE session_id=$1 ORDER BY rowid`, s.metadata.ID)
+	rows, err := s.db.Query(ctx, `SELECT data FROM ai_session_entry WHERE bridge_id=$1 AND login_id=$2 AND session_id=$3 ORDER BY rowid`, s.bridgeID, s.loginID, s.metadata.ID)
 	if err != nil {
 		return nil, err
 	}

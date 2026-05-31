@@ -2,7 +2,13 @@ package connector
 
 import (
 	"context"
+	"embed"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -13,6 +19,9 @@ import (
 
 const defaultAIAssistantAvatarMXC = "mxc://beeper.com/51a668657dd9e0132cc823ad9402c6c2d0fc3321"
 
+//go:embed modelassets/png/*.png
+var modelAvatarAssets embed.FS
+
 func defaultAIAssistantAvatar() *bridgev2.Avatar {
 	return &bridgev2.Avatar{
 		ID:  networkid.AvatarID(defaultAIAssistantAvatarMXC),
@@ -21,76 +30,253 @@ func defaultAIAssistantAvatar() *bridgev2.Avatar {
 }
 
 func modelAvatar(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Avatar {
-	key, svg := modelAvatarAsset(provider, model)
-	if svg == "" {
+	if logoURL := compatString(model.Compat["provider_logo_url"]); logoURL != "" {
+		if resolvedURL, err := aiServicesProviderLogoURL(provider.BaseURL, logoURL); err == nil {
+			return remoteModelAvatar(logoURL, resolvedURL)
+		}
+	}
+	key := modelAvatarProviderKey(provider, model)
+	assetPath := "modelassets/png/" + key + ".png"
+	if _, err := modelAvatarAssets.ReadFile(assetPath); err != nil {
 		return nil
 	}
 	return &bridgev2.Avatar{
 		ID: networkid.AvatarID("ai-model-provider:" + key),
-		Get: func(ctx context.Context) ([]byte, error) {
-			return []byte(svg), nil
+		Get: func(_ context.Context) ([]byte, error) {
+			return modelAvatarAssets.ReadFile(assetPath)
 		},
 	}
 }
 
-func modelAvatarAsset(provider aiid.ProviderConfig, model ai.Model) (string, string) {
-	switch modelAvatarProviderKey(provider, model) {
-	case "anthropic":
-		return "anthropic", anthropicAvatarSVG
-	case "vertex":
-		return "vertex", vertexAvatarSVG
-	case "openrouter":
-		return "openrouter", openRouterAvatarSVG
-	case "openai":
-		return "openai", openAIAvatarSVG
-	default:
-		return "beeper-ai", beeperAIAvatarSVG
-	}
-}
-
 func modelAvatarProviderKey(provider aiid.ProviderConfig, model ai.Model) string {
+	if key := modelAvatarProviderKeyFromHints(model); key != "" {
+		return key
+	}
+	if key := modelAvatarProviderKeyFromModelID(model.ID); key != "" {
+		return key
+	}
 	switch model.Provider {
 	case ai.ProviderAnthropic:
 		return "anthropic"
 	case ai.ProviderGoogle, ai.ProviderGoogleVertex:
-		return "vertex"
+		return "google"
 	case ai.ProviderOpenRouter:
 		return "openrouter"
 	case ai.ProviderOpenAI, ai.ProviderOpenAICodex:
 		return "openai"
-	}
-	modelID := strings.ToLower(model.ID)
-	switch {
-	case strings.HasPrefix(modelID, "claude-"), strings.HasPrefix(modelID, "anthropic/"):
-		return "anthropic"
-	case strings.HasPrefix(modelID, "gemini-"), strings.HasPrefix(modelID, "google/"):
-		return "vertex"
-	case strings.HasPrefix(modelID, "openrouter/"):
-		return "openrouter"
-	case strings.HasPrefix(modelID, "openai/"), strings.HasPrefix(modelID, "gpt-"), strings.HasPrefix(modelID, "o1"), strings.HasPrefix(modelID, "o3"), strings.HasPrefix(modelID, "o4"):
-		return "openai"
+	case ai.ProviderDeepSeek:
+		return "deepseek"
+	case ai.ProviderXAI:
+		return "xai"
+	case ai.ProviderZai:
+		return "zai"
+	case ai.ProviderMinimax, ai.ProviderMinimaxCN:
+		return "minimax"
+	case ai.ProviderMoonshotAI, ai.ProviderMoonshotAICN, ai.ProviderKimiCoding:
+		return "moonshotai"
+	case ai.ProviderXiaomi, ai.ProviderXiaomiTokenPlanCN, ai.ProviderXiaomiTokenPlanAMS, ai.ProviderXiaomiTokenPlanSGP:
+		return "xiaomi"
 	}
 	providerID := strings.ToLower(provider.ID)
 	switch {
 	case strings.Contains(providerID, "anthropic"):
 		return "anthropic"
 	case strings.Contains(providerID, "vertex"), strings.Contains(providerID, "google"):
-		return "vertex"
+		return "google"
 	case strings.Contains(providerID, "openrouter"):
 		return "openrouter"
 	case strings.Contains(providerID, "openai"):
 		return "openai"
+	case strings.Contains(providerID, "deepseek"):
+		return "deepseek"
+	case strings.Contains(providerID, "xai"):
+		return "xai"
+	case strings.Contains(providerID, "zai"):
+		return "zai"
+	case strings.Contains(providerID, "minimax"):
+		return "minimax"
+	case strings.Contains(providerID, "moonshot"), strings.Contains(providerID, "kimi"):
+		return "moonshotai"
+	case strings.Contains(providerID, "xiaomi"):
+		return "xiaomi"
+	case strings.Contains(providerID, "llama"):
+		return "llama"
 	default:
 		return "beeper-ai"
 	}
 }
 
-const beeperAIAvatarSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="#111827"/><path d="M24 29h31c13 0 22 8 22 19s-9 19-22 19H41L25 80V67h-1c-8 0-14-6-14-14V43c0-8 6-14 14-14Z" fill="#29D391"/><circle cx="37" cy="48" r="5" fill="#111827"/><circle cx="55" cy="48" r="5" fill="#111827"/></svg>`
+func remoteModelAvatar(logoID string, logoURL string) *bridgev2.Avatar {
+	return &bridgev2.Avatar{
+		ID: networkid.AvatarID("ai-model-provider-url:" + logoID),
+		Get: func(ctx context.Context) ([]byte, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, logoURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return nil, fmt.Errorf("provider logo %s returned HTTP %d", logoURL, resp.StatusCode)
+			}
+			const maxProviderLogoBytes = 2 << 20
+			data, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderLogoBytes+1))
+			if err != nil {
+				return nil, err
+			}
+			if len(data) > maxProviderLogoBytes {
+				return nil, fmt.Errorf("provider logo %s exceeded %d bytes", logoURL, maxProviderLogoBytes)
+			}
+			return data, nil
+		},
+	}
+}
 
-const anthropicAvatarSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="#D9CBBF"/><path d="M48 18 76 78H62l-6-14H39l-6 14H20L48 18Zm-4 34h8l-4-10-4 10Z" fill="#191919"/></svg>`
+func aiServicesProviderLogoURL(proxyBaseURL string, providerLogoURL string) (string, error) {
+	providerLogoURL = strings.TrimSpace(providerLogoURL)
+	if providerLogoURL == "" {
+		return "", fmt.Errorf("empty provider logo URL")
+	}
+	logo, err := url.Parse(providerLogoURL)
+	if err != nil {
+		return "", err
+	}
+	if logo.IsAbs() {
+		if logo.Scheme != "http" && logo.Scheme != "https" {
+			return "", fmt.Errorf("unsupported provider logo URL scheme %q", logo.Scheme)
+		}
+		logo.Fragment = ""
+		return logo.String(), nil
+	}
+	if proxyBaseURL == "" {
+		return "", fmt.Errorf("missing AI Services base URL for provider logo %q", providerLogoURL)
+	}
+	base, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+	if err != nil {
+		return "", err
+	}
+	if base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("invalid AI Services base URL %q", proxyBaseURL)
+	}
+	base.Path = joinURLPath(trimAIProxyProviderPath(base.Path), logo.Path)
+	base.RawQuery = logo.RawQuery
+	base.Fragment = ""
+	return base.String(), nil
+}
 
-const vertexAvatarSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="#FFFFFF"/><path d="M48 18 74 33v30L48 78 22 63V33l26-15Z" fill="#4285F4"/><path d="M48 18v30L22 33l26-15Z" fill="#34A853"/><path d="M48 48 74 33v30L48 78V48Z" fill="#FBBC04"/><path d="M48 48v30L22 63V33l26 15Z" fill="#EA4335"/></svg>`
+func joinURLPath(basePath string, relativePath string) string {
+	basePath = strings.TrimRight(basePath, "/")
+	relativePath = strings.TrimLeft(relativePath, "/")
+	if relativePath == "" {
+		if basePath == "" {
+			return "/"
+		}
+		return basePath
+	}
+	return basePath + "/" + relativePath
+}
 
-const openAIAvatarSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="#0FA47F"/><path d="M48 20c7 0 13 4 16 10 7 1 12 7 12 14 0 3-1 6-3 9 2 7-1 14-7 18-3 2-7 3-11 2-5 5-13 5-19 2-3-2-6-5-7-9-6-3-9-10-7-17 1-4 3-7 7-9 0-7 5-13 12-15 2-3 5-5 7-5Zm-8 17 17 10v-8L43 31c-2 1-3 3-3 6Zm24 15L47 42l-7 4 17 10c3 2 6 0 7-4ZM35 59V39l-7 4v16c2 2 4 2 7 0Zm21 4L39 53v8l14 8c2-1 3-3 3-6Z" fill="#FFFFFF"/></svg>`
+func modelAvatarProviderKeyFromHints(model ai.Model) string {
+	if model.Compat == nil {
+		return ""
+	}
+	if key := providerLogoURLAvatarKey(compatString(model.Compat["provider_logo_url"])); key != "" {
+		return key
+	}
+	if key := modelAvatarProviderKeyFromModelID(compatString(model.Compat["provider_model_id"])); key != "" {
+		return key
+	}
+	return modelAvatarProviderKeyFromFamily(compatString(model.Compat["family"]))
+}
 
-const openRouterAvatarSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="#101010"/><path d="M18 50h42l-13 13 7 7 25-25-25-25-7 7 13 13H18v10Z" fill="#FFFFFF"/><path d="M18 70h28v8H18v-8Z" fill="#8B5CF6"/></svg>`
+func modelAvatarProviderKeyFromModelID(modelID string) string {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.HasPrefix(modelID, "claude-"), strings.HasPrefix(modelID, "anthropic/"):
+		return "anthropic"
+	case strings.HasPrefix(modelID, "gemini-"), strings.HasPrefix(modelID, "google/"):
+		return "google"
+	case strings.HasPrefix(modelID, "openrouter/"):
+		return "openrouter"
+	case strings.HasPrefix(modelID, "openai/"), strings.HasPrefix(modelID, "gpt-"), strings.HasPrefix(modelID, "o1"), strings.HasPrefix(modelID, "o3"), strings.HasPrefix(modelID, "o4"):
+		return "openai"
+	case strings.HasPrefix(modelID, "deepseek/"), strings.HasPrefix(modelID, "deepseek-"):
+		return "deepseek"
+	case strings.HasPrefix(modelID, "x-ai/"), strings.HasPrefix(modelID, "xai/"), strings.HasPrefix(modelID, "grok-"):
+		return "xai"
+	case strings.HasPrefix(modelID, "z-ai/"), strings.HasPrefix(modelID, "zai/"), strings.HasPrefix(modelID, "glm-"):
+		return "zai"
+	case strings.HasPrefix(modelID, "minimax/"):
+		return "minimax"
+	case strings.HasPrefix(modelID, "moonshotai/"), strings.HasPrefix(modelID, "moonshot/"), strings.HasPrefix(modelID, "kimi-"):
+		return "moonshotai"
+	case strings.HasPrefix(modelID, "xiaomi/"):
+		return "xiaomi"
+	case strings.Contains(modelID, "llama"):
+		return "llama"
+	}
+	return ""
+}
+
+func modelAvatarProviderKeyFromFamily(family string) string {
+	family = strings.ToLower(strings.TrimSpace(family))
+	switch {
+	case strings.Contains(family, "anthropic"), strings.Contains(family, "claude"):
+		return "anthropic"
+	case strings.Contains(family, "google"), strings.Contains(family, "gemini"), strings.Contains(family, "gemma"):
+		return "google"
+	case strings.Contains(family, "openai"), strings.Contains(family, "gpt-"), strings.HasPrefix(family, "gpt"), strings.HasPrefix(family, "o1"), strings.HasPrefix(family, "o3"), strings.HasPrefix(family, "o4"):
+		return "openai"
+	case strings.Contains(family, "deepseek"):
+		return "deepseek"
+	case strings.Contains(family, "xai"), strings.Contains(family, "x-ai"), strings.Contains(family, "grok"):
+		return "xai"
+	case strings.Contains(family, "zai"), strings.Contains(family, "z-ai"), strings.Contains(family, "glm"):
+		return "zai"
+	case strings.Contains(family, "minimax"):
+		return "minimax"
+	case strings.Contains(family, "moonshot"), strings.Contains(family, "kimi"):
+		return "moonshotai"
+	case strings.Contains(family, "xiaomi"), strings.Contains(family, "mimo"):
+		return "xiaomi"
+	case strings.Contains(family, "llama"):
+		return "llama"
+	}
+	return ""
+}
+
+func providerLogoURLAvatarKey(providerLogoURL string) string {
+	providerLogoURL = strings.ToLower(strings.TrimSpace(providerLogoURL))
+	if providerLogoURL == "" {
+		return ""
+	}
+	if beforeQuery, _, ok := strings.Cut(providerLogoURL, "?"); ok {
+		providerLogoURL = beforeQuery
+	}
+	if lastSlash := strings.LastIndex(providerLogoURL, "/"); lastSlash >= 0 {
+		providerLogoURL = providerLogoURL[lastSlash+1:]
+	}
+	providerLogoURL = strings.TrimSuffix(providerLogoURL, ".png")
+	switch providerLogoURL {
+	case "anthropic", "google", "openrouter", "openai", "deepseek", "minimax", "moonshotai", "xiaomi", "llama", "qwen", "inclusionai":
+		return providerLogoURL
+	case "x-ai", "xai":
+		return "xai"
+	case "z-ai", "zai":
+		return "zai"
+	case "meta-llama":
+		return "llama"
+	default:
+		return ""
+	}
+}
+
+func compatString(value any) string {
+	if str, ok := value.(string); ok {
+		return str
+	}
+	return ""
+}

@@ -19,7 +19,13 @@ type ProviderConfig struct {
 }
 
 type UserLoginMetadata struct {
-	Providers map[string]ProviderConfig `json:"providers,omitempty"`
+	Providers map[string]ProviderConfig   `json:"providers,omitempty"`
+	Approvals map[string]ApprovalDecision `json:"approvals,omitempty"`
+}
+
+type ApprovalDecision struct {
+	Decision  string `json:"decision,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 type PortalMetadata struct {

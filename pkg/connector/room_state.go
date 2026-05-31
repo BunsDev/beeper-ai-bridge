@@ -29,6 +29,7 @@ type RoomConfig struct {
 
 	modelStatePresent  bool
 	modelStateModel    string
+	modelStateName     string
 	modelStateReason   string
 	modelStateEventID  string
 	promptStateEventID string
@@ -58,6 +59,7 @@ func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (Roo
 	} else if raw != nil {
 		config.modelStatePresent = true
 		config.modelStateModel = firstString(raw, "model")
+		config.modelStateName = firstString(raw, "name")
 		config.modelStateReason = firstString(raw, "reasoning")
 		config.modelStateEventID = eventID
 		applyRoomModelConfig(&config, raw)
@@ -115,6 +117,9 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	if modelID == "" {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s has no selected model", providerID)
 	}
+	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
+		return provider, resolvedModelID, nil
+	}
 	if !providerAllowsModel(provider, modelID) {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
 	}
@@ -122,19 +127,47 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 }
 
 func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
+	if _, ok := resolveProviderModelID(provider, modelID); ok {
+		return true
+	}
 	if len(provider.Models) > 0 {
-		return providerHasModel(provider, modelID)
+		return false
 	}
 	return strings.TrimSpace(modelID) != ""
 }
 
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {
+	_, ok := resolveProviderModelID(provider, modelID)
+	return ok
+}
+
+func resolveProviderModelID(provider aiid.ProviderConfig, modelID string) (string, bool) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return "", false
+	}
 	for _, model := range provider.Models {
 		if model.ID == modelID {
-			return true
+			return model.ID, true
 		}
 	}
-	return false
+	if strings.Contains(modelID, "/") {
+		return "", false
+	}
+	for _, model := range provider.Models {
+		if lastModelIDPart(model.ID) == modelID {
+			return model.ID, true
+		}
+	}
+	return "", false
+}
+
+func lastModelIDPart(modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if index := strings.LastIndex(modelID, "/"); index >= 0 {
+		return modelID[index+1:]
+	}
+	return modelID
 }
 
 func (s AIRoomStateStore) readRoomState(ctx context.Context, reader bridgev2.MatrixConnectorWithArbitraryRoomState, roomID id.RoomID, stateType string) (map[string]any, string, error) {

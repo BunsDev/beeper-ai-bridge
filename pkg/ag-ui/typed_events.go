@@ -29,15 +29,10 @@ type RunFinishedEvent struct {
 
 type RunErrorEvent struct {
 	EventEnvelope
-	ThreadID string   `json:"threadId,omitempty"`
-	RunID    string   `json:"runId,omitempty"`
-	Message  string   `json:"message"`
-	Error    RunError `json:"error"`
-}
-
-type RunError struct {
-	Message string `json:"message"`
-	Code    string `json:"code,omitempty"`
+	ThreadID string `json:"threadId,omitempty"`
+	RunID    string `json:"runId,omitempty"`
+	Message  string `json:"message"`
+	Code     string `json:"code,omitempty"`
 }
 
 type TextMessageStartEvent struct {

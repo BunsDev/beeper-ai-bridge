@@ -10,6 +10,7 @@ import (
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/rs/zerolog"
 )
 
 type AgentHarnessStreamOptions struct {
@@ -39,6 +40,7 @@ type AgentHarnessOptions struct {
 	TransformContext      func(context.Context, []agent.AgentMessage) ([]agent.AgentMessage, error)
 	GenerateSummary       func(context.Context, CompactionPreparation) (CompactResult, error)
 	GenerateBranchSummary func(context.Context, BranchPreparation) (BranchSummaryResult, error)
+	CompactionSettings    CompactionSettings
 }
 
 type AgentHarnessAuth struct {
@@ -68,6 +70,7 @@ type AgentHarness struct {
 	transformContext      func(context.Context, []agent.AgentMessage) ([]agent.AgentMessage, error)
 	generateSummary       func(context.Context, CompactionPreparation) (CompactResult, error)
 	generateBranchSummary func(context.Context, BranchPreparation) (BranchSummaryResult, error)
+	compactionSettings    CompactionSettings
 	subscribers           []func(context.Context, AgentHarnessEvent) error
 	nextSubscriberID      int
 	subscriberIDs         []int
@@ -179,6 +182,10 @@ type PromptEntryID struct {
 	Role string
 }
 
+type ContinueOptions struct {
+	DropTrailingAssistantError bool
+}
+
 type BeforeAgentStartResult struct {
 	Messages     []agent.AgentMessage
 	SystemPrompt string
@@ -268,6 +275,7 @@ func NewAgentHarness(options AgentHarnessOptions) (*AgentHarness, error) {
 		transformContext:      options.TransformContext,
 		generateSummary:       options.GenerateSummary,
 		generateBranchSummary: options.GenerateBranchSummary,
+		compactionSettings:    normalizeCompactionSettings(options.CompactionSettings),
 		handlers:              map[string][]func(context.Context, AgentHarnessEvent) (any, error){},
 		handlerIDs:            map[string][]int{},
 	}
@@ -335,6 +343,47 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, attach
 	if err := h.flushPendingSessionWrites(runCtx); err != nil {
 		return PromptResult{}, err
 	}
+	return h.promptResultFromMessages(newMessages)
+}
+
+func (h *AgentHarness) ContinueWithResult(ctx context.Context, options ...ContinueOptions) (PromptResult, error) {
+	if h.phase != "idle" {
+		return PromptResult{}, errors.New("AgentHarness is busy")
+	}
+	h.phase = "turn"
+	h.promptEntryIDs = nil
+	runCtx, finish := h.startRun(ctx)
+	defer func() {
+		h.phase = "idle"
+		h.promptEntryIDs = nil
+		finish()
+	}()
+	turnContext, err := h.createContext(runCtx)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	if len(options) > 0 && options[0].DropTrailingAssistantError {
+		turnContext.Messages = dropTrailingAssistantError(turnContext.Messages)
+	}
+	newMessages, err := agent.RunAgentLoopContinue(runCtx, turnContext, h.loopConfig(runCtx), h.handleAgentEvent, h.createStreamFn())
+	if err != nil {
+		if flushErr := h.flushPendingSessionWrites(runCtx); flushErr != nil {
+			return PromptResult{}, flushErr
+		}
+		return PromptResult{}, err
+	}
+	if err := h.flushPendingSessionWrites(runCtx); err != nil {
+		return PromptResult{}, err
+	}
+	return h.promptResultFromMessages(newMessages)
+}
+
+func (h *AgentHarness) Continue(ctx context.Context, options ...ContinueOptions) (agent.AgentMessage, error) {
+	result, err := h.ContinueWithResult(ctx, options...)
+	return result.Message, err
+}
+
+func (h *AgentHarness) promptResultFromMessages(newMessages []agent.AgentMessage) (PromptResult, error) {
 	result := PromptResult{EntryIDs: append([]PromptEntryID{}, h.promptEntryIDs...)}
 	for _, entry := range result.EntryIDs {
 		switch entry.Role {
@@ -350,7 +399,18 @@ func (h *AgentHarness) PromptWithResult(ctx context.Context, text string, attach
 			return result, nil
 		}
 	}
-	return PromptResult{}, errors.New("AgentHarness prompt completed without an assistant message")
+	return PromptResult{}, errors.New("AgentHarness run completed without an assistant message")
+}
+
+func dropTrailingAssistantError(messages []agent.AgentMessage) []agent.AgentMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	last := messages[len(messages)-1]
+	if last.Role == "assistant" && last.StopReason == ai.StopReasonError {
+		return messages[:len(messages)-1]
+	}
+	return messages
 }
 
 func (h *AgentHarness) AppendMessage(ctx context.Context, message agent.AgentMessage) error {
@@ -364,22 +424,26 @@ func (h *AgentHarness) AppendMessage(ctx context.Context, message agent.AgentMes
 
 func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (CompactResult, error) {
 	if h.phase != "idle" {
-		return CompactResult{}, errors.New("compact() requires idle harness")
+		return CompactResult{}, NewAgentHarnessError(AgentHarnessErrorBusy, "compact() requires idle harness", nil)
 	}
 	h.phase = "compaction"
-	defer func() { h.phase = "idle" }()
-	branch, err := h.session.GetBranch(ctx, nil)
+	runCtx, finish := h.startRun(ctx)
+	defer func() {
+		h.phase = "idle"
+		finish()
+	}()
+	branch, err := h.session.GetBranch(runCtx, nil)
 	if err != nil {
 		return CompactResult{}, err
 	}
-	preparation, ok, err := PrepareCompaction(branch, DefaultCompactionSettings)
+	preparation, ok, err := PrepareCompaction(branch, h.compactionSettings)
 	if err != nil {
 		return CompactResult{}, err
 	}
 	if !ok || preparation == nil {
-		return CompactResult{}, errors.New("Nothing to compact")
+		return CompactResult{}, NewCompactionError(CompactionErrorNothingToCompact, "Nothing to compact", nil)
 	}
-	hookResult, err := h.emitHook(ctx, AgentHarnessEvent{Type: "session_before_compact", CompactionPreparation: preparation, BranchEntries: branch, CustomInstructions: customInstructions})
+	hookResult, err := h.emitHook(runCtx, AgentHarnessEvent{Type: "session_before_compact", CompactionPreparation: preparation, BranchEntries: branch, CustomInstructions: customInstructions})
 	if err != nil {
 		return CompactResult{}, err
 	}
@@ -387,7 +451,7 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 	var result CompactResult
 	if before, ok := hookResult.(SessionBeforeCompactResult); ok {
 		if before.Cancel {
-			return CompactResult{}, errors.New("Compaction cancelled")
+			return CompactResult{}, NewCompactionError(CompactionErrorAborted, "Compaction cancelled", nil)
 		}
 		if before.Compaction != nil {
 			result = *before.Compaction
@@ -395,12 +459,12 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 		}
 	}
 	if result.Summary == "" && h.generateSummary != nil {
-		result, err = h.generateSummary(ctx, *preparation)
+		result, err = h.generateSummary(runCtx, *preparation)
 		if err != nil {
 			return CompactResult{}, err
 		}
 	} else if result.Summary == "" && h.streamFn != nil {
-		result, err = GenerateSummary(ctx, *preparation, h.summaryGenerationOptions(ctx, customInstructions))
+		result, err = GenerateSummary(runCtx, *preparation, h.summaryGenerationOptions(runCtx, customInstructions))
 		if err != nil {
 			return CompactResult{}, err
 		}
@@ -413,12 +477,12 @@ func (h *AgentHarness) Compact(ctx context.Context, customInstructions string) (
 	if result.TokensBefore == 0 {
 		result.TokensBefore = preparation.TokensBefore
 	}
-	entryID, err := h.session.AppendCompaction(ctx, result.Summary, result.FirstKeptEntryID, result.TokensBefore, result.Details, &fromHook)
+	entryID, err := h.session.AppendCompaction(runCtx, result.Summary, result.FirstKeptEntryID, result.TokensBefore, result.Details, &fromHook)
 	if err != nil {
 		return CompactResult{}, err
 	}
-	raw, _ := h.session.GetEntry(ctx, entryID)
-	if err := h.emit(ctx, AgentHarnessEvent{Type: "session_compact", CompactionEntry: raw, FromHook: fromHook}); err != nil {
+	raw, _ := h.session.GetEntry(runCtx, entryID)
+	if err := h.emit(runCtx, AgentHarnessEvent{Type: "session_compact", CompactionEntry: raw, FromHook: fromHook}); err != nil {
 		return CompactResult{}, err
 	}
 	return result, nil
@@ -751,17 +815,27 @@ func (h *AgentHarness) loopConfig(ctx context.Context) agent.AgentLoopConfig {
 
 func (h *AgentHarness) createStreamFn() agent.StreamFn {
 	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		log := zerolog.Ctx(ctx).With().
+			Str("action", "ai_agent_provider").
+			Str("provider", string(model.Provider)).
+			Str("model_id", model.ID).
+			Logger()
+		ctx = log.WithContext(ctx)
 		snapshot := h.GetStreamOptions()
 		snapshot.Transport = options.Transport
 		snapshot.MaxRetryDelayMs = options.MaxRetryDelayMs
 		snapshot.CacheRetention = options.CacheRetention
 		metadata, err := h.session.GetMetadata(ctx)
 		if err != nil {
+			log.Err(err).Msg("Failed to load AI session metadata before provider request")
 			return hookErrorStream(model, err)
 		}
+		log = log.With().Str("session_id", metadata.ID).Logger()
+		ctx = log.WithContext(ctx)
 		if h.getAPIKeyAndHeaders != nil {
 			auth, err := h.getAPIKeyAndHeaders(ctx, model)
 			if err != nil {
+				log.Err(err).Msg("Failed to load AI provider auth")
 				return hookErrorStream(model, err)
 			}
 			if auth != nil {
@@ -772,10 +846,17 @@ func (h *AgentHarness) createStreamFn() agent.StreamFn {
 			}
 		}
 		if result, err := h.emitHook(ctx, AgentHarnessEvent{Type: "before_provider_request", Model: &model, StreamOptions: snapshot, SessionID: metadata.ID}); err != nil {
+			log.Err(err).Msg("AI provider request hook failed")
 			return hookErrorStream(model, err)
 		} else if patch, ok := result.(BeforeProviderRequestResult); ok {
 			snapshot = mergeStreamOptions(snapshot, patch.StreamOptions)
 		}
+		log.Debug().
+			Str("transport", string(snapshot.Transport)).
+			Str("cache_retention", string(snapshot.CacheRetention)).
+			Bool("has_headers", len(snapshot.Headers) > 0).
+			Bool("has_metadata", len(snapshot.Metadata) > 0).
+			Msg("Starting AI provider stream")
 		options.Transport = snapshot.Transport
 		options.MaxRetryDelayMs = snapshot.MaxRetryDelayMs
 		options.CacheRetention = snapshot.CacheRetention
@@ -798,6 +879,7 @@ func (h *AgentHarness) createStreamFn() agent.StreamFn {
 			}
 			result, err := h.emitHook(ctx, AgentHarnessEvent{Type: "before_provider_payload", Model: &payloadModel, Payload: payload})
 			if err != nil {
+				log.Err(err).Str("payload_model_id", payloadModel.ID).Str("payload_provider", string(payloadModel.Provider)).Msg("AI provider payload hook failed")
 				return nil, false, err
 			}
 			if patch, ok := result.(BeforeProviderPayloadResult); ok {
@@ -809,10 +891,27 @@ func (h *AgentHarness) createStreamFn() agent.StreamFn {
 		options.OnResponse = func(response ai.ProviderResponse, responseModel ai.Model) error {
 			if previousOnResponse != nil {
 				if err := previousOnResponse(response, responseModel); err != nil {
+					log.Err(err).
+						Str("response_model_id", responseModel.ID).
+						Str("response_provider", string(responseModel.Provider)).
+						Int("status_code", response.Status).
+						Msg("AI provider response callback failed")
 					return err
 				}
 			}
+			log.Debug().
+				Str("response_model_id", responseModel.ID).
+				Str("response_provider", string(responseModel.Provider)).
+				Int("status_code", response.Status).
+				Msg("Received AI provider response")
 			_, err := h.emitHook(ctx, AgentHarnessEvent{Type: "after_provider_response", Model: &responseModel, ProviderResponse: response})
+			if err != nil {
+				log.Err(err).
+					Str("response_model_id", responseModel.ID).
+					Str("response_provider", string(responseModel.Provider)).
+					Int("status_code", response.Status).
+					Msg("AI provider response hook failed")
+			}
 			return err
 		}
 		return h.streamFn(ctx, model, llmContext, options)
@@ -1030,6 +1129,27 @@ func (h *AgentHarness) systemPromptOrDefault(ctx context.Context) (string, error
 
 func (h *AgentHarness) summaryGenerationOptions(ctx context.Context, customInstructions string) SummaryGenerationOptions {
 	apiKey := ""
+	headers := cloneStringMap(h.streamOptions.Headers)
+	streamFn := h.streamFn
+	if h.getAPIKeyAndHeaders != nil {
+		baseStreamFn := streamFn
+		if baseStreamFn == nil {
+			baseStreamFn = ai.StreamSimple
+		}
+		streamFn = func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+			auth, err := h.getAPIKeyAndHeaders(ctx, model)
+			if err != nil {
+				return hookErrorStream(model, err)
+			}
+			if auth != nil {
+				if auth.APIKey != "" {
+					options.APIKey = auth.APIKey
+				}
+				options.Headers = mergeStringMaps(options.Headers, auth.Headers)
+			}
+			return baseStreamFn(ctx, model, llmContext, options)
+		}
+	}
 	if h.getAPIKey != nil {
 		key, _ := h.getAPIKey(ctx, h.model.Provider)
 		apiKey = key
@@ -1037,8 +1157,8 @@ func (h *AgentHarness) summaryGenerationOptions(ctx context.Context, customInstr
 	return SummaryGenerationOptions{
 		Model:              h.model,
 		APIKey:             apiKey,
-		Headers:            h.streamOptions.Headers,
-		StreamFn:           h.streamFn,
+		Headers:            headers,
+		StreamFn:           streamFn,
 		CustomInstructions: customInstructions,
 		ThinkingLevel:      h.thinkingLevel,
 	}
@@ -1084,6 +1204,19 @@ func branchSummaryTokenBudget(model ai.Model) int {
 		contextWindow = 128000
 	}
 	return contextWindow - DefaultCompactionSettings.ReserveTokens
+}
+
+func normalizeCompactionSettings(settings CompactionSettings) CompactionSettings {
+	if settings == (CompactionSettings{}) {
+		return DefaultCompactionSettings
+	}
+	if settings.ReserveTokens == 0 {
+		settings.ReserveTokens = DefaultCompactionSettings.ReserveTokens
+	}
+	if settings.KeepRecentTokens == 0 {
+		settings.KeepRecentTokens = DefaultCompactionSettings.KeepRecentTokens
+	}
+	return settings
 }
 
 func validateToolNames(names []string, tools map[string]agent.AgentTool[any]) error {

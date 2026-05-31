@@ -57,6 +57,7 @@ const (
 	FinishReasonLength        = "length"
 	FinishReasonContentFilter = "content_filter"
 	FinishReasonToolCalls     = "tool_calls"
+	FinishReasonCancelled     = "cancelled"
 	FinishReasonOther         = "other"
 	OutcomeSuccess            = "success"
 	OutcomeInterrupt          = "interrupt"
@@ -218,6 +219,7 @@ type Usage struct {
 	CompletionTokens int `json:"completionTokens,omitempty"`
 	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
 	TotalTokens      int `json:"totalTokens,omitempty"`
+	ContextLimit     int `json:"contextLimit,omitempty"`
 }
 
 type EventBuilder struct {
@@ -268,6 +270,10 @@ func (b EventBuilder) RunFinishedWithOutcome(threadID, runID, finishReason strin
 }
 
 func (b EventBuilder) RunError(threadID, runID, message string) Event {
+	return b.RunErrorWithCode(threadID, runID, message, "")
+}
+
+func (b EventBuilder) RunErrorWithCode(threadID, runID, message, code string) Event {
 	if strings.TrimSpace(runID) == "" {
 		runID = ""
 	}
@@ -276,7 +282,7 @@ func (b EventBuilder) RunError(threadID, runID, message string) Event {
 		ThreadID:      threadID,
 		RunID:         runID,
 		Message:       message,
-		Error:         RunError{Message: message},
+		Code:          code,
 	})
 }
 

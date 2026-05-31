@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -224,6 +225,50 @@ func TestStreamOpenAICodexResponsesEmitsErrorForFailedSSE(t *testing.T) {
 	}
 	if result.StopReason != ai.StopReasonError || result.ErrorMessage != "bad_request: nope" {
 		t.Fatalf("expected failed response result, got %#v", result)
+	}
+}
+
+func TestCodexSSERequestDoesNotRetryByDefault(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "32976")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"rate_limit_exceeded","message":"slow down"}}`))
+	}))
+	defer server.Close()
+
+	started := time.Now()
+	response, err := doCodexSSERequest(t.Context(), server.URL, nil, []byte(`{}`), ai.StreamOptions{})
+	elapsed := time.Since(started)
+	if response != nil || err == nil {
+		t.Fatalf("expected terminal error without response, got response=%#v err=%v", response, err)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected one attempt, got %d", attempts)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected no retry sleep, took %s", elapsed)
+	}
+}
+
+func TestCodexRetryDelayCapsRetryAfterByDefault(t *testing.T) {
+	response := &http.Response{Header: http.Header{"Retry-After": []string{"32976"}}}
+	if got := codexRetryDelay(0, response, nil); got != time.Duration(defaultMaxCodexRetryDelayMs)*time.Millisecond {
+		t.Fatalf("expected default capped retry delay, got %s", got)
+	}
+	disabled := -1
+	if got := codexRetryDelay(0, response, &disabled); got != 32976*time.Second {
+		t.Fatalf("expected disabled cap to preserve retry-after, got %s", got)
+	}
+}
+
+func TestCodexTerminalUsageLimitErrorsAreNotRetryable(t *testing.T) {
+	if isRetryableCodexError(http.StatusTooManyRequests, `{"error":{"code":"insufficient_quota","message":"quota exceeded"}}`) {
+		t.Fatal("expected quota error to be terminal")
+	}
+	if !isRetryableCodexError(http.StatusTooManyRequests, `{"error":{"code":"rate_limit_exceeded","message":"requests too fast"}}`) {
+		t.Fatal("expected ordinary 429 rate limit to be retryable when retries are enabled")
 	}
 }
 

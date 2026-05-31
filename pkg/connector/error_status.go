@@ -7,11 +7,15 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
+
+var providerErrorStatusPattern = regexp.MustCompile(`(?i)\bapi error \((\d{3})\)`)
 
 func errNoAIChat() bridgev2.MessageStatus {
 	return bridgev2.WrapErrorInStatus(errors.New("room is not an AI chat")).
@@ -33,7 +37,15 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	if status.InternalError == nil {
 		status.InternalError = err
 	}
+
+	lower := strings.ToLower(err.Error())
+	httpStatus := errorHTTPStatus(err)
 	if status.Status != "" && status.ErrorReason != event.MessageStatusGenericError {
+		if isAIUsageLimitError(lower) || isRateLimitError(httpStatus, lower) {
+			status.Status = event.MessageStatusRetriable
+			status.ErrorReason = event.MessageStatusNetworkError
+			status.Message = usageLimitStatusMessage(lower)
+		}
 		return status
 	}
 
@@ -41,8 +53,6 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	status.ErrorReason = event.MessageStatusGenericError
 	status.Message = "AI failed to respond"
 
-	lower := strings.ToLower(err.Error())
-	httpStatus := errorHTTPStatus(err)
 	switch {
 	case errors.Is(err, context.Canceled):
 		status.Status = event.MessageStatusFail
@@ -51,6 +61,9 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	case errors.Is(err, context.DeadlineExceeded), isNetworkTimeout(err):
 		status.ErrorReason = event.MessageStatusNetworkError
 		status.Message = "AI provider request timed out"
+	case isAIUsageLimitError(lower) || isRateLimitError(httpStatus, lower):
+		status.ErrorReason = event.MessageStatusNetworkError
+		status.Message = usageLimitStatusMessage(lower)
 	case httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden ||
 		strings.Contains(lower, "missing api key") ||
 		strings.Contains(lower, "no api key") ||
@@ -60,9 +73,6 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 		status.Status = event.MessageStatusFail
 		status.ErrorReason = event.MessageStatusNoPermission
 		status.Message = "AI provider credentials are missing or invalid"
-	case httpStatus == http.StatusTooManyRequests || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests"):
-		status.ErrorReason = event.MessageStatusNetworkError
-		status.Message = "AI provider rate limited the request"
 	case httpStatus >= 500:
 		status.ErrorReason = event.MessageStatusNetworkError
 		status.Message = "AI provider is temporarily unavailable"
@@ -89,6 +99,30 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	return status
 }
 
+func isRateLimitError(httpStatus int, lower string) bool {
+	return httpStatus == http.StatusTooManyRequests ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "too many requests")
+}
+
+func usageLimitStatusMessage(lower string) string {
+	if isAIUsageLimitError(lower) {
+		return "AI usage limit exceeded. Check /limits"
+	}
+	return "AI provider rate limited the request"
+}
+
+func isAIUsageLimitError(lower string) bool {
+	return strings.Contains(lower, "ai token limit exceeded") ||
+		strings.Contains(lower, "token limit exceeded") ||
+		strings.Contains(lower, "usage limit") ||
+		strings.Contains(lower, "quota exceeded") ||
+		strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "out of budget") ||
+		strings.Contains(lower, "available balance") ||
+		strings.Contains(lower, "billing")
+}
+
 func isNetworkTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
@@ -106,6 +140,10 @@ func errorHTTPStatus(err error) int {
 				return int(field.Int())
 			}
 		}
+	}
+	if matches := providerErrorStatusPattern.FindStringSubmatch(err.Error()); len(matches) == 2 {
+		status, _ := strconv.Atoi(matches[1])
+		return status
 	}
 	return 0
 }

@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -14,7 +15,15 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 )
 
-func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt) []agent.AgentTool[any] {
+type chatToolsApprovalContext struct {
+	publisher bridgev2.BeeperStreamPublisher
+	active    *activeAIRun
+}
+
+func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt, approvalContext ...chatToolsApprovalContext) []agent.AgentTool[any] {
+	if !modelSupportsAgentTools(model) {
+		return nil
+	}
 	roomID := ""
 	roomTitle := ""
 	if msg != nil && msg.Portal != nil {
@@ -39,11 +48,51 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		info.Attachments = append(info.Attachments, chattools.Attachment{Type: attachment.Type, MimeType: attachment.MimeType})
 	}
 	search := cl.searchOptions(roomConfig, provider)
-	return chattools.Tools(info, chattools.FetchOptions{
+	fetch := chattools.FetchOptions{
 		Timeout:  time.Duration(cl.Main.Config.Fetch.TimeoutMS) * time.Millisecond,
 		MaxBytes: cl.Main.Config.Fetch.MaxBytes,
 		MaxChars: cl.Main.Config.Fetch.MaxChars,
-	}, search)
+	}
+	if provider.ID == aiid.DefaultProvider && provider.BaseURL != "" {
+		if token, err := cl.defaultProviderBearerToken(); err == nil {
+			if endpoint, err := aiServicesExaContentsURL(provider.BaseURL); err == nil {
+				fetch.ExaEndpoint = endpoint
+				fetch.APIKey = token
+			}
+		}
+	}
+	sessionOptions := chattools.SessionOptions{}
+	var approvals chatToolsApprovalContext
+	if len(approvalContext) > 0 {
+		approvals = approvalContext[0]
+	}
+	if msg != nil && msg.Portal != nil && approvals.publisher != nil && approvals.active != nil {
+		portal := msg.Portal
+		sessionOptions.ResolveProfile = func(ctx context.Context, toolCallID string) (*chattools.SessionProfile, error) {
+			return cl.resolveBeeperProfileForSession(ctx, portal, approvals.publisher, approvals.active, toolCallID)
+		}
+	}
+	return chattools.ToolsWithOptions(info, fetch, search, sessionOptions)
+}
+
+func modelSupportsAgentTools(model ai.Model) bool {
+	if model.Provider == ai.ProviderGoogleVertex && modelHasOutputModality(model, "image") {
+		return false
+	}
+	if model.Compat == nil {
+		return true
+	}
+	supported, ok := model.Compat["tools_supported"].(bool)
+	return !ok || supported
+}
+
+func modelHasOutputModality(model ai.Model, modality string) bool {
+	for _, output := range model.Output {
+		if output == modality {
+			return true
+		}
+	}
+	return false
 }
 
 func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderConfig) chattools.SearchOptions {
@@ -67,11 +116,19 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 }
 
 func aiServicesExaSearchURL(proxyBaseURL string) (string, error) {
+	return aiServicesExaURL(proxyBaseURL, "search")
+}
+
+func aiServicesExaContentsURL(proxyBaseURL string) (string, error) {
+	return aiServicesExaURL(proxyBaseURL, "contents")
+}
+
+func aiServicesExaURL(proxyBaseURL string, route string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/exa/v1/search"
+	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/exa/v1/" + route
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
@@ -145,69 +202,6 @@ func toolDisabled(disabled []string, name string) bool {
 		}
 	}
 	return false
-}
-
-func webSearchSourceParts(toolName string, result any, isError bool) []map[string]any {
-	if isError || toolName != "web_search" {
-		return nil
-	}
-	output := mapFromAny(result)
-	if output == nil {
-		return nil
-	}
-	rawResults, _ := output["results"].([]any)
-	if rawResults == nil {
-		return nil
-	}
-	parts := make([]map[string]any, 0, len(rawResults))
-	seen := map[string]struct{}{}
-	for _, raw := range rawResults {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		rawURL := strings.TrimSpace(stringFromAny(item["url"]))
-		if rawURL == "" {
-			continue
-		}
-		parsed, err := url.Parse(rawURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			continue
-		}
-		if _, exists := seen[rawURL]; exists {
-			continue
-		}
-		seen[rawURL] = struct{}{}
-
-		part := map[string]any{
-			"url": rawURL,
-		}
-		if title := strings.TrimSpace(stringFromAny(item["title"])); title != "" {
-			part["title"] = title
-		}
-		if meta := webSearchProviderMetadata(item); len(meta) > 0 {
-			part["providerMetadata"] = meta
-		}
-		parts = append(parts, part)
-	}
-	return parts
-}
-
-func webSearchProviderMetadata(item map[string]any) map[string]any {
-	meta := map[string]any{}
-	for _, key := range []string{"snippet", "description", "published", "siteName", "author", "image", "favicon", "source"} {
-		if value := strings.TrimSpace(stringFromAny(item[key])); value != "" {
-			meta[key] = value
-		}
-	}
-	if nested, ok := item["metadata"].(map[string]any); ok {
-		for key, value := range nested {
-			if _, exists := meta[key]; !exists {
-				meta[key] = value
-			}
-		}
-	}
-	return meta
 }
 
 func stringFromAny(value any) string {

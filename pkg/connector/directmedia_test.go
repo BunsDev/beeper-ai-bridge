@@ -17,6 +17,7 @@ import (
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
 	bridgedb "maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/mediaproxy"
@@ -49,11 +50,12 @@ func TestDirectMediaDownloadsInlineSessionBlock(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := aidb.NewStore(db, dbutil.ZeroLogger(zerolog.Nop()))
+	loginID := networkid.UserLoginID("login")
+	store := aidb.NewStore(db, networkid.BridgeID("bridge"), dbutil.ZeroLogger(zerolog.Nop()))
 	if err := store.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
-	agentSession, err := store.CreateSession(ctx, session.SQLiteSessionCreateOptions{ID: "session-1"})
+	agentSession, err := store.CreateSession(ctx, loginID, session.SQLiteSessionCreateOptions{ID: "session-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +72,7 @@ func TestDirectMediaDownloadsInlineSessionBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	mediaID, err := aiid.MediaIDFor(aiid.MediaMetadata{
+		LoginID:      string(loginID),
 		SessionID:    "session-1",
 		EntryID:      entryID,
 		ContentIndex: 0,
@@ -129,6 +132,7 @@ func TestAssistantImageConvertedMessageUploadsMatrixImage(t *testing.T) {
 		ai.ContentBlock{Type: "image", MimeType: "image/png", Data: "data:image/png;base64," + oneByOnePNG, Name: "result.png"},
 		aiid.PartID("image-0"),
 		&aiid.MessageMetadata{Role: "assistant"},
+		assistantAnchorReplyTarget(networkid.MessageID("assistant:anchor")),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -146,5 +150,8 @@ func TestAssistantImageConvertedMessageUploadsMatrixImage(t *testing.T) {
 	}
 	if part.DBMetadata.(*aiid.MessageMetadata).Role != "assistant" {
 		t.Fatalf("expected assistant metadata, got %#v", part.DBMetadata)
+	}
+	if converted.ReplyTo == nil || converted.ReplyTo.MessageID != "assistant:anchor" {
+		t.Fatalf("expected image to reply to assistant anchor, got %#v", converted.ReplyTo)
 	}
 }

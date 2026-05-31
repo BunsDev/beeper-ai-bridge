@@ -36,24 +36,26 @@ func FromMatrix(ctx context.Context, intent matrixMediaDownloader, msg *bridgev2
 	switch content.MsgType {
 	case "", event.MsgText, event.MsgNotice, event.MsgEmote:
 		return MatrixPrompt{Text: text}, nil
+	case event.MsgLocation:
+		return MatrixPrompt{Text: withReplyContext(matrixLocationText(content), msg)}, nil
 	case event.MsgImage:
 		block, err := imageBlockFromMatrix(ctx, intent, content)
 		if err != nil {
 			return MatrixPrompt{}, err
 		}
-		return MatrixPrompt{Text: withReplyContext(content.GetCaption(), msg), Attachments: []ai.ContentBlock{block}}, nil
+		return MatrixPrompt{Text: withReplyContext(matrixCaptionText(content), msg), Attachments: []ai.ContentBlock{block}}, nil
 	case event.MsgAudio:
 		block, err := audioBlockFromMatrix(ctx, intent, content)
 		if err != nil {
 			return MatrixPrompt{}, err
 		}
-		return MatrixPrompt{Text: withReplyContext(content.GetCaption(), msg), Attachments: []ai.ContentBlock{block}}, nil
+		return MatrixPrompt{Text: withReplyContext(matrixCaptionText(content), msg), Attachments: []ai.ContentBlock{block}}, nil
 	case event.MsgFile:
 		fileText, err := textFileFromMatrix(ctx, intent, content)
 		if err != nil {
 			return MatrixPrompt{}, err
 		}
-		return MatrixPrompt{Text: appendPromptAttachment(withReplyContext(content.GetCaption(), msg), fileText)}, nil
+		return MatrixPrompt{Text: appendPromptAttachment(withReplyContext(matrixCaptionText(content), msg), fileText)}, nil
 	default:
 		return MatrixPrompt{}, fmt.Errorf("unsupported Matrix message type %s", content.MsgType)
 	}
@@ -64,6 +66,32 @@ func matrixPromptText(content *event.MessageEventContent) string {
 		return content.FormattedBody
 	}
 	return content.Body
+}
+
+func matrixCaptionText(content *event.MessageEventContent) string {
+	plain := content.GetCaption()
+	if plain == "" {
+		return ""
+	}
+	if formatted := content.GetFormattedCaption(); formatted != "" {
+		return formatted
+	}
+	return plain
+}
+
+func matrixLocationText(content *event.MessageEventContent) string {
+	geoURI := strings.TrimSpace(content.GeoURI)
+	body := strings.TrimSpace(matrixPromptText(content))
+	switch {
+	case geoURI != "" && body != "" && body != geoURI:
+		return fmt.Sprintf("Location: %s\n%s", body, geoURI)
+	case geoURI != "":
+		return "Location: " + geoURI
+	case body != "":
+		return "Location: " + body
+	default:
+		return "Location"
+	}
 }
 
 func appendPromptAttachment(text, attachment string) string {
@@ -177,6 +205,7 @@ func isTextLikeFile(mimeType, fileName string) bool {
 	}
 	switch mimeType {
 	case "application/json",
+		"application/csv",
 		"application/ld+json",
 		"application/manifest+json",
 		"application/x-ndjson",
@@ -187,7 +216,8 @@ func isTextLikeFile(mimeType, fileName string) bool {
 		"application/toml",
 		"application/javascript",
 		"application/ecmascript",
-		"application/sql":
+		"application/sql",
+		"application/x-subrip":
 		return true
 	case "", "application/octet-stream":
 		return isTextLikeExtension(fileName)
