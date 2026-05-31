@@ -41,6 +41,74 @@ func StreamSimpleOpenAICompletions(ctx context.Context, model ai.Model, llmConte
 	})
 }
 
+func CompleteSimpleOpenAICompletions(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) ai.Message {
+	if options.APIKey == "" {
+		options.APIKey = getEnvAPIKey(model.Provider)
+	}
+	if options.APIKey == "" {
+		output := newAssistant(model)
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = "No API key for provider: " + string(model.Provider)
+		return output
+	}
+	return CompleteOpenAICompletions(ctx, model, llmContext, OpenAICompletionsOptions{
+		StreamOptions:   options.StreamOptions,
+		ReasoningEffort: simpleReasoningEffort(model, options.Reasoning),
+	})
+}
+
+func CompleteOpenAICompletions(ctx context.Context, model ai.Model, llmContext ai.Context, options OpenAICompletionsOptions) ai.Message {
+	output := newAssistant(model)
+	params := BuildCompletionsParams(model, llmContext, options)
+	params["stream"] = false
+	delete(params, "stream_options")
+	if options.OnPayload != nil {
+		if next, ok, err := options.OnPayload(params, model); err != nil {
+			output.StopReason = ai.StopReasonError
+			output.ErrorMessage = err.Error()
+			return output
+		} else if ok {
+			nextParams, ok := next.(map[string]any)
+			if !ok {
+				output.StopReason = ai.StopReasonError
+				output.ErrorMessage = "onPayload returned unsupported OpenAI request body"
+				return output
+			}
+			params = nextParams
+		}
+	}
+
+	var rawResponse *http.Response
+	client, requestOptions, err := newClient(model, llmContext, options.StreamOptions)
+	if err != nil {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = err.Error()
+		return output
+	}
+	requestOptions = append(requestOptions, option.WithResponseInto(&rawResponse))
+	response, err := client.Chat.Completions.New(ctx, param.Override[openaisdk.ChatCompletionNewParams](params), requestOptions...)
+	if err != nil {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = formatOpenAIError(err)
+		return output
+	}
+	if options.OnResponse != nil && rawResponse != nil {
+		if err := options.OnResponse(providerResponse(rawResponse), model); err != nil {
+			output.StopReason = ai.StopReasonError
+			output.ErrorMessage = err.Error()
+			return output
+		}
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(response.RawJSON()), &raw); err != nil {
+		output.StopReason = ai.StopReasonError
+		output.ErrorMessage = err.Error()
+		return output
+	}
+	applyCompleteOpenAICompletions(&output, model, raw)
+	return output
+}
+
 func StreamOpenAICompletions(ctx context.Context, model ai.Model, llmContext ai.Context, options OpenAICompletionsOptions) *ai.AssistantMessageEventStream {
 	stream := ai.NewAssistantMessageEventStream()
 	go func() {
@@ -98,6 +166,83 @@ func StreamOpenAICompletions(ctx context.Context, model ai.Model, llmContext ai.
 		stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: output.StopReason, Message: &output})
 	}()
 	return stream
+}
+
+func applyCompleteOpenAICompletions(output *ai.Message, model ai.Model, raw map[string]any) {
+	if id, ok := raw["id"].(string); ok {
+		output.ResponseID = id
+	}
+	if responseModel, ok := raw["model"].(string); ok && responseModel != "" && responseModel != model.ID {
+		output.ResponseModel = responseModel
+	}
+	if usage, ok := raw["usage"].(map[string]any); ok {
+		output.Usage = parseCompletionsUsageMap(usage, model)
+	}
+	choices, _ := raw["choices"].([]any)
+	if len(choices) == 0 {
+		return
+	}
+	choice, _ := choices[0].(map[string]any)
+	if usage, ok := choice["usage"].(map[string]any); ok {
+		output.Usage = parseCompletionsUsageMap(usage, model)
+	}
+	if reason, ok := choice["finish_reason"].(string); ok && reason != "" {
+		output.StopReason = mapStopReason(reason)
+		if output.StopReason == ai.StopReasonError {
+			output.ErrorMessage = "Provider finish_reason: " + reason
+		}
+	}
+	message, _ := choice["message"].(map[string]any)
+	blocks := make([]ai.ContentBlock, 0, 2)
+	for _, field := range []string{"reasoning_content", "reasoning", "reasoning_text"} {
+		if reasoning, ok := message[field].(string); ok && reasoning != "" {
+			blocks = append(blocks, ai.ContentBlock{Type: "thinking", Thinking: reasoning, ThinkingSignature: field})
+			break
+		}
+	}
+	if text := textFromCompletionMessage(message["content"]); text != "" {
+		blocks = append(blocks, ai.ContentBlock{Type: "text", Text: text})
+	}
+	if toolCalls, ok := message["tool_calls"].([]any); ok {
+		for _, rawToolCall := range toolCalls {
+			toolCall, _ := rawToolCall.(map[string]any)
+			fn, _ := toolCall["function"].(map[string]any)
+			args, _ := fn["arguments"].(string)
+			blocks = append(blocks, ai.ContentBlock{
+				Type:      "toolCall",
+				ID:        fmt.Sprint(toolCall["id"]),
+				Name:      fmt.Sprint(fn["name"]),
+				Arguments: parseJSONMap(args),
+			})
+		}
+	}
+	output.Content = blocks
+	if output.StopReason == ai.StopReasonStop {
+		for _, block := range blocks {
+			if block.Type == "toolCall" {
+				output.StopReason = ai.StopReasonToolUse
+				break
+			}
+		}
+	}
+}
+
+func textFromCompletionMessage(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, raw := range value {
+			part, _ := raw.(map[string]any)
+			if text, ok := part["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	default:
+		return ""
+	}
 }
 
 func BuildCompletionsParams(model ai.Model, llmContext ai.Context, options OpenAICompletionsOptions) map[string]any {

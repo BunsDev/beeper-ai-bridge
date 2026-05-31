@@ -96,13 +96,19 @@ func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, err
 		log.Err(err).Msg("Failed to build ChatGPT provider config")
 		return nil, err
 	}
-	login, err := l.Main.UpsertProviderLogin(ctx, l.User, provider)
+	login, err := l.Main.EnsureAIChatsLogin(ctx, l.User)
 	if err != nil {
-		err = fmt.Errorf("failed to create ChatGPT provider login: %w", err)
-		log.Err(err).Msg("Failed to create ChatGPT provider login")
+		err = fmt.Errorf("failed to load AI bridge login: %w", err)
+		log.Err(err).Msg("Failed to load AI bridge login")
 		return nil, err
 	}
-	log.Debug().Str("login_id", string(login.ID)).Msg("ChatGPT provider login added")
+	err = l.Main.SaveProviderConfig(ctx, login, provider)
+	if err != nil {
+		err = fmt.Errorf("failed to save ChatGPT provider: %w", err)
+		log.Err(err).Msg("Failed to save ChatGPT provider")
+		return nil, err
+	}
+	log.Debug().Str("login_id", string(login.ID)).Msg("ChatGPT provider added")
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       loginStepComplete,

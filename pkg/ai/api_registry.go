@@ -25,6 +25,7 @@ func RegisterAPIProvider(api Api, streamSimple StreamFunction) {
 func RegisterAPIProviderWithSource(provider APIProvider, sourceID string) {
 	stream := provider.Stream
 	streamSimple := provider.StreamSimple
+	completeSimple := provider.CompleteSimple
 	if stream == nil && streamSimple != nil {
 		stream = func(ctx context.Context, model Model, llmContext Context, options StreamOptions) *AssistantMessageEventStream {
 			return streamSimple(ctx, model, llmContext, SimpleStreamOptions{StreamOptions: options})
@@ -35,8 +36,32 @@ func RegisterAPIProviderWithSource(provider APIProvider, sourceID string) {
 			return stream(ctx, model, llmContext, options.StreamOptions)
 		}
 	}
+	if completeSimple == nil && streamSimple != nil {
+		completeSimple = func(ctx context.Context, model Model, llmContext Context, options SimpleStreamOptions) Message {
+			return streamSimple(ctx, model, llmContext, options).Result()
+		}
+	}
+	if streamSimple == nil && completeSimple != nil {
+		streamSimple = func(ctx context.Context, model Model, llmContext Context, options SimpleStreamOptions) *AssistantMessageEventStream {
+			stream := NewAssistantMessageEventStream()
+			go func() {
+				message := completeSimple(ctx, model, llmContext, options)
+				if message.StopReason == StopReasonError || message.StopReason == StopReasonAborted {
+					stream.Push(AssistantMessageEvent{Type: "error", Reason: message.StopReason, Error: &message})
+					return
+				}
+				stream.Push(AssistantMessageEvent{Type: "done", Reason: message.StopReason, Message: &message})
+			}()
+			return stream
+		}
+	}
+	if stream == nil && streamSimple != nil {
+		stream = func(ctx context.Context, model Model, llmContext Context, options StreamOptions) *AssistantMessageEventStream {
+			return streamSimple(ctx, model, llmContext, SimpleStreamOptions{StreamOptions: options})
+		}
+	}
 	apiProviders[provider.API] = registeredAPIProvider{
-		provider: APIProvider{API: provider.API, Stream: wrapAPIStream(provider.API, stream), StreamSimple: wrapAPIStreamSimple(provider.API, streamSimple)},
+		provider: APIProvider{API: provider.API, Stream: wrapAPIStream(provider.API, stream), StreamSimple: wrapAPIStreamSimple(provider.API, streamSimple), CompleteSimple: wrapAPICompleteSimple(provider.API, completeSimple)},
 		sourceID: sourceID,
 	}
 }
@@ -85,5 +110,14 @@ func wrapAPIStreamSimple(api Api, streamFn APIStreamSimpleFunction) APIStreamSim
 			panic(fmt.Sprintf("Mismatched api: %s expected %s", model.API, api))
 		}
 		return streamFn(ctx, model, llmContext, options)
+	}
+}
+
+func wrapAPICompleteSimple(api Api, completeFn APICompleteSimpleFunction) APICompleteSimpleFunction {
+	return func(ctx context.Context, model Model, llmContext Context, options SimpleStreamOptions) Message {
+		if model.API != api {
+			panic(fmt.Sprintf("Mismatched api: %s expected %s", model.API, api))
+		}
+		return completeFn(ctx, model, llmContext, options)
 	}
 }

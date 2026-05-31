@@ -132,6 +132,7 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 	isMoonshot := provider == "moonshotai" || provider == "moonshotai-cn" || strings.Contains(baseURL, "api.moonshot.")
 	isCloudflareWorkersAI := provider == "cloudflare-workers-ai" || strings.Contains(baseURL, "api.cloudflare.com")
 	isCloudflareAIGateway := provider == "cloudflare-ai-gateway" || strings.Contains(baseURL, "gateway.ai.cloudflare.com")
+	isA8C := provider == "a8c" || strings.Contains(baseURL, "/proxy/a8c/")
 	isNonStandard := provider == "cerebras" ||
 		strings.Contains(baseURL, "cerebras.ai") ||
 		provider == "xai" ||
@@ -155,6 +156,8 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 		thinkingFormat = "zai"
 	} else if isTogether {
 		thinkingFormat = "together"
+	} else if isA8C {
+		thinkingFormat = "a8c"
 	} else if provider == "openrouter" || strings.Contains(baseURL, "openrouter.ai") {
 		thinkingFormat = "openrouter"
 	}
@@ -664,6 +667,13 @@ func applyCompletionsThinkingParams(params map[string]any, model ai.Model, effor
 		if enabled && compat.SupportsReasoningEffort {
 			params["reasoning_effort"] = mappedThinkingLevel(model, *effort)
 		}
+	case "a8c":
+		if enabled {
+			params["include_reasoning"] = true
+			params["reasoning_effort"] = mappedA8CThinkingLevel(model, *effort)
+		} else {
+			params["include_reasoning"] = false
+		}
 	default:
 		if enabled && compat.SupportsReasoningEffort {
 			params["reasoning_effort"] = mappedThinkingLevel(model, *effort)
@@ -680,6 +690,14 @@ func mappedThinkingLevel(model ai.Model, level ai.ThinkingLevel) string {
 		}
 	}
 	return string(level)
+}
+
+func mappedA8CThinkingLevel(model ai.Model, level ai.ThinkingLevel) string {
+	mapped := mappedThinkingLevel(model, level)
+	if mapped == string(ai.ThinkingLevelMinimal) {
+		return string(ai.ThinkingLevelLow)
+	}
+	return mapped
 }
 
 func simpleReasoningEffort(model ai.Model, requested *ai.ThinkingLevel) *ai.ThinkingLevel {

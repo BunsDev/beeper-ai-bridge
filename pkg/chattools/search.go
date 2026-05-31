@@ -157,7 +157,6 @@ func (body searchResponse) result() SearchResult {
 		ResolvedSearchType: body.ResolvedSearchType,
 		SearchType:         body.SearchType,
 		Context:            body.Context,
-		CostDollars:        body.CostDollars,
 		Output:             body.Output,
 		Results:            make([]SearchItem, 0, len(body.Results)),
 	}

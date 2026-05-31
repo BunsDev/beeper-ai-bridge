@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -24,7 +26,7 @@ func TestModelContactsExposeConfiguredModels(t *testing.T) {
 	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID:       "login",
-		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}}
 	contacts, err := client.GetContactList(context.Background())
 	if err != nil {
@@ -39,6 +41,119 @@ func TestModelContactsExposeConfiguredModels(t *testing.T) {
 	providerID, modelID, ok := aiid.ParseModelContactID(contacts[0].UserID)
 	if !ok || providerID != "local" || modelID != "model-a" {
 		t.Fatalf("unexpected model contact ID %q parsed as %q %q", contacts[0].UserID, providerID, modelID)
+	}
+}
+
+func TestModelContactsCacheRefreshesAfterCachedRead(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"anthropic/claude-sonnet-4.5","name":"Claude Sonnet 4.5"}]}`))
+	}))
+	defer server.Close()
+
+	client := newDefaultProviderContactClient(server.URL + "/proxy/openai/v1")
+	contacts, err := client.GetContactList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != 1 || contacts[0].UserID != aiid.ModelContactID(aiid.DefaultProvider, "openai/gpt-5.5") {
+		t.Fatalf("expected initial cached GPT contact, got %#v", contacts)
+	}
+	results, err := client.SearchUsers(context.Background(), "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected first cached Claude search to miss before refresh, got %#v", results)
+	}
+	waitForCachedContact(t, client, aiid.ModelContactID(aiid.DefaultProvider, "anthropic/claude-sonnet-4.5"))
+	results, err = client.SearchUsers(context.Background(), "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].UserID != aiid.ModelContactID(aiid.DefaultProvider, "anthropic/claude-sonnet-4.5") {
+		t.Fatalf("expected next Claude search to use refreshed cache, got %#v", results)
+	}
+}
+
+func TestConnectWarmsModelContactsCache(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5"}]}`))
+	}))
+	defer server.Close()
+
+	client := newDefaultProviderContactClient(server.URL + "/proxy/openai/v1")
+	client.Connect(context.Background())
+	deadline := time.Now().Add(time.Second)
+	for {
+		client.contactCacheMu.Lock()
+		warmed := client.contactCache.valid
+		client.contactCacheMu.Unlock()
+		if warmed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for model contacts cache warmup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	contacts, err := client.GetContactList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != 1 {
+		t.Fatalf("expected one warmed contact, got %#v", contacts)
+	}
+	if got := requests.Load(); got < 1 {
+		t.Fatalf("expected warmup to request AI Services catalog, got %d", got)
+	}
+}
+
+func waitForCachedContact(t *testing.T, client *Client, userID networkid.UserID) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		client.contactCacheMu.Lock()
+		contacts := cloneModelContacts(client.contactCache.contacts)
+		client.contactCacheMu.Unlock()
+		for _, contact := range contacts {
+			if contact != nil && contact.UserID == userID {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for cached contact %s", userID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func newDefaultProviderContactClient(baseURL string) *Client {
+	provider := aiid.ProviderConfig{
+		ID:           aiid.DefaultProvider,
+		DisplayName:  "Beeper AI",
+		Provider:     ai.ProviderOpenAI,
+		API:          ai.ApiOpenAIResponses,
+		BaseURL:      baseURL,
+		DefaultModel: "openai/gpt-5.5",
+	}
+	return &Client{
+		Main: &Connector{
+			AppServiceToken: "as-token",
+		},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			ID:       "login",
+			UserMXID: "@test:beeper-staging.com",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				provider.ID: provider,
+			}},
+		}},
 	}
 }
 
@@ -102,6 +217,34 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 	if roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelMinimal) {
 		t.Fatalf("expected MiniMax reasoning to reject minimal, got %#v", models[1])
+	}
+}
+
+func TestAIServicesCatalogModelsUseCatalogInputWhenModalitiesMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5"}]}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		Main: &Connector{
+			AppServiceToken: "as-token",
+		},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@test:beeper-staging.com",
+		}},
+	}
+	models, err := client.aiServicesCatalogModels(context.Background(), aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  server.URL + "/proxy/openai/v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || !isImageModel(models[0]) {
+		t.Fatalf("expected GPT-5.5 catalog input fallback, got %#v", models)
 	}
 }
 
@@ -283,7 +426,7 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID:       "login",
-		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}}
 	results, err := client.SearchUsers(context.Background(), "large")
 	if err != nil {
@@ -304,7 +447,7 @@ func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
 	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID:       "login",
-		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}}
 	results, err := client.SearchUsers(context.Background(), "whateveristyped")
 	if err != nil {
@@ -334,7 +477,7 @@ func TestContactListIncludesLoginProvider(t *testing.T) {
 		Main: conn,
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 			ID:       "login",
-			Metadata: &aiid.UserLoginMetadata{Provider: &provider},
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 		}},
 	}
 

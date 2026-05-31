@@ -288,12 +288,14 @@ type AssistantMessageEvent struct {
 
 type APIStreamFunction func(context.Context, Model, Context, StreamOptions) *AssistantMessageEventStream
 type APIStreamSimpleFunction func(context.Context, Model, Context, SimpleStreamOptions) *AssistantMessageEventStream
+type APICompleteSimpleFunction func(context.Context, Model, Context, SimpleStreamOptions) Message
 type StreamFunction = APIStreamSimpleFunction
 
 type APIProvider struct {
-	API          Api
-	Stream       APIStreamFunction
-	StreamSimple APIStreamSimpleFunction
+	API            Api
+	Stream         APIStreamFunction
+	StreamSimple   APIStreamSimpleFunction
+	CompleteSimple APICompleteSimpleFunction
 }
 
 type OpenAICompletionsCompat struct {

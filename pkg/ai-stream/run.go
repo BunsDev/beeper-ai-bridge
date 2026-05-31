@@ -19,10 +19,9 @@ const (
 )
 
 const (
-	AIKindAnchor  = "anchor"
-	AIKindStream  = "stream"
-	AIKindFinal   = "final"
-	AIKindSegment = "segment"
+	AIKindAnchor = "anchor"
+	AIKindStream = "stream"
+	AIKindFinal  = "final"
 )
 
 type Run struct {
@@ -98,9 +97,28 @@ type RunError struct {
 }
 
 type FinalDelivery struct {
-	Delivery     string `json:"delivery"`
-	SegmentCount int    `json:"segmentCount"`
-	TextComplete *bool  `json:"textComplete,omitempty"`
+	Delivery      string         `json:"delivery"`
+	TextComplete  *bool          `json:"textComplete,omitempty"`
+	PartsComplete bool           `json:"partsComplete"`
+	PartsRef      *FinalPartsRef `json:"partsRef,omitempty"`
+}
+
+type FinalPartsRef struct {
+	Schema     string `json:"schema"`
+	MediaType  string `json:"mediaType"`
+	URL        string `json:"url,omitempty"`
+	File       any    `json:"file,omitempty"`
+	ByteSize   int    `json:"byteSize"`
+	SHA256     string `json:"sha256"`
+	PartsCount int    `json:"partsCount"`
+}
+
+type FinalPartsPayload struct {
+	Schema    string    `json:"schema"`
+	ThreadID  string    `json:"threadId"`
+	RunID     string    `json:"runId"`
+	MessageID string    `json:"messageId"`
+	Message   UIMessage `json:"message"`
 }
 
 func terminalOutcome(status Status, interrupts []agui.Interrupt) any {

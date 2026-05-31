@@ -13,7 +13,6 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/rs/zerolog"
-	"maunium.net/go/mautrix/bridgev2"
 )
 
 const aiServicesAppserviceTokenPrefix = "as::"
@@ -24,6 +23,9 @@ type aiServicesAppserviceToken struct {
 }
 
 func (c *Connector) ModelForProvider(provider aiid.ProviderConfig, modelID string) ai.Model {
+	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
+		modelID = resolvedModelID
+	}
 	for _, model := range provider.Models {
 		if model.ID == modelID {
 			return normalizeProviderModel(model, provider)
@@ -118,10 +120,10 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if model.Name == "" {
 		model.Name = model.ID
 	}
-	if len(model.Input) == 0 {
-		model.Input = []string{"text"}
-	}
 	if catalogModel, ok := ai.GetModel(model.Provider, model.ID); ok {
+		if len(model.Input) == 0 && len(catalogModel.Input) > 0 {
+			model.Input = append([]string(nil), catalogModel.Input...)
+		}
 		if !model.Reasoning {
 			model.Reasoning = catalogModel.Reasoning
 		}
@@ -131,9 +133,26 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 		if model.DefaultThinkingLevel == "" {
 			model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
 		}
+	} else if len(model.Input) == 0 {
+		model.Input = catalogInputForProviderModel(model)
+	}
+	if len(model.Input) == 0 {
+		model.Input = []string{"text"}
 	}
 	model.BaseURL = normalizeResponsesBaseURL(model.BaseURL)
 	return model
+}
+
+func catalogInputForProviderModel(model ai.Model) []string {
+	prefix := string(model.Provider) + "/"
+	if !strings.HasPrefix(model.ID, prefix) {
+		return nil
+	}
+	catalogModel, ok := ai.GetModel(model.Provider, strings.TrimPrefix(model.ID, prefix))
+	if !ok || len(catalogModel.Input) == 0 {
+		return nil
+	}
+	return append([]string(nil), catalogModel.Input...)
 }
 
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {
@@ -250,25 +269,15 @@ func (cl *Client) saveProviderConfig(ctx context.Context, provider aiid.Provider
 	if cl == nil || cl.Main == nil || cl.UserLogin == nil || provider.ID == "" {
 		return
 	}
-	var login *bridgev2.UserLogin
-	if provider.ID == aiid.DefaultProvider {
-		var err error
-		login, err = cl.Main.aiChatsLoginFromLoadedUser(cl.UserLogin)
-		if err != nil {
-			return
-		}
-	} else {
-		login = cl.Main.providerLoginForID(cl.UserLogin, provider.ID)
-	}
-	if login == nil {
+	meta, ok := cl.UserLogin.Metadata.(*aiid.UserLoginMetadata)
+	if !ok || meta == nil {
 		return
 	}
-	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
-	if !ok {
-		return
+	if meta.Providers == nil {
+		meta.Providers = map[string]aiid.ProviderConfig{}
 	}
-	meta.Provider = &provider
-	_ = login.Save(ctx)
+	meta.Providers[provider.ID] = provider
+	_ = cl.UserLogin.Save(ctx)
 }
 
 func resolveConfiguredAPIKey(apiKey string) string {

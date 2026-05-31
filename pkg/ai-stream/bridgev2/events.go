@@ -53,24 +53,6 @@ func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistrea
 	}
 }
 
-func FinalSegments(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
-	return FinalSegmentMessages(portalKey, sender, run, aimatrix.FinalSegments(run), targetEventID, timestamp)
-}
-
-func FinalSegmentMessages(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, segments []aistream.FinalSegment, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
-	out := make([]*simplevent.PreConvertedMessage, 0, len(segments))
-	for i, segment := range segments {
-		content, extra := aimatrix.FinalSegmentContent(run, segment, targetEventID)
-		segmentTimestamp := timestamp.Add(time.Duration(i) * time.Nanosecond)
-		out = append(out, &simplevent.PreConvertedMessage{
-			EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, segmentTimestamp),
-			Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
-			ID:        networkid.MessageID(aistream.FinalSegmentTxnID(run.RunID, segment.Metadata.Index)),
-		})
-	}
-	return out
-}
-
 func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx aistream.ApprovalContext, timestamp time.Time) *simplevent.PreConvertedMessage {
 	content, extra := aimatrix.ApprovalContent(ctx, aistream.DefaultApprovalChoices())
 	return &simplevent.PreConvertedMessage{

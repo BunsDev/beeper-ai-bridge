@@ -85,9 +85,8 @@ type FetchResult struct {
 	Source          string          `json:"source,omitempty"`
 	RequestID       string          `json:"requestId,omitempty"`
 	Context         string          `json:"context,omitempty"`
-	CostDollars     map[string]any  `json:"costDollars,omitempty"`
 	Error           string          `json:"error,omitempty"`
-	FetchMethod     string          `json:"fetch_method,omitempty"`
+	FetchMethod     string          `json:"-"`
 }
 
 type SearchResult struct {
@@ -96,7 +95,6 @@ type SearchResult struct {
 	ResolvedSearchType string         `json:"resolvedSearchType,omitempty"`
 	SearchType         string         `json:"searchType,omitempty"`
 	Context            string         `json:"context,omitempty"`
-	CostDollars        map[string]any `json:"costDollars,omitempty"`
 	Output             map[string]any `json:"output,omitempty"`
 	Results            []SearchItem   `json:"results"`
 }

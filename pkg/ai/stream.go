@@ -26,5 +26,9 @@ func StreamSimple(ctx context.Context, model Model, llmContext Context, options 
 }
 
 func CompleteSimple(ctx context.Context, model Model, llmContext Context, options SimpleStreamOptions) Message {
-	return StreamSimple(ctx, model, llmContext, options).Result()
+	provider, ok := apiProviders[model.API]
+	if !ok {
+		panic(fmt.Sprintf("No API provider registered for api: %s", model.API))
+	}
+	return provider.provider.CompleteSimple(ctx, model, llmContext, options)
 }

@@ -12,10 +12,10 @@ func RegisterBuiltInAPIProviders() {
 	}, StreamSimple: StreamSimpleAnthropic}, "builtins")
 	ai.RegisterAPIProviderWithSource(ai.APIProvider{API: ai.ApiOpenAICompletions, Stream: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.StreamOptions) *ai.AssistantMessageEventStream {
 		return StreamOpenAICompletions(ctx, model, llmContext, OpenAICompletionsOptions{StreamOptions: options})
-	}, StreamSimple: StreamSimpleOpenAICompletions}, "builtins")
+	}, StreamSimple: StreamSimpleOpenAICompletions, CompleteSimple: CompleteSimpleOpenAICompletions}, "builtins")
 	ai.RegisterAPIProviderWithSource(ai.APIProvider{API: ai.ApiOpenAIResponses, Stream: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.StreamOptions) *ai.AssistantMessageEventStream {
 		return StreamOpenAIResponses(ctx, model, llmContext, OpenAIResponsesOptions{StreamOptions: options})
-	}, StreamSimple: StreamSimpleOpenAIResponses}, "builtins")
+	}, StreamSimple: StreamSimpleOpenAIResponses, CompleteSimple: CompleteSimpleOpenAIResponses}, "builtins")
 	ai.RegisterAPIProviderWithSource(ai.APIProvider{API: ai.ApiOpenAICodexResponses, Stream: func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.StreamOptions) *ai.AssistantMessageEventStream {
 		return StreamOpenAICodexResponses(ctx, model, llmContext, OpenAICodexResponsesOptions{OpenAIResponsesOptions: OpenAIResponsesOptions{StreamOptions: options}})
 	}, StreamSimple: StreamSimpleOpenAICodexResponses}, "builtins")

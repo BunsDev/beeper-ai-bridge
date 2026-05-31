@@ -32,8 +32,11 @@ func TestGetLoginFlowsIncludesChatGPTDeviceLogin(t *testing.T) {
 		t.Fatalf("expected ChatGPT device login flow in %#v", flows)
 	}
 	process, err := conn.CreateLogin(t.Context(), &bridgev2.User{}, loginFlowChatGPTDevice)
-	if err == nil {
-		t.Fatalf("expected ChatGPT device login to require Beeper AI first, got %T", process)
+	if err != nil {
+		t.Fatalf("expected ChatGPT device login process to start without an existing Beeper AI login: %v", err)
+	}
+	if _, ok := process.(*ChatGPTDeviceLogin); !ok {
+		t.Fatalf("expected ChatGPT device login process, got %T", process)
 	}
 }
 

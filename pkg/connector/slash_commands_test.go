@@ -136,6 +136,30 @@ func TestCommandResponseContentIsVisibleText(t *testing.T) {
 	}
 }
 
+func TestProviderCommandTextDoesNotExposeSecrets(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:           "custom",
+		DisplayName:  "Custom",
+		API:          ai.ApiOpenAIResponses,
+		Provider:     "custom",
+		BaseURL:      "https://example.test/v1",
+		APIKey:       "secret-key",
+		RefreshToken: "refresh-secret",
+		Headers:      map[string]string{"Authorization": "Bearer header-secret"},
+		DefaultModel: "model-a",
+		Models:       []ai.Model{{ID: "model-a"}},
+	}
+	text := providerText(providerResponse(provider))
+	for _, secret := range []string{"secret-key", "refresh-secret", "header-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("provider command text leaked %q:\n%s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "Provider `custom`") || !strings.Contains(text, "Default model: `model-a`") {
+		t.Fatalf("provider command text lost public fields:\n%s", text)
+	}
+}
+
 func TestCommandRejectedErrorSendsFailedStatusNoticeWithExactMessage(t *testing.T) {
 	text := `AI room settings rejected: reasoning level "invalidvalue" is invalid`
 	err := commandRejectedError(text)
@@ -233,12 +257,12 @@ func TestResolveCanonicalRoomModelUsesDefaultProviderForBareModel(t *testing.T) 
 func TestResolveCanonicalRoomModelMatchesBareModelByCatalogSuffixOrder(t *testing.T) {
 	client := canonicalTestClient()
 	meta := client.UserLogin.Metadata.(*aiid.UserLoginMetadata)
-	provider := *meta.Provider
+	provider := meta.Providers[aiid.DefaultProvider]
 	provider.Models = []ai.Model{
 		{ID: "anthropic/gpt-5.5", Name: "First GPT 5.5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAIResponses},
 		{ID: "openai/gpt-5.5", Name: "OpenAI GPT 5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses},
 	}
-	meta.Provider = &provider
+	meta.Providers[provider.ID] = provider
 
 	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ModelID: "gpt-5.5"})
 	if err != nil {
@@ -269,7 +293,7 @@ func TestResolveCanonicalRoomModelPreservesFullProviderModel(t *testing.T) {
 		DefaultModel: "openai/gpt-5",
 		Models:       []ai.Model{{ID: "openai/gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
 	}
-	client.UserLogin.Metadata = &aiid.UserLoginMetadata{Provider: &openrouter}
+	client.UserLogin.Metadata = &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{openrouter.ID: openrouter}}
 	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ProviderID: "openrouter", ModelID: "openai/gpt-5"})
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +328,7 @@ func canonicalTestClient() *Client {
 	}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID:       "login",
-		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
 	return &Client{Main: conn, UserLogin: login}
 }

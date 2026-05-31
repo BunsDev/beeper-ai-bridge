@@ -24,10 +24,6 @@ func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {
 	return networkid.UserLoginID("default:" + encode(string(mxid)))
 }
 
-func ProviderLoginID(parent networkid.UserLoginID, providerID string) networkid.UserLoginID {
-	return networkid.UserLoginID("provider:" + encode(string(parent)) + ":" + sanitizeID(providerID))
-}
-
 func PortalID(roomID id.RoomID) networkid.PortalID {
 	return networkid.PortalID("mxroom:" + encode(string(roomID)))
 }

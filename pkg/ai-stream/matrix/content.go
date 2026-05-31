@@ -1,316 +1,91 @@
 package matrix
 
 import (
-	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/beeper/ai-bridge/pkg/ai-stream"
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
 )
 
 const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
-const finalSegmentSizeTargetEventID = id.EventID("$0000000000000000000000000000000000000000")
+
+const seeMoreSupportedClients = "[See more on supported clients]"
 
 type FinalProjection struct {
-	Content  *event.MessageEventContent
-	Extra    map[string]any
-	Segments []aistream.FinalSegment
+	Content         *event.MessageEventContent
+	Extra           map[string]any
+	Message         aistream.UIMessage
+	NeedsAttachment bool
 }
 
 func AnchorContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
 	content := previewContent(run)
-	extra := map[string]any{
+	return content, map[string]any{
 		aistream.BeeperAIKey: run.AIWithMessage(aistream.AIKindAnchor, run.InitialBeeperAIMessage()),
 	}
-	return content, extra
 }
 
-func ProjectFinal(run aistream.Run) FinalProjection {
-	uiMessage, segments, content, textComplete := projectFinal(run, aistream.FinalMessageBudgetBytes)
-	extra := map[string]any{
-		aistream.BeeperAIKey: finalAIContent(run, uiMessage, len(segments), textComplete),
+func ProjectFinal(run aistream.Run, partsRef *aistream.FinalPartsRef) FinalProjection {
+	fullMessage := run.FinalBeeperAIMessage(0, true)
+	message := fullMessage
+	partsComplete := true
+	needsAttachment := false
+	delivery := "inline"
+	if partsRef != nil {
+		message = emptyFinalMessage(fullMessage)
+		delivery = "attachment"
+		partsComplete = false
+	} else if !finalMetadataFits(run, fullMessage, nil, aistream.FinalMessageBudgetBytes) {
+		message = emptyFinalMessage(fullMessage)
+		delivery = "attachment"
+		partsComplete = false
+		needsAttachment = true
 	}
-	return FinalProjection{Content: content, Extra: extra, Segments: segments}
+
+	textComplete := true
+	var content *event.MessageEventContent
+	var extra map[string]any
+	for attempt := 0; attempt < 3; attempt++ {
+		run.Final = aistream.FinalDelivery{
+			Delivery:      delivery,
+			TextComplete:  &textComplete,
+			PartsComplete: partsComplete,
+			PartsRef:      partsRef,
+		}
+		extra = map[string]any{aistream.BeeperAIKey: run.AIWithMessage(aistream.AIKindFinal, message)}
+		content, textComplete = fitFinalHTML(run, finalVisibleText(run), aistream.FinalMessageBudgetBytes, extra)
+	}
+	content = fitFinalPlaintextBody(content, finalVisibleText(run), aistream.FinalMessageBudgetBytes, extra)
+	return FinalProjection{Content: content, Extra: extra, Message: fullMessage, NeedsAttachment: needsAttachment}
 }
 
 func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
-	projection := ProjectFinal(run)
+	projection := ProjectFinal(run, nil)
 	return projection.Content, projection.Extra
 }
 
-func finalAIContent(run aistream.Run, message aistream.UIMessage, segmentCount int, textComplete bool) aistream.BeeperAI {
-	if segmentCount > 0 {
-		run.Final = aistream.FinalDelivery{Delivery: "segmented", SegmentCount: segmentCount, TextComplete: &textComplete}
-	} else {
-		run.Final = aistream.FinalDelivery{Delivery: "inline", SegmentCount: 0, TextComplete: &textComplete}
-	}
-	return run.AIWithMessage(aistream.AIKindFinal, message)
-}
-
-func FinalSegments(run aistream.Run) []aistream.FinalSegment {
-	return ProjectFinal(run).Segments
-}
-
-func projectFinal(run aistream.Run, budget int) (aistream.UIMessage, []aistream.FinalSegment, *event.MessageEventContent, bool) {
-	if budget <= 0 {
-		budget = aistream.FinalMessageBudgetBytes
-	}
-	fullMessage := run.FinalBeeperAIMessage(0, true)
-	partSegments := aistream.FinalUIPartSegments(run, budget)
-	text := finalVisibleText(run)
-	countHint := len(partSegments)
-	anchorMessage := aistream.UIMessage{ID: fullMessage.ID, Role: fullMessage.Role, Parts: []aistream.MessagePart{}}
-	var content *event.MessageEventContent
-	var segments []aistream.FinalSegment
+func finalMetadataFits(run aistream.Run, message aistream.UIMessage, partsRef *aistream.FinalPartsRef, budget int) bool {
 	textComplete := true
-	for attempt := 0; attempt < 4; attempt++ {
-		anchorMessage, content, segments, textComplete = projectFinalWithCount(run, fullMessage, partSegments, text, countHint, budget)
-		if len(segments) == countHint {
-			return anchorMessage, segments, content, textComplete
-		}
-		countHint = len(segments)
+	run.Final = aistream.FinalDelivery{
+		Delivery:      "inline",
+		TextComplete:  &textComplete,
+		PartsComplete: true,
+		PartsRef:      partsRef,
 	}
-	anchorMessage, content, segments, textComplete = projectFinalWithCount(run, fullMessage, partSegments, text, countHint, budget)
-	return anchorMessage, segments, content, textComplete
+	if partsRef != nil {
+		run.Final.Delivery = "attachment"
+		run.Final.PartsComplete = false
+	}
+	extra := map[string]any{aistream.BeeperAIKey: run.AIWithMessage(aistream.AIKindFinal, message)}
+	return finalPayloadSize(finalTextContent(run, "", false), extra) <= budget
 }
 
-func projectFinalWithCount(run aistream.Run, fullMessage aistream.UIMessage, partSegments []aistream.FinalSegment, text string, countHint int, budget int) (aistream.UIMessage, *event.MessageEventContent, []aistream.FinalSegment, bool) {
-	anchorMessage := aistream.UIMessage{ID: fullMessage.ID, Role: fullMessage.Role, Parts: []aistream.MessagePart{}}
-	anchorExtra := map[string]any{
-		aistream.BeeperAIKey: finalAIContentWithSegmentCount(run, anchorMessage, countHint, true),
-	}
-	anchorContent, _, remainingText := fitFinalTextContent(run, text, budget, func(content *event.MessageEventContent) int {
-		return finalPayloadSize(content, anchorExtra)
-	})
-	textComplete := remainingText == ""
-	partParts := splitFinalPartsForMatrixProjection(run, fullMessage, flattenFinalSegmentParts(partSegments), budget)
-	segments := make([]aistream.FinalSegment, 0, countHint)
-	partIndex := 0
-	for partIndex < len(partParts) {
-		candidate := anchorMessage
-		candidate.Parts = append(append([]aistream.MessagePart(nil), anchorMessage.Parts...), partParts[partIndex])
-		candidateExtra := map[string]any{
-			aistream.BeeperAIKey: finalAIContentWithSegmentCount(run, candidate, countHint, textComplete),
-		}
-		if finalPayloadSize(anchorContent, candidateExtra) > budget {
-			break
-		}
-		anchorMessage = candidate
-		partIndex++
-	}
-	segmentIndex := 0
-	for remainingText != "" {
-		segment := aistream.FinalSegment{
-			Message: aistream.UIMessage{ID: anchorMessage.ID, Role: anchorMessage.Role, Parts: []aistream.MessagePart{}},
-			Metadata: aistream.FinalSegmentMetadata{
-				RunID:     run.RunID,
-				MessageID: run.MessageID,
-				Index:     segmentIndex,
-				Count:     countHint,
-			},
-		}
-		segment.Text, remainingText = fitFinalSegmentText(run, segment, remainingText, budget)
-		for partIndex < len(partParts) {
-			candidate := append(append([]aistream.MessagePart(nil), segment.Message.Parts...), partParts[partIndex])
-			candidateSegment := segment
-			candidateSegment.Message.Parts = candidate
-			if finalSegmentProjectionSize(run, candidateSegment) > budget {
-				break
-			}
-			segment.Message.Parts = candidate
-			partIndex++
-		}
-		segments = append(segments, segment)
-		segmentIndex++
-	}
-	for partIndex < len(partParts) {
-		segment := aistream.FinalSegment{
-			Message: aistream.UIMessage{ID: anchorMessage.ID, Role: anchorMessage.Role, Parts: []aistream.MessagePart{}},
-			Metadata: aistream.FinalSegmentMetadata{
-				RunID:     run.RunID,
-				MessageID: run.MessageID,
-				Index:     segmentIndex,
-				Count:     countHint,
-			},
-		}
-		for partIndex < len(partParts) {
-			candidate := append(append([]aistream.MessagePart(nil), segment.Message.Parts...), partParts[partIndex])
-			candidateSegment := segment
-			candidateSegment.Message.Parts = candidate
-			if len(segment.Message.Parts) > 0 && finalSegmentProjectionSize(run, candidateSegment) > budget {
-				break
-			}
-			segment.Message.Parts = candidate
-			partIndex++
-			if finalSegmentProjectionSize(run, segment) > budget {
-				break
-			}
-		}
-		segments = append(segments, segment)
-		segmentIndex++
-	}
-	for index := range segments {
-		segments[index].Metadata.Index = index
-		segments[index].Metadata.Count = len(segments)
-	}
-	return anchorMessage, anchorContent, segments, textComplete
-}
-
-func finalAIContentWithSegmentCount(run aistream.Run, message aistream.UIMessage, segmentCount int, textComplete bool) aistream.BeeperAI {
-	if segmentCount > 0 {
-		run.Final = aistream.FinalDelivery{Delivery: "segmented", SegmentCount: segmentCount, TextComplete: &textComplete}
-	} else {
-		run.Final = aistream.FinalDelivery{Delivery: "inline", SegmentCount: 0, TextComplete: &textComplete}
-	}
-	return run.AIWithMessage(aistream.AIKindFinal, message)
-}
-
-func splitFinalPartsForMatrixProjection(run aistream.Run, message aistream.UIMessage, parts []aistream.MessagePart, budget int) []aistream.MessagePart {
-	if len(parts) == 0 {
-		return nil
-	}
-	metadata := aistream.FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(parts), Count: len(parts)}
-	out := append([]aistream.MessagePart(nil), parts...)
-	for attempt := 0; attempt < 6; attempt++ {
-		next := make([]aistream.MessagePart, 0, len(out))
-		changed := false
-		for index, part := range out {
-			split := splitFinalPartForMatrixProjection(run, message, part, index, budget, metadata)
-			if len(split) != 1 || !sameMessagePart(split[0], part) {
-				changed = true
-			}
-			next = append(next, split...)
-		}
-		out = next
-		metadata.Index = len(out)
-		metadata.Count = len(out)
-		if !changed {
-			break
-		}
-	}
-	return out
-}
-
-func splitFinalPartForMatrixProjection(run aistream.Run, message aistream.UIMessage, part aistream.MessagePart, partIndex int, budget int, metadata aistream.FinalSegmentMetadata) []aistream.MessagePart {
-	if finalPartFitsMatrixProjection(run, message, part, metadata, budget) {
-		return []aistream.MessagePart{part}
-	}
-	content, _ := part["content"].(string)
-	if content != "" {
-		maxContentBytes := len(content) / 2
-		if maxContentBytes > budget/2 {
-			maxContentBytes = budget / 2
-		}
-		if maxContentBytes < 1 {
-			maxContentBytes = 1
-		}
-		for maxContentBytes >= 1 {
-			chunks := aistream.SplitTextUTF8(content, maxContentBytes)
-			out := make([]aistream.MessagePart, 0, len(chunks))
-			allFit := true
-			for _, chunk := range chunks {
-				split := cloneMessagePart(part)
-				split["content"] = chunk
-				if !finalPartFitsMatrixProjection(run, message, split, metadata, budget) {
-					allFit = false
-					break
-				}
-				out = append(out, split)
-			}
-			if allFit {
-				return out
-			}
-			maxContentBytes /= 2
-		}
-	}
-	return splitFinalPartAsMatrixFragments(run, message, part, partIndex, budget, metadata)
-}
-
-func splitFinalPartAsMatrixFragments(run aistream.Run, message aistream.UIMessage, part aistream.MessagePart, partIndex int, budget int, metadata aistream.FinalSegmentMetadata) []aistream.MessagePart {
-	encoded, err := json.Marshal(part)
-	if err != nil {
-		return []aistream.MessagePart{part}
-	}
-	maxDataBytes := len(encoded) / 2
-	if maxDataBytes > budget/2 {
-		maxDataBytes = budget / 2
-	}
-	if maxDataBytes < 1 {
-		maxDataBytes = 1
-	}
-	for maxDataBytes >= 1 {
-		chunks := aistream.SplitTextUTF8(string(encoded), maxDataBytes)
-		out := make([]aistream.MessagePart, 0, len(chunks))
-		allFit := true
-		for index, chunk := range chunks {
-			fragment := finalPartFragment(part, partIndex, index, len(chunks), chunk)
-			if !finalPartFitsMatrixProjection(run, message, fragment, metadata, budget) {
-				allFit = false
-				break
-			}
-			out = append(out, fragment)
-		}
-		if allFit {
-			return out
-		}
-		maxDataBytes /= 2
-	}
-	return []aistream.MessagePart{part}
-}
-
-func finalPartFitsMatrixProjection(run aistream.Run, message aistream.UIMessage, part aistream.MessagePart, metadata aistream.FinalSegmentMetadata, budget int) bool {
-	segment := aistream.FinalSegment{
-		Message:  aistream.UIMessage{ID: message.ID, Role: message.Role, Parts: []aistream.MessagePart{part}},
-		Metadata: metadata,
-	}
-	return finalSegmentProjectionSize(run, segment) <= budget
-}
-
-func finalPartFragment(part aistream.MessagePart, partIndex int, fragmentIndex int, fragmentCount int, data string) aistream.MessagePart {
-	partID := firstString(part["id"], part["toolCallId"], fmt.Sprintf("part-%d", partIndex))
-	return aistream.MessagePart{
-		"type":          aistream.FinalPartFragmentType,
-		"id":            fmt.Sprintf("%s:final-fragment:%d", partID, fragmentIndex),
-		"partId":        partID,
-		"partIndex":     partIndex,
-		"fragmentIndex": fragmentIndex,
-		"fragmentCount": fragmentCount,
-		"data":          data,
-	}
-}
-
-func cloneMessagePart(part aistream.MessagePart) aistream.MessagePart {
-	cp := make(aistream.MessagePart, len(part))
-	for key, value := range part {
-		cp[key] = value
-	}
-	return cp
-}
-
-func sameMessagePart(left aistream.MessagePart, right aistream.MessagePart) bool {
-	return reflect.DeepEqual(left, right)
-}
-
-func firstString(values ...any) string {
-	for _, value := range values {
-		if text, ok := value.(string); ok && text != "" {
-			return text
-		}
-	}
-	return ""
-}
-
-func flattenFinalSegmentParts(segments []aistream.FinalSegment) []aistream.MessagePart {
-	var parts []aistream.MessagePart
-	for _, segment := range segments {
-		parts = append(parts, segment.Message.Parts...)
-	}
-	return parts
+func emptyFinalMessage(message aistream.UIMessage) aistream.UIMessage {
+	return aistream.UIMessage{ID: message.ID, Role: message.Role, Parts: []aistream.MessagePart{}}
 }
 
 func finalVisibleText(run aistream.Run) string {
@@ -323,54 +98,62 @@ func finalVisibleText(run aistream.Run) string {
 	return "..."
 }
 
-func fitFinalSegmentText(run aistream.Run, segment aistream.FinalSegment, text string, budget int) (string, string) {
-	_, chunk, rest := fitFinalTextContent(run, text, budget, func(content *event.MessageEventContent) int {
-		return finalSegmentProjectionSizeWithContent(run, segment, content)
-	})
-	return chunk, rest
+func fitFinalHTML(run aistream.Run, markdown string, budget int, extra map[string]any) (*event.MessageEventContent, bool) {
+	if markdown == "" {
+		return finalTextContent(run, "", false), true
+	}
+	full := finalTextContent(run, markdown, false)
+	if finalPayloadSize(full, extra) <= budget {
+		return full, true
+	}
+	suffix := "\n\n" + seeMoreSupportedClients
+	best := ""
+	low, high := 0, len(markdown)
+	for low <= high {
+		mid := (low + high) / 2
+		prefix := strings.TrimSpace(utf8Prefix(markdown, mid))
+		text := strings.TrimSpace(prefix + suffix)
+		if prefix == "" {
+			text = seeMoreSupportedClients
+		}
+		content := finalTextContent(run, text, false)
+		if finalPayloadSize(content, extra) <= budget {
+			best = text
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if best == "" {
+		if fallback := finalTextContent(run, seeMoreSupportedClients, false); finalPayloadSize(fallback, extra) <= budget {
+			return fallback, false
+		}
+		return finalTextContent(run, "", false), false
+	}
+	return finalTextContent(run, best, false), false
 }
 
-func fitFinalTextContent(run aistream.Run, text string, budget int, size func(*event.MessageEventContent) int) (*event.MessageEventContent, string, string) {
-	if text == "" {
-		return finalTextContent(run, "", false), "", ""
+func fitFinalPlaintextBody(content *event.MessageEventContent, markdown string, budget int, extra map[string]any) *event.MessageEventContent {
+	if markdown == "" {
+		return content
 	}
-	type candidate struct {
-		text        string
-		content     *event.MessageEventContent
-		includeBody bool
-	}
-	best := candidate{}
-	for _, includeBody := range []bool{false, true} {
-		low, high := 0, len(text)
-		var local candidate
-		for low <= high {
-			mid := (low + high) / 2
-			prefix := utf8Prefix(text, mid)
-			if prefix == "" {
-				low = mid + 1
-				continue
-			}
-			content := finalTextContent(run, prefix, includeBody)
-			if size(content) <= budget {
-				local = candidate{text: prefix, content: content, includeBody: includeBody}
-				low = len(prefix) + 1
-			} else {
-				high = len(prefix) - 1
-			}
-		}
-		if len(local.text) > len(best.text) || (len(local.text) == len(best.text) && local.includeBody) {
-			best = local
+	best := ""
+	low, high := 0, len(markdown)
+	for low <= high {
+		mid := (low + high) / 2
+		body := utf8Prefix(markdown, mid)
+		candidate := *content
+		candidate.Body = body
+		if finalPayloadSize(&candidate, extra) <= budget {
+			best = body
+			low = mid + 1
+		} else {
+			high = mid - 1
 		}
 	}
-	if best.content == nil {
-		_, size := utf8.DecodeRuneInString(text)
-		if size <= 0 {
-			return finalTextContent(run, "", false), "", ""
-		}
-		chunk := text[:size]
-		return finalTextContent(run, chunk, false), chunk, strings.TrimPrefix(text, chunk)
-	}
-	return best.content, best.text, strings.TrimPrefix(text, best.text)
+	out := *content
+	out.Body = best
+	return &out
 }
 
 func utf8Prefix(text string, maxBytes int) string {
@@ -405,20 +188,6 @@ func finalPayloadSize(content *event.MessageEventContent, extra map[string]any) 
 	return aistream.JSONSize(map[string]any{"content": content, "extra": extra})
 }
 
-func finalSegmentProjectionSize(run aistream.Run, segment aistream.FinalSegment) int {
-	content, extra := FinalSegmentContent(run, segment, finalSegmentSizeTargetEventID)
-	return finalPayloadSize(content, extra)
-}
-
-func finalSegmentProjectionSizeWithContent(run aistream.Run, segment aistream.FinalSegment, content *event.MessageEventContent) int {
-	contentWithRelation := *content
-	contentWithRelation.SetRelatesTo(&event.RelatesTo{Type: event.RelReference, EventID: finalSegmentSizeTargetEventID})
-	extra := map[string]any{
-		aistream.BeeperAIKey: run.AISegment(segment.Message, segment.Metadata),
-	}
-	return finalPayloadSize(&contentWithRelation, extra)
-}
-
 func previewContent(run aistream.Run) *event.MessageEventContent {
 	body := run.Preview.Text
 	if body == "" {
@@ -438,14 +207,6 @@ func CarrierContent(run aistream.Run, carrier aistream.Carrier, targetEventID id
 	content := format.TextToContent("")
 	content.SetRelatesTo(&event.RelatesTo{Type: event.RelReference, EventID: targetEventID})
 	return &content, aistream.CarrierContent(run, carrier.Envelopes)
-}
-
-func FinalSegmentContent(run aistream.Run, segment aistream.FinalSegment, targetEventID id.EventID) (*event.MessageEventContent, map[string]any) {
-	content := finalTextContent(run, segment.Text, false)
-	content.SetRelatesTo(&event.RelatesTo{Type: event.RelReference, EventID: targetEventID})
-	return content, map[string]any{
-		aistream.BeeperAIKey: run.AISegment(segment.Message, segment.Metadata),
-	}
 }
 
 func ApprovalContent(ctx aistream.ApprovalContext, choices []aistream.ApprovalChoice) (*event.MessageEventContent, map[string]any) {

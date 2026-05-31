@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"encoding/base64"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -62,7 +63,15 @@ func roomFeaturesForModel(model ai.Model, supportsAIState bool) *event.RoomFeatu
 		caps.File[event.MsgAudio] = audioFeatures
 		caps.File[event.CapMsgVoice] = audioFeatures.Clone()
 	}
+	setRoomFeaturesID(caps)
 	return caps
+}
+
+func setRoomFeaturesID(caps *event.RoomFeatures) {
+	if caps == nil {
+		return
+	}
+	caps.ID = "com.beeper.ai.capabilities." + base64.RawURLEncoding.EncodeToString(caps.Hash())
 }
 
 func imageFileFeatures() *event.FileFeatures {

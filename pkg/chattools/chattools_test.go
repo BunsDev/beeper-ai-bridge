@@ -111,7 +111,7 @@ func TestFetchUsesExaContentsForPages(t *testing.T) {
 		if !ok || text["maxCharacters"] != float64(100) || text["verbosity"] != "standard" {
 			t.Fatalf("unexpected text payload %#v", payload)
 		}
-		_, _ = w.Write([]byte(`{"requestId":"req_1","statuses":[{"id":"https://example.com/page","status":"success","source":"crawled"}],"results":[{"id":"doc_1","title":"Page","url":"https://example.com/page","text":"Extracted page text","publishedDate":"2026-01-01","author":"A","highlights":["hit"],"summary":"sum","extras":{"links":["https://example.com/next"]}}]}`))
+		_, _ = w.Write([]byte(`{"requestId":"req_1","costDollars":{"total":0.001},"statuses":[{"id":"https://example.com/page","status":"success","source":"crawled"}],"results":[{"id":"doc_1","title":"Page","url":"https://example.com/page","text":"Extracted page text","publishedDate":"2026-01-01","author":"A","highlights":["hit"],"summary":"sum","extras":{"links":["https://example.com/next"]}}]}`))
 	}))
 	defer exa.Close()
 
@@ -124,6 +124,13 @@ func TestFetchUsesExaContentsForPages(t *testing.T) {
 	}
 	if result.Published != "2026-01-01" || result.Author != "A" || len(result.Highlights) != 1 || result.Summary != "sum" || result.Extras["links"] == nil {
 		t.Fatalf("missing Exa fetch metadata %#v", result)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "costDollars") || strings.Contains(string(raw), "fetch_method") {
+		t.Fatalf("Exa internal metadata leaked into fetch JSON: %s", string(raw))
 	}
 }
 
@@ -175,8 +182,15 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Query != "query" || result.RequestID != "req_1" || result.ResolvedSearchType != "auto" || result.CostDollars["total"] != 0.001 || result.Output["content"] != "synth" {
+	if result.Query != "query" || result.RequestID != "req_1" || result.ResolvedSearchType != "auto" || result.Output["content"] != "synth" {
 		t.Fatalf("missing top-level Exa metadata: %#v", result)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "costDollars") {
+		t.Fatalf("Exa cost metadata leaked into search JSON: %s", string(raw))
 	}
 	if len(result.Results) != 1 || result.Results[0].ID != "doc_1" || result.Results[0].Title != "One" || result.Results[0].Snippet != "hit" || result.Results[0].Text != "ok" {
 		t.Fatalf("unexpected search result %#v", result)

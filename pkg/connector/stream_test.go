@@ -321,7 +321,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		t.Fatalf("metadata was not finalized through shared pointer: %#v", partMetadata)
 	}
 
-	edit := client.assistantFinalEdit(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", "run", *run, ai.Message{
+	edit := client.assistantFinalEdit(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", *run, ai.Message{
 		Role:       "assistant",
 		StopReason: ai.StopReasonStop,
 	}, metadata)
@@ -345,7 +345,7 @@ func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
 	}
 	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID:       "login",
-		Metadata: &aiid.UserLoginMetadata{Provider: &provider},
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}}
 	content := &event.MessageEventContent{}
 	client.applyModelProfile(context.Background(), content, "custom", "gpt-5.5")
@@ -368,14 +368,14 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 			UserMXID: "@test:beeper.com",
-			Metadata: &aiid.UserLoginMetadata{Provider: &aiid.ProviderConfig{
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{aiid.DefaultProvider: {
 				ID:           aiid.DefaultProvider,
 				DisplayName:  "Beeper AI",
 				API:          ai.ApiOpenAIResponses,
 				Provider:     ai.ProviderOpenAI,
 				BaseURL:      server.URL + "/proxy/openai/v1",
 				DefaultModel: "beeper/default",
-			}},
+			}}},
 		}},
 	}
 	content := &event.MessageEventContent{}

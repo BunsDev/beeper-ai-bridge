@@ -21,6 +21,8 @@ type Connector struct {
 	Store           *aidb.Store
 	AppServiceToken string
 	HomeserverURL   string
+
+	providerRoutesRegistered bool
 }
 
 var _ bridgev2.NetworkConnector = (*Connector)(nil)
@@ -52,6 +54,10 @@ func (c *Connector) Start(ctx context.Context) error {
 	if err := c.Store.Upgrade(ctx); err != nil {
 		return bridgev2.DBUpgradeError{Err: err, Section: "ai"}
 	}
+	c.registerProviderRoutes()
+	if err := c.ensureAIChatsLoginsForPersistedUsers(ctx); err != nil {
+		c.Bridge.Log.Warn().Err(err).Msg("Failed to ensure AI logins for persisted users")
+	}
 	return nil
 }
 
@@ -61,18 +67,10 @@ func (c *Connector) ValidateConfig() error {
 }
 
 func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
-	if c.isAIChatsLogin(login) {
-		if err := c.ensureAIChatsMetadata(ctx, login); err != nil {
-			return err
-		}
-		login.Client = &Client{
-			Main:      c,
-			UserLogin: login,
-			loggedIn:  true,
-		}
-		return nil
+	if err := c.ensureAIChatsMetadata(ctx, login); err != nil {
+		return err
 	}
-	login.Client = &ProviderLoginClient{
+	login.Client = &Client{
 		Main:      c,
 		UserLogin: login,
 		loggedIn:  true,
@@ -135,12 +133,23 @@ func (c *Connector) homeserverAddressHost() string {
 }
 
 func (c *Connector) defaultLoginID(mxid id.UserID) networkid.UserLoginID {
+	if loginID := c.bridgeDefaultLoginID(); loginID != "" {
+		return loginID
+	}
+	return c.perUserDefaultLoginID(mxid)
+}
+
+func (c *Connector) perUserDefaultLoginID(mxid id.UserID) networkid.UserLoginID {
+	return aiid.DefaultLoginID(mxid)
+}
+
+func (c *Connector) bridgeDefaultLoginID() networkid.UserLoginID {
 	if c.Bridge != nil && c.Bridge.Bot != nil {
 		if localpart := c.Bridge.Bot.GetMXID().Localpart(); localpart != "" {
 			return networkid.UserLoginID(strings.TrimSuffix(localpart, "bot"))
 		}
 	}
-	return aiid.DefaultLoginID(mxid)
+	return ""
 }
 
 func (c *Connector) ResolveLogin(ctx context.Context, user *bridgev2.User, requested networkid.UserLoginID) (*bridgev2.UserLogin, error) {

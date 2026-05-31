@@ -3,7 +3,9 @@ package connector
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,10 +44,15 @@ type Client struct {
 	UserLogin *bridgev2.UserLogin
 	loggedIn  bool
 
-	activeMu        sync.Mutex
-	activeHarnesses map[networkid.PortalKey]*harness.AgentHarness
-	activeRuns      map[networkid.PortalKey]*activeAIRun
-	providerAuthMu  sync.Mutex
+	activeMu         sync.Mutex
+	activeHarnesses  map[networkid.PortalKey]*harness.AgentHarness
+	activeRuns       map[networkid.PortalKey]*activeAIRun
+	providerAuthMu   sync.Mutex
+	contactCacheMu   sync.Mutex
+	contactCache     modelContactsCache
+	contactRefreshMu sync.Mutex
+	catalogCacheMu   sync.Mutex
+	catalogCache     providerCatalogCache
 }
 
 func aguiFinishReasonFromAI(reason ai.StopReason) string {
@@ -118,6 +125,7 @@ var _ bridgev2.UserSearchingNetworkAPI = (*Client)(nil)
 func (cl *Client) Connect(ctx context.Context) {
 	cl.loggedIn = true
 	cl.sendBridgeState(status.StateConnected)
+	cl.refreshModelContactCacheAsync(ctx)
 }
 
 func (cl *Client) Disconnect() {
@@ -333,52 +341,74 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	}
 	contextView, err := agentSession.BuildContext(ctx)
 	if err != nil || len(contextView.Messages) < 2 {
+		if err != nil {
+			zerolog.Ctx(ctx).Debug().Err(err).Str("action", "session_title").Msg("Skipping session title generation")
+		} else {
+			zerolog.Ctx(ctx).Debug().Str("action", "session_title").Int("message_count", len(contextView.Messages)).Msg("Skipping session title generation")
+		}
 		return
 	}
 	titleModel := cl.titleGenerationModel(provider, model)
-	auth, err := cl.authForProvider(provider)(ctx, titleModel)
+	titleLog := zerolog.Ctx(ctx).With().
+		Bool("session_title", true).
+		Str("model_id", titleModel.ID).
+		Str("provider", string(titleModel.Provider)).
+		Logger()
+	titleCtx := titleLog.WithContext(ctx)
+	auth, err := cl.authForProvider(provider)(titleCtx, titleModel)
 	if err != nil {
+		titleLog.Debug().Err(err).Str("action", "session_title").Msg("Skipping session title generation")
 		return
 	}
-	title, err := sessiontitle.Generate(ctx, contextView.Messages, sessiontitle.Options{
+	title, err := sessiontitle.Generate(titleCtx, contextView.Messages, sessiontitle.Options{
 		Model:   titleModel,
 		APIKey:  auth.APIKey,
 		Headers: auth.Headers,
 	})
 	if err != nil || title == "" {
+		if err != nil {
+			titleLog.Debug().Err(err).Str("action", "session_title").Msg("Skipping session title generation")
+		} else {
+			titleLog.Debug().Str("action", "session_title").Msg("Skipping empty session title")
+		}
 		return
 	}
 	if _, err = agentSession.AppendSessionName(ctx, title); err != nil {
+		titleLog.Debug().Err(err).Str("action", "session_title").Msg("Skipping session title update")
 		return
 	}
 	meta.AutoTitlePending = false
 	if err = portal.Save(ctx); err != nil {
+		titleLog.Debug().Err(err).Str("action", "session_title").Msg("Skipping session title update")
 		return
 	}
 	if cl != nil && cl.UserLogin != nil {
+		titleLog.Debug().Str("action", "session_title").Str("title", title).Msg("Updating room title")
 		portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &title}, cl.UserLogin, nil, time.Now())
 	}
 }
 
 func (cl *Client) titleGenerationModel(provider aiid.ProviderConfig, fallback ai.Model) ai.Model {
-	modelID := titleGenerationModelID(provider)
-	if modelID == "" || !providerAllowsModel(provider, modelID) {
-		return fallback
+	for _, modelID := range titleGenerationModelIDs(provider) {
+		if !providerAllowsModel(provider, modelID) {
+			continue
+		}
+		if cl != nil && cl.Main != nil {
+			return cl.Main.ModelForProvider(provider, modelID)
+		}
+		return normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
 	}
-	if cl != nil && cl.Main != nil {
-		return cl.Main.ModelForProvider(provider, modelID)
-	}
-	return normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
+	return fallback
 }
 
-func titleGenerationModelID(provider aiid.ProviderConfig) string {
+func titleGenerationModelIDs(provider aiid.ProviderConfig) []string {
 	switch provider.Provider {
 	case ai.ProviderOpenAI:
-		return defaultTitleGenerationModel
+		return []string{defaultTitleGenerationModel, fallbackTitleGenerationModel}
 	case ai.ProviderOpenRouter:
-		return openRouterTitleGenerationModel
+		return []string{openRouterTitleGenerationModel, openRouterFallbackTitleGenerationModel}
 	default:
-		return ""
+		return nil
 	}
 }
 
@@ -597,7 +627,7 @@ func (cl *Client) queueAssistantRunError(portalKey networkid.PortalKey, messageI
 		metadata.StopReason = string(ai.StopReasonError)
 		metadata.StreamStatus = "error"
 	}
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, runID, run, message, metadata))
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, run, message, metadata))
 }
 
 func hookStreamError(err error) *ai.AssistantMessageEventStream {
@@ -750,43 +780,79 @@ func isZeroAGUIUsage(usage agui.Usage) bool {
 		usage.ContextLimit == 0
 }
 
-func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
+func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
 	run = finalizedAssistantRun(run, message)
-	projection := aimatrix.ProjectFinal(run)
-	return cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, runID, run, projection, metadata)
+	return cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, run, metadata)
 }
 
-func (cl *Client) assistantFinalEditWithProjection(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, projection aimatrix.FinalProjection, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
-	edit := aibridgev2.FinalMetadataEditWithContent(portalKey, aiid.AssistantUserID(), messageID, run, projection.Content, projection.Extra, time.Now())
-	originalConvert := edit.ConvertEditFunc
+func (cl *Client) assistantFinalEditWithProjection(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, run aistream.Run, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
+	initialProjection := aimatrix.ProjectFinal(run, nil)
+	edit := aibridgev2.FinalMetadataEditWithContent(portalKey, aiid.AssistantUserID(), messageID, run, initialProjection.Content, initialProjection.Extra, time.Now())
 	edit.ConvertEditFunc = func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *aistream.Run) (*bridgev2.ConvertedEdit, error) {
-		converted, err := originalConvert(ctx, portal, intent, existing, data)
-		if err != nil || converted == nil {
-			return converted, err
+		if len(existing) == 0 {
+			return nil, nil
 		}
-		if len(existing) > 0 {
-			existing[0].Metadata = metadata
+		projection := aimatrix.ProjectFinal(*data, nil)
+		if projection.NeedsAttachment {
+			partsRef, err := uploadFinalPartsRef(ctx, portal, intent, *data, projection.Message)
+			if err != nil {
+				return nil, err
+			}
+			projection = aimatrix.ProjectFinal(*data, partsRef)
 		}
-		if len(converted.ModifiedParts) > 0 && converted.ModifiedParts[0].Content != nil {
-			cl.applyModelProfile(ctx, converted.ModifiedParts[0].Content, providerID, modelID)
+		existing[0].Metadata = metadata
+		if projection.Content != nil {
+			cl.applyModelProfile(ctx, projection.Content, providerID, modelID)
 		}
-		return converted, nil
+		return &bridgev2.ConvertedEdit{
+			ModifiedParts: []*bridgev2.ConvertedEditPart{{
+				Part:    existing[0],
+				Type:    event.EventMessage,
+				Content: projection.Content,
+				Extra:   projection.Extra,
+				TopLevelExtra: map[string]any{
+					"com.beeper.dont_render_edited": true,
+				},
+			}},
+		}, nil
 	}
 	return edit
 }
 
-func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID networkid.MessageID, targetEventID id.EventID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) {
+func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) {
 	if cl == nil || cl.UserLogin == nil {
 		return
 	}
 	run = finalizedAssistantRun(run, message)
-	projection := aimatrix.ProjectFinal(run)
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, runID, run, projection, metadata))
-	if targetEventID != "" {
-		for _, segment := range aibridgev2.FinalSegmentMessages(portalKey, aiid.AssistantUserID(), run, projection.Segments, targetEventID, time.Now()) {
-			cl.UserLogin.QueueRemoteEvent(segment)
-		}
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, run, metadata))
+}
+
+func uploadFinalPartsRef(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, run aistream.Run, message aistream.UIMessage) (*aistream.FinalPartsRef, error) {
+	if portal == nil || portal.Portal == nil {
+		return nil, fmt.Errorf("missing portal for AI final parts upload")
 	}
+	payload, err := json.Marshal(run.FinalPartsPayload(message))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AI final parts: %w", err)
+	}
+	hash := sha256.Sum256(payload)
+	url, file, err := intent.UploadMedia(ctx, portal.MXID, payload, fmt.Sprintf("ai-final-parts-%s.json", run.RunID), aistream.FinalPartsMediaType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload AI final parts: %w", err)
+	}
+	ref := &aistream.FinalPartsRef{
+		Schema:     aistream.FinalPartsRefSchema,
+		MediaType:  aistream.FinalPartsMediaType,
+		ByteSize:   len(payload),
+		SHA256:     base64.RawURLEncoding.EncodeToString(hash[:]),
+		PartsCount: len(message.Parts),
+	}
+	if file != nil {
+		ref.File = file
+	} else {
+		ref.URL = string(url)
+	}
+	return ref, nil
 }
 
 func (cl *Client) applyModelProfile(ctx context.Context, content *event.MessageEventContent, providerID string, modelID string) {
@@ -1774,7 +1840,7 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
 	appendToolOutputs(stream.run, stream.tools)
-	cl.queueAssistantFinal(r.portalKey, stream.messageID, stream.eventID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata)
+	cl.queueAssistantFinal(r.portalKey, stream.messageID, providerID, modelID, *stream.run, message, stream.metadata)
 	cl.queueAssistantMediaMessages(r.portalKey, stream.messageID, providerID, modelID, stream.runID, message)
 }
 

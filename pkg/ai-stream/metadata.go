@@ -41,7 +41,7 @@ func (t Run) AIStream(envelopes []Envelope) BeeperAI {
 }
 
 func (t Run) AISegment(message UIMessage, segment FinalSegmentMetadata) BeeperAI {
-	payload := t.AIWithMessage(AIKindSegment, message)
+	payload := t.AIWithMessage("segment", message)
 	payload.Segment = &segment
 	return payload
 }
@@ -50,7 +50,7 @@ func (t Run) finalDelivery() FinalDelivery {
 	if t.Final.Delivery != "" {
 		return t.Final
 	}
-	return FinalDelivery{Delivery: "inline", SegmentCount: 0}
+	return FinalDelivery{Delivery: "inline", PartsComplete: true}
 }
 
 func (t Run) runTerminal() RunTerminal {

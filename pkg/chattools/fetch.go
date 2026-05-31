@@ -22,7 +22,7 @@ func FetchTool(options FetchOptions) agent.AgentTool[any] {
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "fetch",
-			Description: "Fetch an HTTP or HTTPS URL. Uses direct HTTP fetch for assets, markdown, text, and data files; uses Exa page extraction for normal web pages when configured.",
+			Description: "Fetch an HTTP or HTTPS URL and return readable page content, metadata, and source details.",
 			Parameters: objectSchema(map[string]any{
 				"url":       map[string]any{"type": "string", "description": "HTTP or HTTPS URL to fetch."},
 				"max_chars": map[string]any{"type": "integer", "description": "Maximum number of text characters to return."},
@@ -192,7 +192,6 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 		Truncated:   false,
 		RequestID:   body.RequestID,
 		Context:     body.Context,
-		CostDollars: body.CostDollars,
 		FetchMethod: "exa",
 	}
 	if len(body.Statuses) > 0 {
