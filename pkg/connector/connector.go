@@ -70,11 +70,13 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 	if err := c.ensureAIChatsMetadata(ctx, login); err != nil {
 		return err
 	}
-	login.Client = &Client{
+	client := &Client{
 		Main:      c,
 		UserLogin: login,
 		loggedIn:  true,
 	}
+	login.Client = client
+	client.failPersistedActiveStreams(ctx)
 	return nil
 }
 

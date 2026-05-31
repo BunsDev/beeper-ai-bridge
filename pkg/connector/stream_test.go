@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,41 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	part := aiPayload.Events[1].Event
 	if part.Type() != agui.EventTextMessageContent || part.Get("delta") != "hel" {
 		t.Fatalf("unexpected first text part %#v", part)
+	}
+}
+
+func TestStreamPublisherFailsAfterIdleTimeout(t *testing.T) {
+	ctx := context.Background()
+	oldTimeout := activeStreamIdleTimeout
+	activeStreamIdleTimeout = 20 * time.Millisecond
+	defer func() {
+		activeStreamIdleTimeout = oldTimeout
+	}()
+	testAPI := ai.Api("test-stream-timeout")
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			<-ctx.Done()
+			stream.End()
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	result := client.streamPublisher(publisher, "!room:example.com", "$event", run)(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+
+	if result.StopReason != ai.StopReasonError || !strings.Contains(result.ErrorMessage, "timed out") {
+		t.Fatalf("expected timeout error result, got %#v", result)
+	}
+	if run.Status.State != "error" {
+		t.Fatalf("expected run to be marked error, got %#v", run.Status)
+	}
+	if len(publisher.updates) < 2 {
+		t.Fatalf("expected start and timeout stream updates, got %#v", publisher.updates)
 	}
 }
 
