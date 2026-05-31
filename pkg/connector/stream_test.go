@@ -209,6 +209,28 @@ func TestFinalizedAssistantRunPreservesAccumulatedStreamUsage(t *testing.T) {
 	}
 }
 
+func TestFinalizedAssistantRunErrorUsesGenericPreviewAndTerminalReason(t *testing.T) {
+	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	message := ai.Message{
+		Role:         "assistant",
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: "OpenAI API error (403): This model is not available",
+	}
+
+	final := finalizedAssistantRun(run, message)
+	wantVisible := message.ErrorMessage
+	if final.Preview.Text != wantVisible {
+		t.Fatalf("error preview = %q, want %q", final.Preview.Text, wantVisible)
+	}
+	payload := final.AI(aistream.AIKindFinal)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunError {
+		t.Fatalf("missing final RUN_ERROR event: %#v", payload.Events)
+	}
+	if payload.Events[0].Event.Get("message") != message.ErrorMessage {
+		t.Fatalf("missing RUN_ERROR message: %#v", payload.Events[0].Event)
+	}
+}
+
 func TestDoneEventAddsFinalTextWhenProviderDidNotStreamDeltas(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
 	run.MessageID = "assistant:run"

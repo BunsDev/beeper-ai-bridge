@@ -877,6 +877,9 @@ func (cl *Client) assistantEvent(ctx context.Context, portalKey networkid.Portal
 func finalizedAssistantRun(run aistream.Run, message ai.Message) aistream.Run {
 	if message.StopReason == ai.StopReasonError {
 		run.Status = aistream.Status{State: "error", Error: map[string]any{"message": message.ErrorMessage}}
+		if run.Text() == "" {
+			run.Preview = aistream.PreviewFromText(aistream.ErrorFallbackPlaintext(message.ErrorMessage), aistream.PreviewBudgetBytes)
+		}
 	} else if run.Status.State == "streaming" {
 		run.Status = aistream.Status{State: "complete", FinishReason: aguiFinishReasonFromAI(message.StopReason)}
 	}

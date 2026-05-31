@@ -270,6 +270,10 @@ func (b EventBuilder) RunFinishedWithOutcome(threadID, runID, finishReason strin
 }
 
 func (b EventBuilder) RunError(threadID, runID, message string) Event {
+	return b.RunErrorWithCode(threadID, runID, message, "")
+}
+
+func (b EventBuilder) RunErrorWithCode(threadID, runID, message, code string) Event {
 	if strings.TrimSpace(runID) == "" {
 		runID = ""
 	}
@@ -278,7 +282,7 @@ func (b EventBuilder) RunError(threadID, runID, message string) Event {
 		ThreadID:      threadID,
 		RunID:         runID,
 		Message:       message,
-		Error:         RunError{Message: message},
+		Code:          code,
 	})
 }
 

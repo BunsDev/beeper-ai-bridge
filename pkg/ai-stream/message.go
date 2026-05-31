@@ -297,8 +297,9 @@ type projectedPart struct {
 
 func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessage {
 	message := UIMessage{
-		ID:   t.MessageID,
-		Role: agui.RoleAssistant,
+		ID:    t.MessageID,
+		Role:  agui.RoleAssistant,
+		Parts: []MessagePart{},
 	}
 	textParts := map[string]*projectedPart{}
 	thinkingParts := map[string]*projectedPart{}

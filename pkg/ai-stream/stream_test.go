@@ -716,20 +716,21 @@ func TestBeeperAIOwnsMatrixPayloadShape(t *testing.T) {
 	if payload.Agent.ID != "agent-1" || payload.Agent.DisplayName != "Agent" {
 		t.Fatalf("bad agent metadata: %#v", payload.Agent)
 	}
-	if payload.Terminal == nil {
-		t.Fatalf("missing terminal payload: %#v", payload)
+	if len(payload.Events) != 1 || payload.Events[0].Event.Type() != agui.EventRunFinished {
+		t.Fatalf("missing final AG-UI lifecycle event: %#v", payload.Events)
 	}
-	if payload.Terminal.State != "complete" || payload.Terminal.FinishReason != agui.FinishReasonStop {
-		t.Fatalf("bad terminal state: %#v", payload.Terminal)
+	terminal := payload.Events[0].Event
+	if terminal.Get("finishReason") != agui.FinishReasonStop {
+		t.Fatalf("bad final finish reason: %#v", terminal)
 	}
-	if payload.Terminal.Usage != run.Usage {
-		t.Fatalf("bad terminal usage: %#v", payload.Terminal.Usage)
+	if terminal.Get("usage") != run.Usage {
+		t.Fatalf("bad final usage: %#v", terminal.Get("usage"))
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), `"metadata"`) || strings.Contains(string(encoded), `"status"`) || strings.Contains(string(encoded), `"usageDetails"`) {
+	if strings.Contains(string(encoded), `"metadata"`) || strings.Contains(string(encoded), `"status"`) || strings.Contains(string(encoded), `"usageDetails"`) || strings.Contains(string(encoded), `"terminal"`) {
 		t.Fatalf("payload includes removed sidecar fields: %s", encoded)
 	}
 }

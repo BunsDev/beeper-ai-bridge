@@ -24,9 +24,27 @@ func TestPortalAndAssistantIDsAreStable(t *testing.T) {
 	if got := AssistantUserID(); got != "assistant:ai" {
 		t.Fatalf("unexpected assistant ID %q", got)
 	}
-	providerID, modelID, ok := ParseModelContactID(ModelContactID("beeper/openai", "gpt-5:latest"))
-	if !ok || providerID != "beeper/openai" || modelID != "gpt-5:latest" {
+	if got := ModelContactID(DefaultProvider, "openai/gpt-5.5"); got != "model:openai=2fgpt-5.5" {
+		t.Fatalf("unexpected default model contact ID %q", got)
+	}
+	if got := ModelContactID("openrouter", "openai/gpt-5.5"); got != "model:openrouter:openai=2fgpt-5.5" {
+		t.Fatalf("unexpected custom model contact ID %q", got)
+	}
+	providerID, modelID, ok := ParseModelContactID(ModelContactID("openrouter", "openai/gpt-5.5"))
+	if !ok || providerID != "openrouter" || modelID != "openai/gpt-5.5" {
 		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID(DefaultProvider, "gpt-5+preview"))
+	if !ok || providerID != DefaultProvider || modelID != "gpt-5+preview" {
+		t.Fatalf("default model contact ID did not parse: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID("custom", "gpt-5+preview"))
+	if !ok || providerID != "custom" || modelID != "gpt-5+preview" {
+		t.Fatalf("custom model contact ID did not preserve model separator: %q %q %v", providerID, modelID, ok)
+	}
+	providerID, modelID, ok = ParseModelContactID(ModelContactID("provider:with/symbols", "Model (test): v1/2"))
+	if !ok || providerID != "provider:with/symbols" || modelID != "Model (test): v1/2" {
+		t.Fatalf("encoded model contact ID did not parse: %q %q %v", providerID, modelID, ok)
 	}
 	providerID, modelID, ok = ParseModelContactID(ModelContactID("beeper", "gpt-5"))
 	if !ok || providerID != "beeper" || modelID != "gpt-5" {

@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,39 @@ func TestFinalContentIncludesAllPartsInlineWhenTheyFit(t *testing.T) {
 	}
 	if ai.Final == nil || ai.Final.Delivery != "inline" || !ai.Final.PartsComplete || ai.Final.PartsRef != nil {
 		t.Fatalf("small final payload should stay inline: %#v", ai.Final)
+	}
+}
+
+func TestErrorFinalContentUsesGenericFallbackAndTerminalError(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Error("OpenAI API error (403): This model is not available")
+
+	content, extra := FinalContent(*run)
+	wantVisible := "OpenAI API error (403): This model is not available"
+	if content.Body != wantVisible {
+		t.Fatalf("error final body = %q, want %q", content.Body, wantVisible)
+	}
+	if strings.Contains(content.Body, aistream.ErrorFallbackText) {
+		t.Fatalf("plain Matrix fallback should not duplicate generic error text: %#v", content.Body)
+	}
+	ai := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if len(ai.Events) != 1 || ai.Events[0].Event.Type() != agui.EventRunError {
+		t.Fatalf("missing final RUN_ERROR event: %#v", ai.Events)
+	}
+	if ai.Events[0].Event.Get("message") != "OpenAI API error (403): This model is not available" {
+		t.Fatalf("missing RUN_ERROR message: %#v", ai.Events[0].Event)
+	}
+	if ai.Message == nil || len(ai.Message.Parts) != 0 {
+		t.Fatalf("terminal-only error final should have empty parts: %#v", ai.Message)
+	}
+	raw, err := json.Marshal(ai.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"parts":null`) || !strings.Contains(string(raw), `"parts":[]`) {
+		t.Fatalf("empty UI parts should encode as an array: %s", raw)
 	}
 }
 

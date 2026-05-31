@@ -7,25 +7,23 @@ import (
 )
 
 func (t Run) AI(kind string) BeeperAI {
-	terminal := t.runTerminal()
 	final := t.finalDelivery()
-	return BeeperAI{
-		Schema:     BeeperAISchema,
-		Protocol:   "ag-ui",
-		Kind:       kind,
-		ThreadID:   t.ThreadID,
-		RunID:      t.RunID,
-		MessageID:  t.MessageID,
-		Agent:      AgentMetadata{ID: t.AgentID, DisplayName: t.AgentName},
-		Model:      t.Model,
-		Approvals:  t.Approvals,
-		Interrupts: t.Interrupts,
-		Artifacts:  t.Artifacts,
-		Data:       t.Data,
-		Preview:    t.Preview,
-		Terminal:   &terminal,
-		Final:      &final,
+	payload := BeeperAI{
+		Schema:    BeeperAISchema,
+		Protocol:  "ag-ui",
+		Kind:      kind,
+		ThreadID:  t.ThreadID,
+		RunID:     t.RunID,
+		MessageID: t.MessageID,
+		Agent:     AgentMetadata{ID: t.AgentID, DisplayName: t.AgentName},
+		Model:     t.Model,
+		Data:      t.Data,
 	}
+	if kind == AIKindFinal {
+		payload.Final = &final
+		payload.Events = t.finalLifecycleEvents()
+	}
+	return payload
 }
 
 func (t Run) AIWithMessage(kind string, message UIMessage) BeeperAI {
@@ -47,13 +45,62 @@ func (t Run) finalDelivery() FinalDelivery {
 	return FinalDelivery{Delivery: "inline", PartsComplete: true}
 }
 
-func (t Run) runTerminal() RunTerminal {
-	return RunTerminal{
-		State:        t.Status.State,
-		FinishReason: t.Status.FinishReason,
-		Usage:        t.Usage,
-		Outcome:      terminalOutcome(t.Status, t.Interrupts),
-		Error:        terminalError(t.Status.Error),
+func (t Run) finalLifecycleEvents() []Envelope {
+	for i := len(t.Events) - 1; i >= 0; i-- {
+		eventType := t.Events[i].Type()
+		if eventType == agui.EventRunFinished || eventType == agui.EventRunError {
+			return []Envelope{{Seq: 1, Event: t.Events[i]}}
+		}
+	}
+	switch t.Status.State {
+	case "complete", "interrupted":
+		reason := t.Status.FinishReason
+		if reason == "" {
+			reason = agui.FinishReasonStop
+		}
+		fields := map[string]any{
+			"type":         agui.EventRunFinished,
+			"threadId":     t.ThreadID,
+			"runId":        t.RunID,
+			"finishReason": reason,
+			"usage":        t.Usage,
+			"outcome":      terminalOutcome(t.Status, t.Interrupts),
+		}
+		if t.Model != "" {
+			fields["model"] = t.Model
+		}
+		event := agui.NewEvent(fields)
+		return []Envelope{{Seq: 1, Event: event}}
+	case "error", "aborted":
+		err := terminalError(t.Status.Error)
+		message := ""
+		code := ""
+		if err != nil {
+			message = err.Message
+			code = err.Code
+		}
+		if message == "" {
+			message = ErrorFallbackText
+		}
+		if t.Status.State == "aborted" && code == "" {
+			code = agui.FinishReasonCancelled
+		}
+		fields := map[string]any{
+			"type":     agui.EventRunError,
+			"threadId": t.ThreadID,
+			"runId":    t.RunID,
+			"message":  message,
+		}
+		if t.Model != "" {
+			fields["model"] = t.Model
+		}
+		if code != "" {
+			fields["code"] = code
+		}
+		event := agui.NewEvent(fields)
+		return []Envelope{{Seq: 1, Event: event}}
+	default:
+		return nil
 	}
 }
 

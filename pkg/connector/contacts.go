@@ -733,7 +733,7 @@ func modelUserInfo(provider aiid.ProviderConfig, model ai.Model) *bridgev2.UserI
 	return &bridgev2.UserInfo{
 		Name:        &name,
 		IsBot:       &isBot,
-		Identifiers: []string{provider.ID + "/" + model.ID, model.ID},
+		Identifiers: aiid.ModelContactIdentifiers(provider.ID, model.ID),
 		Avatar:      modelAvatar(provider, model),
 	}
 }
@@ -763,10 +763,15 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 		if providerID != provider.ID {
 			return ai.Model{}, false
 		}
-		identifier = providerID + "/" + modelID
+		for _, model := range contactModels(provider) {
+			if model.ID == modelID {
+				return model, true
+			}
+		}
+		return ai.Model{}, false
 	}
 	for _, model := range contactModels(provider) {
-		if identifier == string(aiid.ModelContactID(provider.ID, model.ID)) || identifier == provider.ID+"/"+model.ID || identifier == model.ID {
+		if aiid.MatchesModelIdentifier(provider.ID, model.ID, identifier) {
 			return model, true
 		}
 	}
@@ -787,9 +792,6 @@ func (cl *Client) resolveModelIdentifier(ctx context.Context, identifier string)
 	providers := cl.providers()
 	if len(providers) == 0 {
 		return aiid.ProviderConfig{}, ai.Model{}, false
-	}
-	if providerID, modelID, ok := aiid.ParseModelContactID(aiidNetworkID(identifier)); ok {
-		identifier = providerID + "/" + modelID
 	}
 	for _, provider := range providers {
 		var providerOK bool

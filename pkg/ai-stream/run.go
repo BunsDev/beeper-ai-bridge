@@ -15,6 +15,7 @@ const (
 	BeeperAISchema      = "com.beeper.ai.v1"
 	BeeperAIApprovalKey = "com.beeper.ai.approval"
 	DefaultModel        = "dummybridge/ag-ui"
+	ErrorFallbackText   = "Something went wrong"
 	PreviewBudgetBytes  = 4096
 )
 
@@ -48,7 +49,6 @@ type Run struct {
 type Status struct {
 	State        string `json:"state"`
 	FinishReason string `json:"finishReason,omitempty"`
-	Terminal     any    `json:"terminal"`
 	Error        any    `json:"error"`
 }
 
@@ -58,36 +58,23 @@ type Preview struct {
 }
 
 type BeeperAI struct {
-	Schema     string            `json:"schema"`
-	Protocol   string            `json:"protocol"`
-	Kind       string            `json:"kind"`
-	ThreadID   string            `json:"threadId"`
-	RunID      string            `json:"runId"`
-	MessageID  string            `json:"messageId"`
-	Agent      AgentMetadata     `json:"agent,omitempty"`
-	Model      string            `json:"model,omitempty"`
-	Message    *UIMessage        `json:"message,omitempty"`
-	Events     []Envelope        `json:"events,omitempty"`
-	Approvals  []ApprovalSummary `json:"approvals,omitempty"`
-	Interrupts []agui.Interrupt  `json:"interrupts,omitempty"`
-	Artifacts  ArtifactSummary   `json:"artifacts,omitempty"`
-	Data       map[string]any    `json:"data,omitempty"`
-	Preview    Preview           `json:"preview,omitempty"`
-	Terminal   *RunTerminal      `json:"terminal,omitempty"`
-	Final      *FinalDelivery    `json:"final,omitempty"`
+	Schema    string         `json:"schema"`
+	Protocol  string         `json:"protocol"`
+	Kind      string         `json:"kind"`
+	ThreadID  string         `json:"threadId"`
+	RunID     string         `json:"runId"`
+	MessageID string         `json:"messageId"`
+	Agent     AgentMetadata  `json:"agent,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	Message   *UIMessage     `json:"message,omitempty"`
+	Events    []Envelope     `json:"events,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+	Final     *FinalDelivery `json:"final,omitempty"`
 }
 
 type AgentMetadata struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-}
-
-type RunTerminal struct {
-	State        string     `json:"state"`
-	FinishReason string     `json:"finishReason,omitempty"`
-	Usage        agui.Usage `json:"usage,omitempty"`
-	Outcome      any        `json:"outcome,omitempty"`
-	Error        *RunError  `json:"error,omitempty"`
 }
 
 type RunError struct {
@@ -512,6 +499,10 @@ func (w *Writer) Error(message string) {
 	w.finishReasoning()
 	w.finishText()
 	w.Run.Status = Status{State: "error", Error: map[string]any{"message": message}}
+	if w.Run.Text() == "" {
+		w.Run.Preview = PreviewFromText(ErrorFallbackPlaintext(message), PreviewBudgetBytes)
+		w.previewText = w.Run.Preview.Text
+	}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunError(w.Run.ThreadID, w.Run.RunID, message))
 }
@@ -521,7 +512,7 @@ func (w *Writer) Abort(message string) {
 	w.finishText()
 	w.Run.Status = Status{State: "aborted", Error: map[string]any{"message": message}}
 	w.addFinalSnapshot()
-	w.Add(w.builder.RunError(w.Run.ThreadID, w.Run.RunID, message))
+	w.Add(w.builder.RunErrorWithCode(w.Run.ThreadID, w.Run.RunID, message, agui.FinishReasonCancelled))
 }
 
 func (w *Writer) addFinalSnapshot() {

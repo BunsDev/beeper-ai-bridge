@@ -96,6 +96,9 @@ func finalVisibleText(run aistream.Run) string {
 	if text := run.Text(); text != "" {
 		return text
 	}
+	if run.Status.State == "error" {
+		return aistream.ErrorVisibleText(run.Status.Error)
+	}
 	if run.Preview.Text != "" {
 		return run.Preview.Text
 	}

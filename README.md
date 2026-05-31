@@ -151,13 +151,8 @@ Every AI message carries a `com.beeper.ai` object (`BeeperAIKey`) in its event c
   "threadId": "...", "runId": "...", "messageId": "msg-<runId>",
   "agent": { "id": "...", "displayName": "..." },
   "model": "provider/model",
-  "status": { "state": "streaming|complete|interrupted|error|aborted",
-              "finishReason": "...", "terminal": {...}, "error": {...} },
-  "preview": { "text": "...", "truncated": false },   // bounded ~4 KiB
   "message": { /* UIMessage — present on anchor & final */ },
-  "envelopes": [ /* sequenced AG-UI events — present on stream kind */ ],
-  "approvals": [...], "interrupts": [...],
-  "artifacts": { "sources": [...], "documents": [...], "files": [...] },
+  "events": [ /* sequenced AG-UI events — present on stream kind; final kind includes the terminal RUN_FINISHED/RUN_ERROR event */ ],
   "data": { /* arbitrary com.beeper.data values */ },
   "final": { "delivery": "inline|attachment", "textComplete": true,
              "partsComplete": true, "partsRef": {...} }
@@ -482,7 +477,7 @@ All deterministic IDs are built/parsed in [`pkg/aiid`](pkg/aiid):
 | login | `default:<base64url(mxid)>` |
 | portal (room) | `mxroom:<base64url(roomID)>` |
 | assistant ghost | `assistant:ai` |
-| model contact | `model:<base64url(provider)>:<base64url(model)>` |
+| model contact | `model:<encoded model>` for Beeper AI, `model:<encoded provider>:<encoded model>` for custom providers |
 | message | `user:<entryID>` / `assistant:<entryID>` |
 | media | sanitized parts, or self-describing `ai:<base64url(json)>` |
 

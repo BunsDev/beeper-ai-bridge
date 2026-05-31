@@ -382,13 +382,13 @@ func TestResolveModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
 		API:      ai.ApiOpenAIResponses,
 		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
 	}
-	model, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5.5")
+	model, ok := resolveModelForProvider(provider, string(aiid.ModelContactID(aiid.DefaultProvider, "openai/gpt-5.5")))
 	if !ok || model.ID != "openai/gpt-5.5" {
 		t.Fatalf("expected OpenAI catalog model to resolve, got ok=%v model=%#v", ok, model)
 	}
-	model, ok = resolveModelForProvider(provider, string(aiid.ModelContactID(aiid.DefaultProvider, "openai/gpt-5.5")))
+	model, ok = resolveModelForProvider(provider, "openai/gpt-5.5")
 	if !ok || model.ID != "openai/gpt-5.5" {
-		t.Fatalf("expected OpenAI model contact to resolve, got ok=%v model=%#v", ok, model)
+		t.Fatalf("expected OpenAI catalog model ID to resolve, got ok=%v model=%#v", ok, model)
 	}
 }
 
