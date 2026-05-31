@@ -495,6 +495,10 @@ func (w *Writer) Custom(name string, value any) {
 	w.Add(w.builder.Custom(name, value))
 }
 
+func (w *Writer) StateDelta(delta any) {
+	w.Add(w.builder.StateDelta(delta))
+}
+
 func (w *Writer) Finish(reason string) {
 	w.FinishWithUsage(reason, nil)
 }
