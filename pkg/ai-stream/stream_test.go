@@ -561,9 +561,13 @@ func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T)
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Custom("com.beeper.source", map[string]any{
-		"sourceId": "source-1",
-		"url":      "https://example.com/source",
-		"title":    "Example Source",
+		"sourceId":    "source-1",
+		"url":         "https://example.com/source",
+		"title":       "Example Source",
+		"description": "Source from example.com",
+		"siteName":    "example.com",
+		"imageUrl":    "https://icons.duckduckgo.com/ip3/example.com.ico",
+		"appearances": []map[string]any{{"kind": "provider", "cited": true}},
 	})
 	writer.Custom("com.beeper.document", map[string]any{
 		"id":        "doc-1",

@@ -110,6 +110,7 @@ type assistantStreamState struct {
 	metadata  *aiid.MessageMetadata
 	entryID   string
 	tools     []toolOutputEvent
+	sources   *sourceCollector
 	publish   streamPublishCursor
 }
 
@@ -1056,6 +1057,7 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 				runID:     runID,
 				run:       run,
 				metadata:  metadata,
+				sources:   newSourceCollector(),
 				publish:   streamPublishCursor{nextSeq: 1},
 			}
 			stream.publish.persist = func(ctx context.Context, run *aistream.Run) error {
@@ -1671,17 +1673,22 @@ type toolOutputEvent struct {
 	IsError bool
 }
 
-func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent) {
-	if run == nil || len(outputs) == 0 {
+func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent, messages ...ai.Message) {
+	if run == nil {
 		return
 	}
 	writer := aistream.NewWriter(run, time.Now)
+	sources := newSourceCollector()
 	for _, output := range outputs {
 		structuredOutput := toolOutput(output.Result, output.IsError)
 		writer.ToolEnd(output.ID, output.Name, output.Input, structuredOutput)
-		for _, source := range webSearchSourceParts(output.Name, structuredOutput, output.IsError) {
-			writer.Custom("com.beeper.source", source)
-		}
+		sources.addToolOutput(output, structuredOutput)
+	}
+	for _, message := range messages {
+		sources.addProviderSources(message)
+	}
+	for _, source := range sources.sources() {
+		writer.Custom("com.beeper.source", source)
 	}
 }
 
@@ -2324,7 +2331,10 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, cl *Client, publish
 	writer := aistream.NewWriter(stream.run, time.Now)
 	structuredOutput := toolOutput(output.Result, output.IsError)
 	writer.ToolEnd(output.ID, output.Name, output.Input, structuredOutput)
-	for _, source := range webSearchSourceParts(output.Name, structuredOutput, output.IsError) {
+	if stream.sources == nil {
+		stream.sources = newSourceCollector()
+	}
+	for _, source := range stream.sources.addToolOutput(output, structuredOutput) {
 		writer.Custom("com.beeper.source", source)
 	}
 	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
@@ -2346,7 +2356,7 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 	r.mu.Unlock()
 
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
-	appendToolOutputs(stream.run, stream.tools)
+	appendToolOutputs(stream.run, stream.tools, message)
 	cl.queueAssistantFinal(r.portalKey, stream.messageID, providerID, modelID, *stream.run, message, stream.metadata)
 	cl.deleteActiveStream(ctx, stream.runID)
 	cl.queueAssistantMediaMessages(r.portalKey, stream.messageID, providerID, modelID, stream.runID, message)

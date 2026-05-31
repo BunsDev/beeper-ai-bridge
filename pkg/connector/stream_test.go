@@ -443,15 +443,15 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 	if source == nil {
 		t.Fatalf("expected source-url part, got %#v", message.Parts)
 	}
-	if source["url"] != "https://example.com/one" || source["title"] != "One" || source["sourceId"] != "doc_1" {
+	if source["url"] != "https://example.com/one" || source["title"] != "One" || source["sourceId"] != "https://example.com/one" {
 		t.Fatalf("unexpected source part %#v", source)
 	}
-	meta, ok := source["providerMetadata"].(map[string]any)
-	if !ok || meta["description"] != "desc" || meta["published"] != "2026-01-01" || meta["siteName"] != "Example" {
-		t.Fatalf("missing source metadata: %#v", source["providerMetadata"])
+	if source["description"] != "desc" || source["publishedAt"] != "2026-01-01" || source["siteName"] != "Example" || source["imageUrl"] == "" {
+		t.Fatalf("missing canonical source metadata: %#v", source)
 	}
-	if meta["summary"] != "sum" || meta["highlights"] == nil || meta["highlightScores"] == nil || meta["subpages"] == nil || meta["extras"] == nil {
-		t.Fatalf("missing rich source metadata: %#v", source["providerMetadata"])
+	appearances, ok := source["appearances"].([]map[string]any)
+	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "web_search" || appearances[0]["toolCallId"] != "call-search" || appearances[0]["rank"] != 1 {
+		t.Fatalf("missing source appearances: %#v", source["appearances"])
 	}
 }
 

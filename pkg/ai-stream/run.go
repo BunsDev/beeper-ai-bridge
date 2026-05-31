@@ -765,7 +765,7 @@ func (w *Writer) applySummary(evt agui.Event) {
 		value, _ := evt.Get("value").(map[string]any)
 		switch name {
 		case "com.beeper.source":
-			w.Run.Artifacts.Sources = append(w.Run.Artifacts.Sources, value)
+			w.Run.Artifacts.Sources = upsertArtifact(w.Run.Artifacts.Sources, value)
 		case "com.beeper.document":
 			w.Run.Artifacts.Documents = append(w.Run.Artifacts.Documents, value)
 		case "com.beeper.file":
@@ -776,6 +776,29 @@ func (w *Writer) applySummary(evt agui.Event) {
 			}
 		}
 	}
+}
+
+func upsertArtifact(items []map[string]any, value map[string]any) []map[string]any {
+	id := firstArtifactString(value["sourceId"], value["id"], value["url"])
+	if id == "" {
+		return append(items, value)
+	}
+	for index, item := range items {
+		if firstArtifactString(item["sourceId"], item["id"], item["url"]) == id {
+			items[index] = value
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func firstArtifactString(values ...any) string {
+	for _, value := range values {
+		if text, ok := value.(string); ok && text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (w *Writer) appendPreviewText(delta string) {

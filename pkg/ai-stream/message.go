@@ -305,6 +305,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	thinkingParts := map[string]*projectedPart{}
 	toolParts := map[string]MessagePart{}
 	stepParts := map[string]MessagePart{}
+	sourceParts := map[string]MessagePart{}
 	currentTextMessageID := ""
 	openTextMessageID := ""
 	openTextPartID := ""
@@ -592,7 +593,18 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 				if asString(part["sourceId"]) == "" {
 					part["sourceId"] = firstString(part["url"], part["title"])
 				}
-				message.Parts = append(message.Parts, part)
+				sourceID := firstString(part["sourceId"], part["url"])
+				if existing := sourceParts[sourceID]; sourceID != "" && existing != nil {
+					for key := range existing {
+						delete(existing, key)
+					}
+					for key, item := range part {
+						existing[key] = item
+					}
+				} else {
+					sourceParts[sourceID] = part
+					message.Parts = append(message.Parts, part)
+				}
 			case "com.beeper.document":
 				part := cloneValueMap(value)
 				part["type"] = "source-document"
