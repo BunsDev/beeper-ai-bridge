@@ -17,6 +17,7 @@ import (
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
 	bridgedb "maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/mediaproxy"
@@ -129,6 +130,7 @@ func TestAssistantImageConvertedMessageUploadsMatrixImage(t *testing.T) {
 		ai.ContentBlock{Type: "image", MimeType: "image/png", Data: "data:image/png;base64," + oneByOnePNG, Name: "result.png"},
 		aiid.PartID("image-0"),
 		&aiid.MessageMetadata{Role: "assistant"},
+		assistantAnchorReplyTarget(networkid.MessageID("assistant:anchor")),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -146,5 +148,8 @@ func TestAssistantImageConvertedMessageUploadsMatrixImage(t *testing.T) {
 	}
 	if part.DBMetadata.(*aiid.MessageMetadata).Role != "assistant" {
 		t.Fatalf("expected assistant metadata, got %#v", part.DBMetadata)
+	}
+	if converted.ReplyTo == nil || converted.ReplyTo.MessageID != "assistant:anchor" {
+		t.Fatalf("expected image to reply to assistant anchor, got %#v", converted.ReplyTo)
 	}
 }

@@ -10,7 +10,7 @@ import (
 
 func TestProviderBuiltInToolsPayloadRewritesOpenAIImageModelToHostedTool(t *testing.T) {
 	provider := aiid.ProviderConfig{Models: []ai.Model{
-		{ID: "openai/gpt-5.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
+		{ID: "openai/gpt-5.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, BuiltInTools: []string{"image_generation"}},
 		{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
 	}}
 	model := ai.Model{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
@@ -31,7 +31,7 @@ func TestProviderBuiltInToolsPayloadRewritesOpenAIImageModelToHostedTool(t *test
 }
 
 func TestProviderBuiltInToolsPayloadAddsImageToolForOpenAIPrompt(t *testing.T) {
-	model := ai.Model{ID: "openai/gpt-5.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
+	model := ai.Model{ID: "openai/gpt-5.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, BuiltInTools: []string{"image_generation"}}
 	payload := map[string]any{"model": "openai/gpt-5.5", "input": "generate a photo of Amsterdam"}
 
 	next, changed := providerBuiltInToolsPayload(aiid.ProviderConfig{}, model, model, msgconv.MatrixPrompt{Text: "generate a photo of Amsterdam"}, payload)
@@ -48,8 +48,32 @@ func TestProviderBuiltInToolsPayloadAddsImageToolForOpenAIPrompt(t *testing.T) {
 	assertToolType(t, body["tools"], "image_generation")
 }
 
+func TestProviderBuiltInToolsPayloadSkipsUnsupportedOpenAIModel(t *testing.T) {
+	model := ai.Model{ID: "openai/gpt-5.3-chat", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
+	payload := map[string]any{"model": "openai/gpt-5.3-chat", "input": "generate a photo of Amsterdam"}
+
+	_, changed := providerBuiltInToolsPayload(aiid.ProviderConfig{}, model, model, msgconv.MatrixPrompt{Text: "generate a photo of Amsterdam"}, payload)
+	if changed {
+		t.Fatal("did not expect image tool for unsupported OpenAI model")
+	}
+}
+
+func TestProviderBuiltInToolsPayloadSkipsLegacyImageModelWithoutHostSupport(t *testing.T) {
+	provider := aiid.ProviderConfig{Models: []ai.Model{
+		{ID: "openai/gpt-5.3-chat", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
+		{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
+	}}
+	model := ai.Model{ID: "openai/gpt-image-2", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI}
+	payload := map[string]any{"model": "openai/gpt-image-2", "input": "create an image of Amsterdam"}
+
+	_, changed := providerBuiltInToolsPayload(provider, model, model, msgconv.MatrixPrompt{Text: "create an image of Amsterdam"}, payload)
+	if changed {
+		t.Fatal("did not expect image tool without supported host model")
+	}
+}
+
 func TestProviderBuiltInToolsPayloadAddsOpenRouterImageTool(t *testing.T) {
-	model := ai.Model{ID: "anthropic/claude-sonnet-4.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter}
+	model := ai.Model{ID: "anthropic/claude-sonnet-4.5", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter, BuiltInTools: []string{"openrouter:image_generation"}}
 	payload := map[string]any{"model": "anthropic/claude-sonnet-4.5", "input": "create an image of Amsterdam"}
 
 	next, changed := providerBuiltInToolsPayload(aiid.ProviderConfig{}, model, model, msgconv.MatrixPrompt{Text: "create an image of Amsterdam"}, payload)

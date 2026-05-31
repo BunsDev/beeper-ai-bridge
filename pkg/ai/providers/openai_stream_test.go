@@ -251,6 +251,35 @@ func TestResponsesStreamStateFinalizesImageGenerationCall(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamStateFinalizesMultipleImageGenerationCalls(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	for _, item := range []map[string]any{
+		{"type": "image_generation_call", "id": "ig_1", "result": "first"},
+		{"type": "image_generation_call", "id": "ig_2", "result": "second"},
+	} {
+		state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+			"type": "response.output_item.added",
+			"item": map[string]any{"type": item["type"], "id": item["id"]},
+		})
+		state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+			"type": "response.output_item.done",
+			"item": item,
+		})
+	}
+
+	if len(state.blocks) != 2 {
+		t.Fatalf("expected two image blocks, got %#v", state.blocks)
+	}
+	if state.blocks[0].ID != "ig_1" || state.blocks[0].Data != "first" || state.blocks[1].ID != "ig_2" || state.blocks[1].Data != "second" {
+		t.Fatalf("unexpected image blocks: %#v", state.blocks)
+	}
+}
+
 func TestResponsesStreamStateSeedsFunctionCallArgumentsFromAddedItem(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()

@@ -158,7 +158,7 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
 		t.Fatalf("unexpected Vertex route %#v", got)
 	}
-	if got := byID["google/gemini-3.1-pro-preview"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderGoogle || got.BaseURL != server.URL+"/proxy/google/v1" {
+	if got := byID["google/gemini-3.1-pro-preview"]; got.API != ai.ApiGoogleGenerativeAI || got.Provider != ai.ProviderGoogle || got.BaseURL != server.URL+"/proxy/google/v1" {
 		t.Fatalf("unexpected Google route %#v", got)
 	}
 	if got := byID["x-ai/grok-4.20"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderXAI || got.BaseURL != server.URL+"/proxy/xai/v1" {

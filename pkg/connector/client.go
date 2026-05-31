@@ -1074,10 +1074,11 @@ func (cl *Client) logMatrixMessageError(msg *bridgev2.MatrixMessage, err error, 
 	event.Msg(message)
 }
 
-func (cl *Client) queueAssistantMediaMessages(portalKey networkid.PortalKey, providerID string, modelID string, runID string, message ai.Message) {
+func (cl *Client) queueAssistantMediaMessages(portalKey networkid.PortalKey, anchorMessageID networkid.MessageID, providerID string, modelID string, runID string, message ai.Message) {
 	if cl == nil || cl.UserLogin == nil {
 		return
 	}
+	replyTo := assistantAnchorReplyTarget(anchorMessageID)
 	mediaIndex := 0
 	for _, block := range aiContentBlocks(message.Content) {
 		if block.Type != "image" || block.Data == "" {
@@ -1109,18 +1110,26 @@ func (cl *Client) queueAssistantMediaMessages(portalKey networkid.PortalKey, pro
 			ID:   messageID,
 			Data: block,
 			ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data ai.ContentBlock) (*bridgev2.ConvertedMessage, error) {
-				return assistantImageConvertedMessage(ctx, portal, intent, data, partID, metadata)
+				return assistantImageConvertedMessage(ctx, portal, intent, data, partID, metadata, replyTo)
 			},
 		})
 		mediaIndex++
 	}
 }
 
+func assistantAnchorReplyTarget(messageID networkid.MessageID) *networkid.MessageOptionalPartID {
+	if messageID == "" {
+		return nil
+	}
+	partID := aiid.PartID("text")
+	return &networkid.MessageOptionalPartID{MessageID: messageID, PartID: &partID}
+}
+
 type matrixMediaUploader interface {
 	UploadMedia(ctx context.Context, roomID id.RoomID, data []byte, fileName, mimeType string) (url id.ContentURIString, file *event.EncryptedFileInfo, err error)
 }
 
-func assistantImageConvertedMessage(ctx context.Context, portal *bridgev2.Portal, intent matrixMediaUploader, block ai.ContentBlock, partID networkid.PartID, metadata *aiid.MessageMetadata) (*bridgev2.ConvertedMessage, error) {
+func assistantImageConvertedMessage(ctx context.Context, portal *bridgev2.Portal, intent matrixMediaUploader, block ai.ContentBlock, partID networkid.PartID, metadata *aiid.MessageMetadata, replyTo *networkid.MessageOptionalPartID) (*bridgev2.ConvertedMessage, error) {
 	if portal == nil || portal.Portal == nil {
 		return nil, fmt.Errorf("missing portal for assistant image")
 	}
@@ -1159,7 +1168,7 @@ func assistantImageConvertedMessage(ctx context.Context, portal *bridgev2.Portal
 	} else {
 		content.URL = uri
 	}
-	return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
+	return &bridgev2.ConvertedMessage{ReplyTo: replyTo, Parts: []*bridgev2.ConvertedMessagePart{{
 		ID:         partID,
 		Type:       event.EventMessage,
 		Content:    content,
@@ -1766,7 +1775,7 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
 	appendToolOutputs(stream.run, stream.tools)
 	cl.queueAssistantFinal(r.portalKey, stream.messageID, stream.eventID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata)
-	cl.queueAssistantMediaMessages(r.portalKey, providerID, modelID, stream.runID, message)
+	cl.queueAssistantMediaMessages(r.portalKey, stream.messageID, providerID, modelID, stream.runID, message)
 }
 
 func (r *activeAIRun) failOpenAssistant(ctx context.Context, cl *Client, providerID string, modelID string, err error) {
