@@ -1,8 +1,8 @@
 package aistream
 
-// Matrix encrypted event content expands the cleartext message, so keep the
-// cleartext final projection low enough to land near a 60 KiB encrypted event.
-const FinalMessageBudgetBytes = 45 * 1024
+// Matrix rejects event content over 64 KiB. Final projection sizes are measured
+// as the estimated encrypted edit event content, with headroom.
+const FinalMessageBudgetBytes = 60 * 1024
 
 const FinalPartsPayloadSchema = "com.beeper.ai.final_parts.v1"
 const FinalPartsRefSchema = "com.beeper.ai.final_parts_ref.v1"

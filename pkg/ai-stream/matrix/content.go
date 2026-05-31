@@ -14,6 +14,9 @@ import (
 const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
 
 const seeMoreSupportedClients = "[See more on supported clients]"
+const finalEncryptedEventOverheadBytes = 2048
+
+const finalEditSizeProbeEventID = id.EventID("$final-size-probe-final-size-probe-final-size-probe:beeper.local")
 
 type FinalProjection struct {
 	Content         *event.MessageEventContent
@@ -185,7 +188,14 @@ func finalTextContent(run aistream.Run, text string, includeBody bool) *event.Me
 }
 
 func finalPayloadSize(content *event.MessageEventContent, extra map[string]any) int {
-	return aistream.JSONSize(map[string]any{"content": content, "extra": extra})
+	clear := *content
+	clear.SetEdit(finalEditSizeProbeEventID)
+	raw := map[string]any{"com.beeper.dont_render_edited": true}
+	if extra != nil {
+		raw["m.new_content"] = extra
+	}
+	clearSize := aistream.JSONSize(&event.Content{Parsed: &clear, Raw: raw})
+	return finalEncryptedEventOverheadBytes + ((clearSize+2)/3)*4
 }
 
 func previewContent(run aistream.Run) *event.MessageEventContent {
