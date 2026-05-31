@@ -18,7 +18,10 @@ func TestModelAvatarUsesEmbeddedPNGAssets(t *testing.T) {
 	}{
 		{name: "anthropic", model: ai.Model{ID: "claude-sonnet-4.5", Provider: ai.ProviderAnthropic}, wantKey: "anthropic"},
 		{name: "google vertex", model: ai.Model{ID: "gemini-3-pro", Provider: ai.ProviderGoogleVertex}, wantKey: "google"},
-		{name: "openrouter", model: ai.Model{ID: "openai/gpt-5", Provider: ai.ProviderOpenRouter}, wantKey: "openrouter"},
+		{name: "openrouter own model", model: ai.Model{ID: "openrouter/owl-alpha", Provider: ai.ProviderOpenRouter}, wantKey: "openrouter"},
+		{name: "openrouter routed anthropic model", model: ai.Model{ID: "anthropic/claude-sonnet-4.5", Provider: ai.ProviderOpenRouter}, wantKey: "anthropic"},
+		{name: "openrouter routed bare claude model", model: ai.Model{ID: "claude-sonnet-4-5", Provider: ai.ProviderOpenRouter}, wantKey: "anthropic"},
+		{name: "openrouter routed openai model", model: ai.Model{ID: "openai/gpt-5", Provider: ai.ProviderOpenRouter}, wantKey: "openai"},
 		{name: "openai", model: ai.Model{ID: "gpt-5", Provider: ai.ProviderOpenAI}, wantKey: "openai"},
 		{name: "deepseek", model: ai.Model{ID: "deepseek-chat", Provider: ai.ProviderDeepSeek}, wantKey: "deepseek"},
 		{name: "xai", model: ai.Model{ID: "grok-4", Provider: ai.ProviderXAI}, wantKey: "xai"},

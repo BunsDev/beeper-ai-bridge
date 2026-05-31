@@ -4,7 +4,11 @@
 
 `ai-bridge` is a [mautrix `bridgev2`](https://docs.mau.fi/bridges/go/) network connector that makes "talking to an AI" indistinguishable from talking to a person on Beeper. Each AI model is a contact. Each conversation is a room. Each response streams in live, carries its reasoning, tool calls, citations, and generated images, and is fully resumable across restarts.
 
-If you are **building a service** (a new provider, model, agent behavior, or tool), this document tells you where the seams are and how to extend them. If you are **building a client** (anything that renders or drives an AI chat — the Beeper app, a web UI, a bot), it tells you the exact wire protocol you consume and the events you must handle.
+There are three ways to engage with it, and this README covers all three:
+
+- **Run it** — deploy the bridge against a homeserver and chat with models inside Beeper. Start at [Quickstart](#quickstart) and [Configuration](#configuration-reference).
+- **Build a client** — render or drive AI chats from a Matrix/Beeper client (the Beeper app, a web UI, a bot). [Part 1](#part-1--building-clients) documents the exact wire protocol you consume and the events you must handle.
+- **Extend it** — add a provider, model, tool, or agent behavior by hacking on this codebase. [Part 2](#part-2--extending-the-bridge) maps the seams and the conventions to follow.
 
 ---
 
@@ -24,7 +28,7 @@ If you are **building a service** (a new provider, model, agent behavior, or too
   - [Room capabilities you must respect](#room-capabilities-you-must-respect)
   - [Slash & bridge commands](#slash--bridge-commands)
   - [Generated media](#generated-media)
-- [Part 2 — Building services](#part-2--building-services)
+- [Part 2 — Extending the bridge](#part-2--extending-the-bridge)
   - [Providers vs APIs vs models](#providers-vs-apis-vs-models)
   - [The streaming interface](#the-streaming-interface)
   - [Adding a provider](#adding-a-provider)
@@ -260,9 +264,9 @@ AI-generated images and inline media are served through the bridge's **direct-me
 
 ---
 
-# Part 2 — Building services
+# Part 2 — Extending the bridge
 
-A "service" is anything that extends what the AI *can do*: a new provider or wire protocol, a model, an agent behavior, or a tool.
+Everything here is done by editing this Go codebase and recompiling — there is no plugin system or external service interface. "Extending" means widening what the AI *can do*: wiring in a new provider or wire protocol, adding a model, changing agent behavior, or writing a tool.
 
 ## Providers vs APIs vs models
 

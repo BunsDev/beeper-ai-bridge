@@ -39,28 +39,6 @@ func modelAvatar(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Avatar 
 }
 
 func modelAvatarProviderKey(provider aiid.ProviderConfig, model ai.Model) string {
-	switch model.Provider {
-	case ai.ProviderAnthropic:
-		return "anthropic"
-	case ai.ProviderGoogle, ai.ProviderGoogleVertex:
-		return "google"
-	case ai.ProviderOpenRouter:
-		return "openrouter"
-	case ai.ProviderOpenAI, ai.ProviderOpenAICodex:
-		return "openai"
-	case ai.ProviderDeepSeek:
-		return "deepseek"
-	case ai.ProviderXAI:
-		return "xai"
-	case ai.ProviderZai:
-		return "zai"
-	case ai.ProviderMinimax, ai.ProviderMinimaxCN:
-		return "minimax"
-	case ai.ProviderMoonshotAI, ai.ProviderMoonshotAICN, ai.ProviderKimiCoding:
-		return "moonshotai"
-	case ai.ProviderXiaomi, ai.ProviderXiaomiTokenPlanCN, ai.ProviderXiaomiTokenPlanAMS, ai.ProviderXiaomiTokenPlanSGP:
-		return "xiaomi"
-	}
 	modelID := strings.ToLower(model.ID)
 	switch {
 	case strings.HasPrefix(modelID, "claude-"), strings.HasPrefix(modelID, "anthropic/"):
@@ -85,6 +63,28 @@ func modelAvatarProviderKey(provider aiid.ProviderConfig, model ai.Model) string
 		return "xiaomi"
 	case strings.Contains(modelID, "llama"):
 		return "llama"
+	}
+	switch model.Provider {
+	case ai.ProviderAnthropic:
+		return "anthropic"
+	case ai.ProviderGoogle, ai.ProviderGoogleVertex:
+		return "google"
+	case ai.ProviderOpenRouter:
+		return "openrouter"
+	case ai.ProviderOpenAI, ai.ProviderOpenAICodex:
+		return "openai"
+	case ai.ProviderDeepSeek:
+		return "deepseek"
+	case ai.ProviderXAI:
+		return "xai"
+	case ai.ProviderZai:
+		return "zai"
+	case ai.ProviderMinimax, ai.ProviderMinimaxCN:
+		return "minimax"
+	case ai.ProviderMoonshotAI, ai.ProviderMoonshotAICN, ai.ProviderKimiCoding:
+		return "moonshotai"
+	case ai.ProviderXiaomi, ai.ProviderXiaomiTokenPlanCN, ai.ProviderXiaomiTokenPlanAMS, ai.ProviderXiaomiTokenPlanSGP:
+		return "xiaomi"
 	}
 	providerID := strings.ToLower(provider.ID)
 	switch {
