@@ -16,45 +16,54 @@ func GetSessionToolWithOptions(info SessionInfo, options SessionOptions) agent.A
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "get_session",
-			Description: "Get fresh metadata for this Beeper AI chat, including current timestamp, timezone, room, session, model, reasoning, search, attachments, and approved profile fields.",
+			Description: "Get fresh metadata for this Beeper AI chat, including current UTC timestamp, chat ID/title, selected model, selected reasoning, disabled tools, approved profile fields, and last known UTC timestamp.",
 			Parameters:  objectSchema(nil, nil),
 		},
 		Execute: func(ctx context.Context, toolCallID string, params any, onUpdate agent.AgentToolUpdateCallback[any]) (agent.AgentToolResult[any], error) {
-			now := time.Now()
+			now := time.Now().UTC()
 			current := info
-			current.Timestamp = now.Format(time.RFC3339)
-			current.Timezone = timezoneName(now)
-			if current.ThreadID == "" {
-				current.ThreadID = current.SessionID
+			current.CurrentTimestamp = now.Format(time.RFC3339)
+			if current.LastKnownTimestamp == "" {
+				current.LastKnownTimestamp = current.CurrentTimestamp
 			}
 			if options.ResolveProfile != nil {
 				profile, err := options.ResolveProfile(ctx, toolCallID)
 				if err != nil {
 					return agent.AgentToolResult[any]{}, err
 				}
-				current.BeeperProfile = profile
+				applySessionProfile(&current, profile)
 			}
 			return jsonResult(current)
 		},
 	}
 }
 
-func timezoneName(t time.Time) string {
-	name, offset := t.Zone()
-	if loc := t.Location().String(); loc != "" && loc != "Local" {
-		return loc
+func applySessionProfile(info *SessionInfo, profile *SessionProfile) {
+	if info == nil || profile == nil {
+		return
 	}
-	sign := "+"
-	if offset < 0 {
-		sign = "-"
-		offset = -offset
-	}
-	return name + " UTC" + sign + twoDigits(offset/3600) + ":" + twoDigits((offset%3600)/60)
+	info.BeeperUsername = profile.Username
+	info.BeeperAccountEmail = profile.Email
+	info.BeeperDisplayName = sessionProfileDisplayName(profile)
+	info.GravatarProfile = profile.GravatarProfile
 }
 
-func twoDigits(value int) string {
-	if value < 10 {
-		return "0" + string(rune('0'+value))
+func sessionProfileDisplayName(profile *SessionProfile) string {
+	if profile == nil {
+		return ""
 	}
-	return string(rune('0'+value/10)) + string(rune('0'+value%10))
+	if profile.FullName != "" {
+		return profile.FullName
+	}
+	switch matrixProfile := profile.MatrixProfile.(type) {
+	case map[string]any:
+		if displayName, _ := matrixProfile["displayname"].(string); displayName != "" {
+			return displayName
+		}
+	case map[string]string:
+		if displayName := matrixProfile["displayname"]; displayName != "" {
+			return displayName
+		}
+	}
+	return ""
 }

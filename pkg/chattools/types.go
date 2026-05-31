@@ -7,21 +7,18 @@ import (
 )
 
 type SessionInfo struct {
-	Timestamp       string          `json:"timestamp"`
-	Timezone        string          `json:"timezone"`
-	RoomTitle       string          `json:"room_title,omitempty"`
-	RoomID          string          `json:"room_id,omitempty"`
-	SessionID       string          `json:"session_id,omitempty"`
-	ThreadID        string          `json:"thread_id,omitempty"`
-	LoginID         string          `json:"login_id,omitempty"`
-	ProviderID      string          `json:"provider_id,omitempty"`
-	ModelID         string          `json:"model_id,omitempty"`
-	ReasoningLevel  string          `json:"reasoning_level,omitempty"`
-	DisabledTools   []string        `json:"disabled_tools,omitempty"`
-	AttachmentCount int             `json:"attachment_count"`
-	Attachments     []Attachment    `json:"attachments,omitempty"`
-	BeeperProfile   *SessionProfile `json:"beeper_profile,omitempty"`
-	Extra           map[string]any  `json:"extra,omitempty"`
+	CurrentTimestamp   string   `json:"current_timestamp"`
+	ChatID             string   `json:"chat_id,omitempty"`
+	ChatTitle          string   `json:"chat_title,omitempty"`
+	ChatFirstMessageAt string   `json:"chat_first_message_at,omitempty"`
+	SelectedModel      string   `json:"selected_model,omitempty"`
+	SelectedReasoning  string   `json:"selected_reasoning,omitempty"`
+	DisabledTools      []string `json:"disabled_tools,omitempty"`
+	BeeperUsername     string   `json:"beeper_username,omitempty"`
+	BeeperDisplayName  string   `json:"beeper_display_name,omitempty"`
+	BeeperAccountEmail string   `json:"beeper_account_email,omitempty"`
+	GravatarProfile    any      `json:"gravatar_profile,omitempty"`
+	LastKnownTimestamp string   `json:"last_known_timestamp"`
 }
 
 type SessionProfile struct {
@@ -30,11 +27,6 @@ type SessionProfile struct {
 	FullName        string `json:"full_name,omitempty"`
 	MatrixProfile   any    `json:"matrix_profile,omitempty"`
 	GravatarProfile any    `json:"gravatar_profile,omitempty"`
-}
-
-type Attachment struct {
-	Type     string `json:"type,omitempty"`
-	MimeType string `json:"mime_type,omitempty"`
 }
 
 type SessionOptions struct {

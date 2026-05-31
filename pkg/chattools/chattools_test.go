@@ -28,14 +28,13 @@ func TestGetSessionSchemaUsesArrayRequired(t *testing.T) {
 
 func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 	tool := GetSessionTool(SessionInfo{
-		RoomTitle:       "Room",
-		SessionID:       "session-1",
-		LoginID:         "login-1",
-		ProviderID:      "beeper",
-		ModelID:         "gpt-5",
-		ReasoningLevel:  "low",
-		DisabledTools:   []string{"web_search"},
-		AttachmentCount: 1,
+		ChatID:             "session-1",
+		ChatTitle:          "Markdown Chaos Test",
+		ChatFirstMessageAt: "2026-05-31T22:00:00Z",
+		SelectedModel:      "gpt-5",
+		SelectedReasoning:  "low",
+		DisabledTools:      []string{"web_search"},
+		LastKnownTimestamp: "2026-05-31T22:34:00Z",
 	})
 	result, err := tool.Execute(context.Background(), "call", map[string]any{}, nil)
 	if err != nil {
@@ -45,18 +44,19 @@ func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].Text), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.Timestamp == "" || info.Timezone == "" || info.ThreadID != "session-1" {
+	if info.CurrentTimestamp == "" || info.LastKnownTimestamp != "2026-05-31T22:34:00Z" || info.ChatID != "session-1" || info.ChatTitle != "Markdown Chaos Test" || info.SelectedModel != "gpt-5" || len(info.DisabledTools) != 1 || info.DisabledTools[0] != "web_search" {
 		t.Fatalf("expected fresh session metadata, got %#v", info)
 	}
+	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "chat_title", "chat_first_message_at", "selected_model", "selected_reasoning", "disabled_tools", "last_known_timestamp")
 }
 
 func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
-	tool := GetSessionToolWithOptions(SessionInfo{SessionID: "session-1"}, SessionOptions{
+	tool := GetSessionToolWithOptions(SessionInfo{ChatID: "session-1"}, SessionOptions{
 		ResolveProfile: func(ctx context.Context, toolCallID string) (*SessionProfile, error) {
 			if toolCallID != "call" {
 				t.Fatalf("tool call ID = %q", toolCallID)
 			}
-			return &SessionProfile{Email: "user@example.com", Username: "user"}, nil
+			return &SessionProfile{Email: "user@example.com", Username: "user", MatrixProfile: map[string]any{"displayname": "User Name"}, GravatarProfile: map[string]any{"hash": "abc"}}, nil
 		},
 	})
 	result, err := tool.Execute(context.Background(), "call", map[string]any{}, nil)
@@ -67,11 +67,12 @@ func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].Text), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.BeeperProfile == nil || info.BeeperProfile.Email != "user@example.com" || info.BeeperProfile.Username != "user" {
-		t.Fatalf("missing approved profile: %#v", info.BeeperProfile)
+	if info.BeeperAccountEmail != "user@example.com" || info.BeeperUsername != "user" || info.BeeperDisplayName != "User Name" || info.GravatarProfile == nil {
+		t.Fatalf("missing approved profile: %#v", info)
 	}
+	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "beeper_username", "beeper_display_name", "beeper_account_email", "gravatar_profile", "last_known_timestamp")
 
-	baseline := GetSessionToolWithOptions(SessionInfo{SessionID: "session-1"}, SessionOptions{
+	baseline := GetSessionToolWithOptions(SessionInfo{ChatID: "session-1"}, SessionOptions{
 		ResolveProfile: func(ctx context.Context, toolCallID string) (*SessionProfile, error) {
 			return nil, nil
 		},
@@ -80,8 +81,28 @@ func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(result.Content[0].Text, "beeper_profile") {
+	if strings.Contains(result.Content[0].Text, "beeper_profile") || strings.Contains(result.Content[0].Text, "beeper_account_email") {
 		t.Fatalf("denied baseline session should not include profile fields: %s", result.Content[0].Text)
+	}
+}
+
+func assertSessionKeys(t *testing.T, raw string, keys ...string) {
+	t.Helper()
+	var got map[string]any
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, key := range keys {
+		want[key] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected session metadata keys: got %#v want %#v", got, want)
+	}
+	for key := range got {
+		if !want[key] {
+			t.Fatalf("unexpected session metadata key %q in %s", key, raw)
+		}
 	}
 }
 

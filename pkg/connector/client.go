@@ -368,12 +368,16 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 	streamFn := cl.assistantStreamPublisher(streamPublisher, msg.Portal, portalMeta, provider, model, func() {
 		cl.queueAssistantTyping(msg.Portal.PortalKey, 0)
 	})
+	chatFirstMessageAt := ""
+	if sessionMeta, err := agentSession.GetMetadata(ctx); err == nil {
+		chatFirstMessageAt = sessionMeta.CreatedAt
+	}
 	options := harness.AgentHarnessOptions{
 		Session:             agentSession,
 		Model:               model,
 		ThinkingLevel:       agent.ThinkingLevel(cl.reasoningLevelForModel(model, roomConfig)),
 		SystemPrompt:        cl.systemPrompt(roomConfig),
-		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, prompt, chatToolsApprovalContext{publisher: streamPublisher, active: active}),
+		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, chatFirstMessageAt, chatToolsApprovalContext{publisher: streamPublisher, active: active}),
 		StreamFn:            streamFn,
 		GetAPIKeyAndHeaders: cl.authForProvider(provider),
 		CompactionSettings:  cl.Main.Config.Compaction.Settings(),

@@ -450,7 +450,7 @@ The AI-specific config block (`pkg/connector/config.go`, defaults shown):
 
 ```yaml
 default_system_prompt: |          # base prompt; room prompts are appended
-  You are Beeper AI, a helpful assistant inside a Beeper chat. …
+  You are a helpful assistant running inside the Beeper apps. …
 default_reasoning_level: "off"    # off | minimal | low | medium | high | xhigh
 fetch:
   timeout_ms: 10000

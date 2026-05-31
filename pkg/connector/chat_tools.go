@@ -13,7 +13,6 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/chattools"
-	"github.com/beeper/ai-bridge/pkg/msgconv"
 )
 
 type chatToolsApprovalContext struct {
@@ -21,32 +20,29 @@ type chatToolsApprovalContext struct {
 	active    *activeAIRun
 }
 
-func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, prompt msgconv.MatrixPrompt, approvalContext ...chatToolsApprovalContext) []agent.AgentTool[any] {
+func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetadata, roomConfig RoomConfig, provider aiid.ProviderConfig, model ai.Model, chatFirstMessageAt string, approvalContext ...chatToolsApprovalContext) []agent.AgentTool[any] {
 	if !modelSupportsAgentTools(model) {
 		return nil
 	}
-	roomID := ""
-	roomTitle := ""
-	if msg != nil && msg.Portal != nil {
-		roomID = string(msg.Portal.MXID)
-		if msg.Portal.NameSet {
-			roomTitle = msg.Portal.Name
-		}
+	chatID := ""
+	chatTitle := ""
+	if meta != nil {
+		chatID = meta.SessionID
+	}
+	if msg != nil && msg.Portal != nil && msg.Portal.NameSet {
+		chatTitle = msg.Portal.Name
 	}
 	info := chattools.SessionInfo{
-		RoomTitle:       roomTitle,
-		RoomID:          roomID,
-		SessionID:       meta.SessionID,
-		ThreadID:        meta.SessionID,
-		LoginID:         string(cl.UserLogin.ID),
-		ProviderID:      provider.ID,
-		ModelID:         model.ID,
-		ReasoningLevel:  cl.reasoningLevelForModel(model, roomConfig),
-		DisabledTools:   roomConfig.DisabledTools,
-		AttachmentCount: len(prompt.Attachments),
+		ChatID:             chatID,
+		ChatTitle:          chatTitle,
+		ChatFirstMessageAt: chatFirstMessageAt,
+		SelectedModel:      model.ID,
+		SelectedReasoning:  cl.reasoningLevelForModel(model, roomConfig),
+		DisabledTools:      roomConfig.DisabledTools,
+		LastKnownTimestamp: formatSessionTimestampUTC(matrixEventTime(nil)),
 	}
-	for _, attachment := range prompt.Attachments {
-		info.Attachments = append(info.Attachments, chattools.Attachment{Type: attachment.Type, MimeType: attachment.MimeType})
+	if msg != nil {
+		info.LastKnownTimestamp = formatSessionTimestampUTC(matrixEventTime(msg.Event))
 	}
 	search := cl.searchOptions(roomConfig, provider)
 	fetch := chattools.FetchOptions{
@@ -74,6 +70,10 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		}
 	}
 	return chattools.ToolsWithOptions(info, fetch, search, sessionOptions)
+}
+
+func formatSessionTimestampUTC(t time.Time) string {
+	return t.UTC().Format(time.RFC3339)
 }
 
 func modelSupportsAgentTools(model ai.Model) bool {

@@ -5,14 +5,13 @@ import (
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
-	"github.com/beeper/ai-bridge/pkg/msgconv"
 )
 
 func TestChatToolsSkipModelsWithoutToolSupport(t *testing.T) {
 	client := &Client{}
 	tools := client.chatTools(nil, &aiid.PortalMetadata{}, RoomConfig{}, aiid.ProviderConfig{}, ai.Model{
 		Compat: map[string]any{"tools_supported": false},
-	}, msgconv.MatrixPrompt{})
+	}, "")
 	if len(tools) != 0 {
 		t.Fatalf("expected no tools, got %#v", tools)
 	}
@@ -23,7 +22,7 @@ func TestChatToolsSkipGoogleVertexImageModels(t *testing.T) {
 	tools := client.chatTools(nil, &aiid.PortalMetadata{}, RoomConfig{}, aiid.ProviderConfig{}, ai.Model{
 		Provider: ai.ProviderGoogleVertex,
 		Output:   []string{"image", "text"},
-	}, msgconv.MatrixPrompt{})
+	}, "")
 	if len(tools) != 0 {
 		t.Fatalf("expected no tools for Google Vertex image model, got %#v", tools)
 	}
