@@ -15,7 +15,7 @@ type aiSlashCommand struct {
 	arg  string
 }
 
-const matrixCommandMsgType event.MessageType = "m.command"
+const matrixCommandMsgType event.MessageType = "com.beeper.command"
 
 type aiSlashCommandDefinition struct {
 	name            string
