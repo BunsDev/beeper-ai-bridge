@@ -143,6 +143,9 @@ func TestFinalProjectionSacrificesHTMLBeforeMetadata(t *testing.T) {
 	if !strings.Contains(projection.Content.FormattedBody, "See more on supported clients") {
 		t.Fatalf("incomplete Matrix HTML should include supported-client hint: %#v", projection.Content)
 	}
+	if !strings.Contains(projection.Content.FormattedBody, `data-beeper-ai-fallback="final-parts"`) {
+		t.Fatalf("incomplete Matrix HTML should tag supported-client hint: %#v", projection.Content)
+	}
 	if size := finalPayloadSize(projection.Content, projection.Extra); size > aistream.FinalMessageBudgetBytes {
 		t.Fatalf("final projection exceeded budget: size=%d budget=%d", size, aistream.FinalMessageBudgetBytes)
 	}

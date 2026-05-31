@@ -14,6 +14,7 @@ import (
 const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
 
 const seeMoreSupportedClients = "[See more on supported clients]"
+const seeMoreSupportedClientsHTML = `<span data-beeper-ai-fallback="final-parts">` + seeMoreSupportedClients + `</span>`
 const finalEncryptedEventOverheadBytes = 2048
 
 const finalEditSizeProbeEventID = id.EventID("$final-size-probe-final-size-probe-final-size-probe:beeper.local")
@@ -119,7 +120,7 @@ func fitFinalHTML(run aistream.Run, markdown string, budget int, extra map[strin
 		if prefix == "" {
 			text = seeMoreSupportedClients
 		}
-		content := finalTextContent(run, text, false)
+		content := finalTextContentWithSupportedClientsFallback(run, text, false)
 		if finalPayloadSize(content, extra) <= budget {
 			best = text
 			low = mid + 1
@@ -128,12 +129,12 @@ func fitFinalHTML(run aistream.Run, markdown string, budget int, extra map[strin
 		}
 	}
 	if best == "" {
-		if fallback := finalTextContent(run, seeMoreSupportedClients, false); finalPayloadSize(fallback, extra) <= budget {
+		if fallback := finalTextContentWithSupportedClientsFallback(run, seeMoreSupportedClients, false); finalPayloadSize(fallback, extra) <= budget {
 			return fallback, false
 		}
 		return finalTextContent(run, "", false), false
 	}
-	return finalTextContent(run, best, false), false
+	return finalTextContentWithSupportedClientsFallback(run, best, false), false
 }
 
 func fitFinalPlaintextBody(content *event.MessageEventContent, markdown string, budget int, extra map[string]any) *event.MessageEventContent {
@@ -184,6 +185,12 @@ func finalTextContent(run aistream.Run, text string, includeBody bool) *event.Me
 		ID:          run.AgentID,
 		Displayname: run.AgentName,
 	}
+	return content
+}
+
+func finalTextContentWithSupportedClientsFallback(run aistream.Run, text string, includeBody bool) *event.MessageEventContent {
+	content := finalTextContent(run, text, includeBody)
+	content.FormattedBody = strings.ReplaceAll(content.FormattedBody, seeMoreSupportedClients, seeMoreSupportedClientsHTML)
 	return content
 }
 

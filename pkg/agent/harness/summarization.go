@@ -148,7 +148,7 @@ type SummaryGenerationOptions struct {
 
 func GenerateSummary(ctx context.Context, preparation CompactionPreparation, options SummaryGenerationOptions) (CompactResult, error) {
 	if preparation.FirstKeptEntryID == "" {
-		return CompactResult{}, errors.New("First kept entry has no UUID - session may need migration")
+		return CompactResult{}, errors.New("First kept entry has no ID")
 	}
 	var summary string
 	var err error

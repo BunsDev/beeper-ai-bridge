@@ -1,4 +1,4 @@
--- v0 -> v3: Latest AI bridge schema
+-- v0 -> v1: Latest AI bridge schema
 CREATE TABLE ai_session (
 	bridge_id TEXT NOT NULL,
 	login_id TEXT NOT NULL,
@@ -23,8 +23,8 @@ CREATE TABLE ai_session_entry (
 	FOREIGN KEY (bridge_id, login_id, session_id) REFERENCES ai_session(bridge_id, login_id, id) ON UPDATE CASCADE ON DELETE CASCADE
 );
 
-CREATE INDEX ai_session_entry_session_parent_idx ON ai_session_entry(bridge_id, login_id, session_id, parent_id);
-CREATE INDEX ai_session_entry_session_type_idx ON ai_session_entry(bridge_id, login_id, session_id, type);
+CREATE INDEX ai_session_entry_login_session_parent_idx ON ai_session_entry(bridge_id, login_id, session_id, parent_id);
+CREATE INDEX ai_session_entry_login_session_type_idx ON ai_session_entry(bridge_id, login_id, session_id, type);
 
 CREATE TABLE ai_active_stream (
 	bridge_id TEXT NOT NULL,

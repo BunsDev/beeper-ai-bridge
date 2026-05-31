@@ -227,7 +227,7 @@ func PrepareCompaction(rawEntries []json.RawMessage, settings CompactionSettings
 	cutPoint := FindCutPoint(entries, boundaryStart, len(entries), settings.KeepRecentTokens)
 	firstKeptEntry := entries[cutPoint.FirstKeptEntryIndex]
 	if firstKeptEntry.ID == "" {
-		return nil, false, NewCompactionError(CompactionErrorInvalidSession, "First kept entry has no UUID - session may need migration", nil)
+		return nil, false, NewCompactionError(CompactionErrorInvalidSession, "First kept entry has no ID", nil)
 	}
 	historyEnd := cutPoint.FirstKeptEntryIndex
 	if cutPoint.IsSplitTurn {

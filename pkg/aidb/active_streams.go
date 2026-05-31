@@ -2,7 +2,6 @@ package aidb
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -140,7 +139,6 @@ func scanActiveStream(row activeStreamScanner) (ActiveStreamRecord, error) {
 	var portalID, portalReceiver string
 	var createdAt, updatedAt int64
 	var runJSON, metadataJSON, statusInfoJSON string
-	var entryID sql.NullString
 	if err := row.Scan(
 		&record.RunID,
 		&record.LoginID,
@@ -151,7 +149,7 @@ func scanActiveStream(row activeStreamScanner) (ActiveStreamRecord, error) {
 		&record.MessageID,
 		&record.ProviderID,
 		&record.ModelID,
-		&entryID,
+		&record.EntryID,
 		&runJSON,
 		&metadataJSON,
 		&statusInfoJSON,
@@ -161,9 +159,6 @@ func scanActiveStream(row activeStreamScanner) (ActiveStreamRecord, error) {
 		return record, err
 	}
 	record.PortalKey = networkid.PortalKey{ID: networkid.PortalID(portalID), Receiver: networkid.UserLoginID(portalReceiver)}
-	if entryID.Valid {
-		record.EntryID = entryID.String
-	}
 	if err := json.Unmarshal([]byte(runJSON), &record.Run); err != nil {
 		return record, err
 	}

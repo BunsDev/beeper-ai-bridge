@@ -37,6 +37,13 @@ func TestBridgeSessionStorageUsesPrefixedTablesAndPreservesEntries(t *testing.T)
 	if err := store.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
+	var version, compat int
+	if err := db.QueryRow(ctx, `select version, compat from ai_bridge_version`).Scan(&version, &compat); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 || compat != 1 {
+		t.Fatalf("expected AI bridge schema version 1/1, got %d/%d", version, compat)
+	}
 	agentSession, err := store.CreateSession(ctx, networkid.UserLoginID("login"), session.SQLiteSessionCreateOptions{ID: "session-1"})
 	if err != nil {
 		t.Fatal(err)

@@ -422,7 +422,7 @@ func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 		t.Fatalf("expected initial disappearing timer support, got %#v", groupCaps.Disappear)
 	}
 	_, capVersion := conn.GetBridgeInfoVersion()
-	if capVersion < 5 {
+	if capVersion < 6 {
 		t.Fatalf("capability version must bump when provisioning capabilities change, got %d", capVersion)
 	}
 }
