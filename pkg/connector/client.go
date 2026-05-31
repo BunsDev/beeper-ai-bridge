@@ -1005,10 +1005,19 @@ func (cl *Client) queueAssistantStreamAnchor(ctx context.Context, portal *bridge
 	if result.EventID != "" {
 		return result.EventID, nil
 	}
-	if cl.Main != nil && cl.Main.Bridge != nil && cl.Main.Bridge.Matrix != nil {
-		return cl.Main.Bridge.Matrix.GenerateDeterministicEventID(portal.MXID, portal.PortalKey, messageID, aiid.PartID("text")), nil
+	eventID, err := cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 30*time.Second)
+	if err == nil && eventID != "" {
+		return eventID, nil
 	}
-	return cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 30*time.Second)
+	if cl.Main != nil && cl.Main.Bridge != nil && cl.Main.Bridge.Matrix != nil {
+		deterministicEventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(portal.MXID, portal.PortalKey, messageID, aiid.PartID("text"))
+		zerolog.Ctx(ctx).Warn().
+			Err(err).
+			Str("event_id", string(deterministicEventID)).
+			Msg("Falling back to deterministic AI stream anchor event ID")
+		return deterministicEventID, nil
+	}
+	return "", err
 }
 
 func (cl *Client) waitForMessageEventID(ctx context.Context, portal *bridgev2.Portal, messageID networkid.MessageID, partID networkid.PartID, timeout time.Duration) (id.EventID, error) {

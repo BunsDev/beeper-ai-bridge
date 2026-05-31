@@ -63,7 +63,7 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	name := defaultConversationTitle(provider, model)
 	topic := modelRoomDescription(provider, model)
 	roomType := database.RoomTypeDM
-	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: defaultAIAssistantAvatar(), Type: &roomType, Members: aiChatMembers()}
+	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: modelAvatar(provider, model), Type: &roomType, Members: aiChatMembers()}
 	meta := portalMetadata(portal)
 	meta.AutoTitlePending = true
 	if portal.MXID == "" {
