@@ -37,7 +37,7 @@ func TestConnectorGetNameMatchesDesktopMetadata(t *testing.T) {
 
 func TestConnectorBridgeInfoVersions(t *testing.T) {
 	info, caps := (&Connector{}).GetBridgeInfoVersion()
-	if info != 1 || caps != 6 {
+	if info != 1 || caps != 7 {
 		t.Fatalf("unexpected bridge info versions info=%d caps=%d", info, caps)
 	}
 }

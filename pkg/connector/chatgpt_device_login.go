@@ -179,9 +179,9 @@ func startChatGPTDeviceAuth(ctx context.Context) (chatGPTDeviceAuthInfo, error) 
 		return chatGPTDeviceAuthInfo{}, fmt.Errorf("ChatGPT device login failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(text)))
 	}
 	var body struct {
-		DeviceAuthID string      `json:"device_auth_id"`
-		UserCode     string      `json:"user_code"`
-		Interval     interface{} `json:"interval"`
+		DeviceAuthID string `json:"device_auth_id"`
+		UserCode     string `json:"user_code"`
+		Interval     any    `json:"interval"`
 	}
 	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return chatGPTDeviceAuthInfo{}, fmt.Errorf("failed to parse ChatGPT device login response: %w", err)
@@ -202,7 +202,7 @@ func startChatGPTDeviceAuth(ctx context.Context) (chatGPTDeviceAuthInfo, error) 
 	}, nil
 }
 
-func parseChatGPTInterval(raw interface{}) (int, error) {
+func parseChatGPTInterval(raw any) (int, error) {
 	switch value := raw.(type) {
 	case float64:
 		if value < 0 {
@@ -323,7 +323,7 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 
 func chatGPTErrorCode(body string) string {
 	var parsed struct {
-		Error interface{} `json:"error"`
+		Error any `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return ""
@@ -331,7 +331,7 @@ func chatGPTErrorCode(body string) string {
 	switch value := parsed.Error.(type) {
 	case string:
 		return value
-	case map[string]interface{}:
+	case map[string]any:
 		if code, ok := value["code"].(string); ok {
 			return code
 		}

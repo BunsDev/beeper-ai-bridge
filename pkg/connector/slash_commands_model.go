@@ -3,7 +3,8 @@ package connector
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -118,19 +119,7 @@ func (cl *Client) modelOptionsText(currentProvider aiid.ProviderConfig) string {
 	if len(providers) == 0 {
 		return "`<provider>/<model>`"
 	}
-	providerIDs := make([]string, 0, len(providers))
-	for id := range providers {
-		providerIDs = append(providerIDs, id)
-	}
-	sort.Slice(providerIDs, func(i, j int) bool {
-		if providerIDs[i] == aiid.DefaultProvider {
-			return true
-		}
-		if providerIDs[j] == aiid.DefaultProvider {
-			return false
-		}
-		return providerIDs[i] < providerIDs[j]
-	})
+	providerIDs := slices.SortedFunc(maps.Keys(providers), compareProviderID)
 	options := []string{}
 	for _, providerID := range providerIDs {
 		provider := providers[providerID]

@@ -15,10 +15,10 @@ type DiagnosticErrorInfo struct {
 }
 
 type AssistantMessageDiagnostic struct {
-	Type      string                 `json:"type"`
-	Timestamp int64                  `json:"timestamp"`
-	Error     *DiagnosticErrorInfo   `json:"error,omitempty"`
-	Details   map[string]interface{} `json:"details,omitempty"`
+	Type      string               `json:"type"`
+	Timestamp int64                `json:"timestamp"`
+	Error     *DiagnosticErrorInfo `json:"error,omitempty"`
+	Details   map[string]any       `json:"details,omitempty"`
 }
 
 func FormatThrownValue(value any) string {
@@ -44,7 +44,7 @@ func ExtractDiagnosticError(err error) DiagnosticErrorInfo {
 	return DiagnosticErrorInfo{Name: fmt.Sprintf("%T", err), Message: FormatThrownValue(err)}
 }
 
-func CreateAssistantMessageDiagnostic(diagnosticType string, err error, details map[string]interface{}) AssistantMessageDiagnostic {
+func CreateAssistantMessageDiagnostic(diagnosticType string, err error, details map[string]any) AssistantMessageDiagnostic {
 	info := ExtractDiagnosticError(err)
 	return AssistantMessageDiagnostic{Type: diagnosticType, Timestamp: time.Now().UnixMilli(), Error: &info, Details: details}
 }

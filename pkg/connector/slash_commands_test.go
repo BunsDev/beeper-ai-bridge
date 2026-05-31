@@ -283,6 +283,31 @@ func TestProviderCommandTextDoesNotExposeSecrets(t *testing.T) {
 	}
 }
 
+func TestParseBridgeProviderArgsAllowsQuotedTokens(t *testing.T) {
+	fields, err := parseBridgeProviderArgs(`add custom openai-responses https://example.test/v1 "secret key" "model with spaces"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"add", "custom", "openai-responses", "https://example.test/v1", "secret key", "model with spaces"}
+	if len(fields) != len(want) {
+		t.Fatalf("field count=%d, want %d: %#v", len(fields), len(want), fields)
+	}
+	for i := range want {
+		if fields[i] != want[i] {
+			t.Fatalf("field %d=%q, want %q in %#v", i, fields[i], want[i], fields)
+		}
+	}
+}
+
+func TestProviderCommandMayContainSecret(t *testing.T) {
+	if !providerCommandMayContainSecret(`update custom openai-responses "unterminated`) {
+		t.Fatal("expected update command to be treated as possibly sensitive")
+	}
+	if providerCommandMayContainSecret(`show custom`) {
+		t.Fatal("show command should not be treated as sensitive")
+	}
+}
+
 func TestCommandRejectedErrorSendsFailedStatusNoticeWithExactMessage(t *testing.T) {
 	text := `AI room settings rejected: reasoning level "invalidvalue" is invalid`
 	err := commandRejectedError(text)

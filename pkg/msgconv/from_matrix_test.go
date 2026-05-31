@@ -21,12 +21,13 @@ func (f fakeMediaDownloader) DownloadMedia(context.Context, id.ContentURIString,
 	return f.data, nil
 }
 
-func TestFromMatrixUsesMatrixHTMLForFormattedText(t *testing.T) {
+func TestFromMatrixConvertsMatrixHTMLToMarkdownForFormattedText(t *testing.T) {
 	prompt, err := FromMatrix(context.Background(), nil, &bridgev2.MatrixMessage{
 		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
 			Content: &event.MessageEventContent{
 				MsgType:       event.MsgText,
 				Body:          "plain text",
+				Format:        event.FormatHTML,
 				FormattedBody: "<strong>plain text</strong>",
 			},
 		},
@@ -34,8 +35,8 @@ func TestFromMatrixUsesMatrixHTMLForFormattedText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt.Text != "<strong>plain text</strong>" {
-		t.Fatalf("expected Matrix HTML prompt text, got %q", prompt.Text)
+	if prompt.Text != "**plain text**" {
+		t.Fatalf("expected markdown prompt text, got %q", prompt.Text)
 	}
 }
 
@@ -137,7 +138,7 @@ func TestFromMatrixUsesFormattedMediaCaption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt.Text != "please <strong>inspect</strong> this" {
+	if prompt.Text != "please **inspect** this" {
 		t.Fatalf("expected formatted image caption, got %q", prompt.Text)
 	}
 }
@@ -185,7 +186,7 @@ func TestFromMatrixUsesFormattedFileCaption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt.Text, "please <em>read</em> this") || !strings.Contains(prompt.Text, "invite.ics") {
+	if !strings.Contains(prompt.Text, "please _read_ this") || !strings.Contains(prompt.Text, "invite.ics") {
 		t.Fatalf("expected formatted file caption and attachment, got %q", prompt.Text)
 	}
 }

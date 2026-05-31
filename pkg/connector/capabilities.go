@@ -66,11 +66,11 @@ var roomCaps = &event.RoomFeatures{
 	},
 	Reaction:            event.CapLevelUnsupported,
 	ReadReceipts:        false,
-	TypingNotifications: true,
+	TypingNotifications: false,
 	DeleteChat:          true,
 }
 
-const roomFeaturesIDBase = "com.beeper.ai.capabilities.2026_05_31.location_text"
+const roomFeaturesIDBase = "com.beeper.ai.capabilities.2026_06_01.no_typing"
 
 func roomFeaturesForModel(model ai.Model, supportsAIState bool) *event.RoomFeatures {
 	caps := roomCaps.Clone()

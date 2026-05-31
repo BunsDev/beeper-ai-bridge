@@ -148,14 +148,6 @@ func encode(value string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
-func decode(value string) (string, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
-}
-
 func sanitizeID(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

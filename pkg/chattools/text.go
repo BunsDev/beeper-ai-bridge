@@ -20,10 +20,6 @@ type htmlMetadata struct {
 	Favicon     string
 }
 
-func extractTitle(body []byte) string {
-	return extractHTMLMetadata(body, nil).Title
-}
-
 func extractText(body []byte, contentType string) string {
 	raw := string(body)
 	if strings.Contains(strings.ToLower(contentType), "html") || strings.Contains(raw, "<html") {

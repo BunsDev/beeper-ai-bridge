@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -620,17 +622,17 @@ func aiServicesProxyBaseURL(baseURL string, providerPath string, includeV1 bool)
 
 func (entry aiServicesModelEntry) inputModalities() []string {
 	if entry.Capabilities != nil && len(entry.Capabilities.Input.Modalities) > 0 {
-		return append([]string{}, entry.Capabilities.Input.Modalities...)
+		return slices.Clone(entry.Capabilities.Input.Modalities)
 	}
 	if entry.Architecture != nil && len(entry.Architecture.InputModalities) > 0 {
-		return append([]string{}, entry.Architecture.InputModalities...)
+		return slices.Clone(entry.Architecture.InputModalities)
 	}
 	return nil
 }
 
 func (entry aiServicesModelEntry) outputModalities() []string {
 	if entry.Capabilities != nil && len(entry.Capabilities.Output.Modalities) > 0 {
-		return append([]string{}, entry.Capabilities.Output.Modalities...)
+		return slices.Clone(entry.Capabilities.Output.Modalities)
 	}
 	return []string{"text"}
 }
@@ -660,7 +662,7 @@ func (entry aiServicesModelEntry) builtInTools() []string {
 	if entry.Capabilities == nil || entry.Capabilities.Tools == nil || !entry.Capabilities.Tools.Supported {
 		return nil
 	}
-	return append([]string(nil), entry.Capabilities.Tools.BuiltIn...)
+	return slices.Clone(entry.Capabilities.Tools.BuiltIn)
 }
 
 func (entry aiServicesModelEntry) thinkingLevelMap() map[ai.ModelThinkingLevel]*string {
@@ -892,7 +894,7 @@ func cloneModelContacts(contacts []*bridgev2.ResolveIdentifierResponse) []*bridg
 		cloned := *contact
 		if contact.UserInfo != nil {
 			userInfo := *contact.UserInfo
-			userInfo.Identifiers = append([]string(nil), contact.UserInfo.Identifiers...)
+			userInfo.Identifiers = slices.Clone(contact.UserInfo.Identifiers)
 			cloned.UserInfo = &userInfo
 		}
 		if contact.Ghost != nil {
@@ -911,11 +913,11 @@ func cloneModels(models []ai.Model) []ai.Model {
 	out := make([]ai.Model, len(models))
 	for i, model := range models {
 		out[i] = model
-		out[i].Input = append([]string(nil), model.Input...)
-		out[i].Output = append([]string(nil), model.Output...)
-		out[i].BuiltInTools = append([]string(nil), model.BuiltInTools...)
-		out[i].Headers = cloneStringMap(model.Headers)
-		out[i].Compat = cloneAnyMap(model.Compat)
+		out[i].Input = slices.Clone(model.Input)
+		out[i].Output = slices.Clone(model.Output)
+		out[i].BuiltInTools = slices.Clone(model.BuiltInTools)
+		out[i].Headers = maps.Clone(model.Headers)
+		out[i].Compat = maps.Clone(model.Compat)
 		if model.ThinkingLevelMap != nil {
 			out[i].ThinkingLevelMap = make(map[ai.ModelThinkingLevel]*string, len(model.ThinkingLevelMap))
 			for level, mapped := range model.ThinkingLevelMap {
@@ -927,28 +929,6 @@ func cloneModels(models []ai.Model) []ai.Model {
 				out[i].ThinkingLevelMap[level] = &mappedCopy
 			}
 		}
-	}
-	return out
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-
-func cloneAnyMap(in map[string]any) map[string]any {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
 	}
 	return out
 }

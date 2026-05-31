@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"go.mau.fi/util/dbutil"
@@ -303,8 +303,6 @@ func (c *Connector) configuredLoginUserIDs() []id.UserID {
 		}
 		userIDs = append(userIDs, userID)
 	}
-	sort.Slice(userIDs, func(i, j int) bool {
-		return userIDs[i] < userIDs[j]
-	})
+	slices.Sort(userIDs)
 	return userIDs
 }

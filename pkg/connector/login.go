@@ -176,6 +176,11 @@ func (l *CustomProviderLogin) submitProviderConfig(ctx context.Context, input ma
 	for _, model := range models {
 		options = append(options, model.ID)
 	}
+	if len(options) == 0 {
+		err := fmt.Errorf("provider %s did not return any models", providerID)
+		log.Err(err).Msg("Provider login config rejected")
+		return nil, err
+	}
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
 		StepID:       loginStepProviderDefault,

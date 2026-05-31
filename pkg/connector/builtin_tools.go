@@ -2,6 +2,8 @@ package connector
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 )
@@ -69,7 +71,7 @@ func builtInToolFunctionName(toolType string) string {
 func toolsAsAny(raw any) []any {
 	switch tools := raw.(type) {
 	case []any:
-		return append([]any{}, tools...)
+		return slices.Clone(tools)
 	case []map[string]any:
 		out := make([]any, 0, len(tools))
 		for _, tool := range tools {
@@ -82,9 +84,5 @@ func toolsAsAny(raw any) []any {
 }
 
 func clonePayloadMap(in map[string]any) map[string]any {
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
+	return maps.Clone(in)
 }

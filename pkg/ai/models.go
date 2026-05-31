@@ -1,5 +1,7 @@
 package ai
 
+import "slices"
+
 var extendedThinkingLevels = []ModelThinkingLevel{
 	ModelThinkingLevelOff,
 	ModelThinkingLevelMinimal,
@@ -27,7 +29,7 @@ func GetModel(provider Provider, modelID string) (Model, bool) {
 }
 
 func GetProviders() []Provider {
-	return append([]Provider{}, modelProviderOrder...)
+	return slices.Clone(modelProviderOrder)
 }
 
 func GetModels(provider Provider) []Model {
@@ -69,7 +71,7 @@ func GetSupportedThinkingLevels(model Model) []ModelThinkingLevel {
 
 func ClampThinkingLevel(model Model, level ModelThinkingLevel) ModelThinkingLevel {
 	available := GetSupportedThinkingLevels(model)
-	if containsThinkingLevel(available, level) {
+	if slices.Contains(available, level) {
 		return level
 	}
 	requestedIndex := thinkingLevelIndex(level)
@@ -78,13 +80,13 @@ func ClampThinkingLevel(model Model, level ModelThinkingLevel) ModelThinkingLeve
 	}
 	for i := requestedIndex; i < len(extendedThinkingLevels); i++ {
 		candidate := extendedThinkingLevels[i]
-		if containsThinkingLevel(available, candidate) {
+		if slices.Contains(available, candidate) {
 			return candidate
 		}
 	}
 	for i := requestedIndex - 1; i >= 0; i-- {
 		candidate := extendedThinkingLevels[i]
-		if containsThinkingLevel(available, candidate) {
+		if slices.Contains(available, candidate) {
 			return candidate
 		}
 	}
@@ -96,15 +98,6 @@ func ModelsAreEqual(a *Model, b *Model) bool {
 		return false
 	}
 	return a.ID == b.ID && a.Provider == b.Provider
-}
-
-func containsThinkingLevel(levels []ModelThinkingLevel, want ModelThinkingLevel) bool {
-	for _, level := range levels {
-		if level == want {
-			return true
-		}
-	}
-	return false
 }
 
 func thinkingLevelIndex(level ModelThinkingLevel) int {

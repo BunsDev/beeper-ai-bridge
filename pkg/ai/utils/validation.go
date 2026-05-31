@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,12 +163,12 @@ func coerceWithJSONSchema(value any, schema map[string]any) any {
 			}
 		}
 	}
-	if containsString(types, "object") {
+	if slices.Contains(types, "object") {
 		if object, ok := value.(map[string]any); ok {
 			coerceObjectProperties(object, schema)
 		}
 	}
-	if containsString(types, "array") {
+	if slices.Contains(types, "array") {
 		if items, ok := value.([]any); ok {
 			coerceArrayItems(items, schema)
 		}
@@ -363,13 +364,4 @@ func schemaList(value any) []map[string]any {
 		}
 	}
 	return out
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

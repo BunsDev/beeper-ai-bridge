@@ -1,10 +1,12 @@
 package connector
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -161,22 +163,23 @@ func providerResponse(provider aiid.ProviderConfig) ProviderResponse {
 }
 
 func sortedProviderResponses(providers map[string]aiid.ProviderConfig) []ProviderResponse {
-	ids := make([]string, 0, len(providers))
-	for id := range providers {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool {
-		if ids[i] == aiid.DefaultProvider {
-			return true
-		}
-		if ids[j] == aiid.DefaultProvider {
-			return false
-		}
-		return ids[i] < ids[j]
-	})
+	ids := slices.SortedFunc(maps.Keys(providers), compareProviderID)
 	out := make([]ProviderResponse, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, providerResponse(providers[id]))
 	}
 	return out
+}
+
+func compareProviderID(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == aiid.DefaultProvider {
+		return -1
+	}
+	if b == aiid.DefaultProvider {
+		return 1
+	}
+	return cmp.Compare(a, b)
 }

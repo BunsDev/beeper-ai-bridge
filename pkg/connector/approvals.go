@@ -345,16 +345,3 @@ func approvalResponseFromCommand(approvalID string, rawChoice string) (aistream.
 	}
 	return response, true
 }
-
-func activeApprovalIDs(active *activeAIRun) []string {
-	if active == nil {
-		return nil
-	}
-	active.mu.Lock()
-	defer active.mu.Unlock()
-	ids := make([]string, 0, len(active.approvals))
-	for id := range active.approvals {
-		ids = append(ids, id)
-	}
-	return ids
-}

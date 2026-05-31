@@ -595,9 +595,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 				}
 				sourceID := firstString(part["sourceId"], part["url"])
 				if existing := sourceParts[sourceID]; sourceID != "" && existing != nil {
-					for key := range existing {
-						delete(existing, key)
-					}
+					clear(existing)
 					for key, item := range part {
 						existing[key] = item
 					}

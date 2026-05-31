@@ -234,10 +234,6 @@ func NewEventBuilder(model string, now func() time.Time) EventBuilder {
 	return EventBuilder{now: now, model: strings.TrimSpace(model)}
 }
 
-func (b EventBuilder) base(eventType string) Event {
-	return mustEvent(b.envelope(eventType))
-}
-
 func (b EventBuilder) envelope(eventType string) EventEnvelope {
 	return EventEnvelope{Type: eventType, Timestamp: b.now().UnixMilli(), Model: b.model}
 }

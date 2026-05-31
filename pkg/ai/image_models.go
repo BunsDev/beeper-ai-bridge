@@ -1,5 +1,7 @@
 package ai
 
+import "slices"
+
 func GetImageModel(provider ImagesProvider, modelID string) (ImagesModel, bool) {
 	providerModels := ImageModels[provider]
 	if providerModels == nil {
@@ -10,7 +12,7 @@ func GetImageModel(provider ImagesProvider, modelID string) (ImagesModel, bool) 
 }
 
 func GetImageProviders() []ImagesProvider {
-	return append([]ImagesProvider{}, imageModelProviderOrder...)
+	return slices.Clone(imageModelProviderOrder)
 }
 
 func GetImageModels(provider ImagesProvider) []ImagesModel {

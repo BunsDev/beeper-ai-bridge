@@ -3,8 +3,9 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
@@ -500,11 +501,7 @@ func textFromContent(content any) string {
 }
 
 func toolArgsString(args map[string]any) string {
-	keys := make([]string, 0, len(args))
-	for key := range args {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(args))
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts = append(parts, key+"="+safeJSONString(args[key]))

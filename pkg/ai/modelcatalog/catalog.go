@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/beeper/ai-bridge/pkg/ai"
@@ -103,10 +104,10 @@ func BuildFromModels(models []ai.Model, opts Options) Catalog {
 		out[model.Provider][model.ID] = model
 	}
 
-	providerOrder := sortedProviders(out)
+	providerOrder := slices.Sorted(maps.Keys(out))
 	modelIDOrder := make(map[ai.Provider][]string, len(out))
 	for provider, providerModels := range out {
-		modelIDOrder[provider] = sortedModelIDs(providerModels)
+		modelIDOrder[provider] = slices.Sorted(maps.Keys(providerModels))
 	}
 
 	skipped := make([]ai.Provider, 0)
@@ -116,7 +117,7 @@ func BuildFromModels(models []ai.Model, opts Options) Catalog {
 			skipped = append(skipped, provider)
 		}
 	}
-	sort.Slice(skipped, func(i, j int) bool { return skipped[i] < skipped[j] })
+	slices.Sort(skipped)
 
 	return Catalog{
 		Models:        out,
@@ -220,10 +221,10 @@ func (opts Options) withDefaults() Options {
 		opts.OpenRouterModelsURL = OpenRouterModelsURL
 	}
 	if len(opts.Providers) == 0 {
-		opts.Providers = append([]ai.Provider{}, DefaultProviders...)
+		opts.Providers = slices.Clone(DefaultProviders)
 	}
 	if len(opts.RegisteredAPIs) == 0 {
-		opts.RegisteredAPIs = append([]ai.Api{}, DefaultRegisteredAPIs...)
+		opts.RegisteredAPIs = slices.Clone(DefaultRegisteredAPIs)
 	}
 	return opts
 }
@@ -267,7 +268,7 @@ func normalizeOpenRouterModel(model openRouterModel) ai.Model {
 		API:           ai.ApiOpenAICompletions,
 		Provider:      ai.ProviderOpenRouter,
 		BaseURL:       "https://openrouter.ai/api/v1",
-		Reasoning:     contains(model.SupportedParameters, "reasoning") || contains(model.SupportedParameters, "include_reasoning"),
+		Reasoning:     slices.Contains(model.SupportedParameters, "reasoning") || slices.Contains(model.SupportedParameters, "include_reasoning"),
 		Input:         textImageInput(model.Architecture.InputModalities),
 		Cost:          costFromOpenRouter(model.Pricing),
 		ContextWindow: intOrDefault(firstNonZero(model.ContextLength, model.TopProvider.ContextLength), 128000),
@@ -336,21 +337,21 @@ func costFromOpenRouter(pricing openRouterPricing) ai.ModelCost {
 
 func textImageInput(modalities []string) []string {
 	input := make([]string, 0, 2)
-	if len(modalities) == 0 || contains(modalities, "text") {
+	if len(modalities) == 0 || slices.Contains(modalities, "text") {
 		input = append(input, "text")
 	}
-	if contains(modalities, "image") {
+	if slices.Contains(modalities, "image") {
 		input = append(input, "image")
 	}
 	return input
 }
 
 func isToolCapableModelsDev(model modelsDevModel) bool {
-	return model.ToolCall && contains(model.Modalities.Output, "text")
+	return model.ToolCall && slices.Contains(model.Modalities.Output, "text")
 }
 
 func isToolCapableOpenRouter(model openRouterModel) bool {
-	return contains(model.SupportedParameters, "tools")
+	return slices.Contains(model.SupportedParameters, "tools")
 }
 
 func providerSet(providers []ai.Provider) map[ai.Provider]bool {
@@ -367,24 +368,6 @@ func apiSet(apis []ai.Api) map[ai.Api]bool {
 		out[api] = true
 	}
 	return out
-}
-
-func sortedProviders(models map[ai.Provider]map[string]ai.Model) []ai.Provider {
-	providers := make([]ai.Provider, 0, len(models))
-	for provider := range models {
-		providers = append(providers, provider)
-	}
-	sort.Slice(providers, func(i, j int) bool { return providers[i] < providers[j] })
-	return providers
-}
-
-func sortedModelIDs(models map[string]ai.Model) []string {
-	ids := make([]string, 0, len(models))
-	for id := range models {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
 }
 
 func mergeThinkingLevelMap(base, overlay map[ai.ModelThinkingLevel]*string) map[ai.ModelThinkingLevel]*string {
@@ -411,15 +394,6 @@ func mergeCompat(base, overlay map[string]any) map[string]any {
 
 func escapeRawString(data []byte) []byte {
 	return bytes.ReplaceAll(data, []byte("`"), []byte("`+\"`\"+`"))
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func firstNonZero(values ...int) int {

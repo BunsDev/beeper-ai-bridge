@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"go.mau.fi/util/shlex"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 
@@ -154,7 +155,14 @@ func (c *Connector) handleBridgeProvidersCommand(ce *commands.Event) {
 }
 
 func (c *Connector) handleBridgeProviderCommand(ce *commands.Event) {
-	fields := strings.Fields(ce.RawArgs)
+	fields, err := parseBridgeProviderArgs(ce.RawArgs)
+	if err != nil {
+		if providerCommandMayContainSecret(ce.RawArgs) {
+			ce.Redact()
+		}
+		ce.Reply("Invalid provider command syntax: %v", err)
+		return
+	}
 	if len(fields) == 0 {
 		ce.Reply("Usage: `$cmdprefix provider <show|add|update|delete> ...`")
 		return
@@ -169,6 +177,15 @@ func (c *Connector) handleBridgeProviderCommand(ce *commands.Event) {
 	default:
 		ce.Reply("Usage: `$cmdprefix provider <show|add|update|delete> ...`")
 	}
+}
+
+func parseBridgeProviderArgs(raw string) ([]string, error) {
+	return shlex.Split(raw)
+}
+
+func providerCommandMayContainSecret(raw string) bool {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(raw)))
+	return len(fields) > 0 && (fields[0] == "add" || fields[0] == "update")
 }
 
 func (c *Connector) handleBridgeProviderShow(ce *commands.Event, fields []string) {

@@ -11,6 +11,7 @@ import (
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -64,7 +65,7 @@ func FromMatrix(ctx context.Context, intent matrixMediaDownloader, msg *bridgev2
 
 func matrixPromptText(content *event.MessageEventContent) string {
 	if content.FormattedBody != "" {
-		return content.FormattedBody
+		return matrixFormattedText(content.FormattedBody, content.Body)
 	}
 	return content.Body
 }
@@ -75,9 +76,17 @@ func matrixCaptionText(content *event.MessageEventContent) string {
 		return ""
 	}
 	if formatted := content.GetFormattedCaption(); formatted != "" {
-		return formatted
+		return matrixFormattedText(formatted, plain)
 	}
 	return plain
+}
+
+func matrixFormattedText(formatted string, fallback string) string {
+	text := strings.TrimSpace(format.HTMLToMarkdown(formatted))
+	if text == "" {
+		return fallback
+	}
+	return text
 }
 
 func matrixLocationText(content *event.MessageEventContent) string {

@@ -2,7 +2,8 @@ package aistream
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -735,14 +736,13 @@ func (w *Writer) initState() {
 }
 
 func sortedOpenIndexes(open map[int]bool) []int {
-	indexes := make([]int, 0, len(open))
+	indexes := make(map[int]struct{}, len(open))
 	for index, isOpen := range open {
 		if isOpen {
-			indexes = append(indexes, index)
+			indexes[index] = struct{}{}
 		}
 	}
-	sort.Ints(indexes)
-	return indexes
+	return slices.Sorted(maps.Keys(indexes))
 }
 
 func toolResultState(result any) string {

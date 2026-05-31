@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
+	"go.mau.fi/util/exslices"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
@@ -240,10 +240,10 @@ func stringSlice(value any) []string {
 	for _, item := range items {
 		if text, ok := item.(string); ok {
 			text = strings.TrimSpace(text)
-			if text != "" && !slices.Contains(out, text) {
+			if text != "" {
 				out = append(out, text)
 			}
 		}
 	}
-	return out
+	return exslices.DeduplicateUnsorted(out)
 }

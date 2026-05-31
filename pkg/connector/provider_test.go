@@ -520,8 +520,8 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 	if !caps.DeleteChat {
 		t.Fatalf("expected delete chat support")
 	}
-	if !caps.TypingNotifications {
-		t.Fatalf("expected assistant typing notifications")
+	if caps.TypingNotifications {
+		t.Fatalf("did not expect Matrix typing notifications to be advertised")
 	}
 	if caps.File[event.MsgImage] != nil {
 		t.Fatalf("did not expect image support without a vision model")
@@ -609,18 +609,18 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 func TestRoomFeaturesUseDeterministicIDs(t *testing.T) {
 	first := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, true)
 	second := roomFeaturesForModel(ai.Model{ID: "model-b", Input: []string{"text", "image"}}, true)
-	if first.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+state+image" {
+	if first.ID != "com.beeper.ai.capabilities.2026_06_01.no_typing+state+image" {
 		t.Fatalf("expected deterministic image capability ID, got %q", first.ID)
 	}
 	if first.ID != second.ID {
 		t.Fatalf("same feature values should produce same ID, got %q and %q", first.ID, second.ID)
 	}
 	textOnly := roomFeaturesForModel(ai.Model{Input: []string{"text"}}, true)
-	if textOnly.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+state" {
+	if textOnly.ID != "com.beeper.ai.capabilities.2026_06_01.no_typing+state" {
 		t.Fatalf("expected deterministic text capability ID, got %q", textOnly.ID)
 	}
 	withoutState := roomFeaturesForModel(ai.Model{ID: "model-a", Input: []string{"text", "image"}}, false)
-	if withoutState.ID != "com.beeper.ai.capabilities.2026_05_31.location_text+image" {
+	if withoutState.ID != "com.beeper.ai.capabilities.2026_06_01.no_typing+image" {
 		t.Fatalf("expected deterministic image capability ID without AI state, got %q", withoutState.ID)
 	}
 }
@@ -742,6 +742,23 @@ func TestCustomProviderLoginStagesAPIConfigAndDefaultModel(t *testing.T) {
 	}
 	if login.config.ProviderID != "local-ai" || login.config.API != ai.ApiOpenAICompletions || len(login.config.Models) != 2 {
 		t.Fatalf("login config was not retained: %#v", login.config)
+	}
+}
+
+func TestCustomProviderLoginRejectsEmptyModelList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	login := &CustomProviderLogin{config: providerLoginConfig{API: ai.ApiOpenAICompletions}}
+	_, err := login.submitProviderConfig(context.Background(), map[string]string{
+		"provider_id": "local-ai",
+		"base_url":    server.URL,
+		"api_key":     "key",
+	})
+	if err == nil || !strings.Contains(err.Error(), "no models") {
+		t.Fatalf("expected empty model list error, got %v", err)
 	}
 }
 
