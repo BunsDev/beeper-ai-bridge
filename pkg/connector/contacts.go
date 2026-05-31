@@ -375,7 +375,7 @@ func (cl *Client) bridge() *bridgev2.Bridge {
 func listedProviderModelContacts(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig) []*bridgev2.ResolveIdentifierResponse {
 	contacts := []*bridgev2.ResolveIdentifierResponse{}
 	for _, model := range contactModels(provider) {
-		contact := modelContactWithExistingGhost(ctx, br, provider, model)
+		contact := modelContactWithGhost(ctx, br, provider, model)
 		contacts = append(contacts, contact)
 	}
 	return contacts
@@ -754,22 +754,6 @@ func updateModelGhostInfo(ctx context.Context, br *bridgev2.Bridge, provider aii
 	}
 	ghost.UpdateInfo(ctx, modelUserInfo(provider, model))
 	return ghost, nil
-}
-
-func modelContactWithExistingGhost(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
-	resp := modelContact(provider, model)
-	if ghost, err := existingModelGhost(ctx, br, provider, model); err == nil {
-		ghost.UpdateInfo(ctx, modelUserInfo(provider, model))
-		resp.Ghost = ghost
-	}
-	return resp
-}
-
-func existingModelGhost(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, model ai.Model) (*bridgev2.Ghost, error) {
-	if br == nil {
-		return nil, fmt.Errorf("missing bridge")
-	}
-	return br.GetExistingGhostByID(ctx, aiid.ModelContactID(provider.ID, model.ID))
 }
 
 func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (ai.Model, bool) {
