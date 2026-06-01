@@ -127,6 +127,11 @@ func StreamAnthropic(ctx context.Context, model ai.Model, llmContext ai.Context,
 					return fmt.Errorf("could not parse Anthropic SSE event %s: %w; data=%s; raw=%s", sse.Event, err, sse.Data, strings.Join(sse.Raw, "\n"))
 				}
 			}
+			citations := providerCitationsFromAny(event, model.Provider, max(0, len(contentBlocks(output.Content))-1))
+			if len(citations) > 0 {
+				output.Citations = append(output.Citations, citations...)
+				stream.Push(ai.AssistantMessageEvent{Type: "source", Partial: &output})
+			}
 			state.apply(stream, &output, model, llmContext, isOAuth, event)
 			return nil
 		})

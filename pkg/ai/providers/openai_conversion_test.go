@@ -117,6 +117,66 @@ func TestConvertCompletionsMessagesIncludesNativeAudio(t *testing.T) {
 	}
 }
 
+func TestProviderCitationsFromOpenAIAnnotations(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type": "message",
+		"content": []any{map[string]any{
+			"type": "output_text",
+			"text": "hello citation",
+			"annotations": []any{map[string]any{
+				"type":        "url_citation",
+				"start_index": float64(6),
+				"end_index":   float64(14),
+				"url":         "https://example.com/source",
+				"title":       "Source",
+			}},
+		}},
+	}, ai.ProviderOpenAI, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/source" || citations[0].Title != "Source" {
+		t.Fatalf("unexpected citations %#v", citations)
+	}
+	if citations[0].StartIndex == nil || *citations[0].StartIndex != 6 || citations[0].EndIndex == nil || *citations[0].EndIndex != 14 {
+		t.Fatalf("missing citation range %#v", citations[0])
+	}
+}
+
+func TestProviderCitationsFromGoogleGrounding(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"candidates": []any{map[string]any{
+			"groundingMetadata": map[string]any{
+				"groundingChunks": []any{map[string]any{
+					"web": map[string]any{"uri": "https://example.com/google", "title": "Google Source"},
+				}},
+				"groundingSupports": []any{map[string]any{
+					"segment":               map[string]any{"startIndex": float64(2), "endIndex": float64(8), "text": "claim"},
+					"groundingChunkIndices": []any{float64(0)},
+				}},
+			},
+		}},
+	}, ai.ProviderGoogle, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/google" || citations[0].Title != "Google Source" {
+		t.Fatalf("unexpected grounding citations %#v", citations)
+	}
+	if citations[0].StartIndex == nil || *citations[0].StartIndex != 2 || citations[0].EndIndex == nil || *citations[0].EndIndex != 8 || citations[0].Text != "claim" {
+		t.Fatalf("missing grounding citation range %#v", citations[0])
+	}
+}
+
+func TestProviderCitationsFromAnthropicWebSearchLocation(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type":       "web_search_result_location",
+		"url":        "https://example.com/anthropic",
+		"title":      "Anthropic Source",
+		"cited_text": "quoted source text",
+	}, ai.ProviderAnthropic, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/anthropic" || citations[0].Title != "Anthropic Source" {
+		t.Fatalf("unexpected citations %#v", citations)
+	}
+	if citations[0].Text != "quoted source text" {
+		t.Fatalf("missing cited text %#v", citations[0])
+	}
+}
+
 func TestConvertResponsesMessagesIncludesNativeAudio(t *testing.T) {
 	model := ai.Model{ID: "gpt-audio", API: ai.ApiOpenAIResponses, Provider: "openai", Input: []string{"text", "audio"}}
 	messages := ConvertResponsesMessages(model, ai.Context{

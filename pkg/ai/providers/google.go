@@ -97,6 +97,11 @@ func StreamGoogle(ctx context.Context, model ai.Model, llmContext ai.Context, op
 			if err := json.Unmarshal([]byte(sse.Data), &chunk); err != nil {
 				return fmt.Errorf("could not parse Google SSE event: %w; data=%s; raw=%s", err, sse.Data, strings.Join(sse.Raw, "\n"))
 			}
+			citations := providerCitationsFromAny(chunk, model.Provider, max(0, state.currentBlockIndex))
+			if len(citations) > 0 {
+				output.Citations = append(output.Citations, citations...)
+				stream.Push(ai.AssistantMessageEvent{Type: "source", Partial: &output})
+			}
 			state.apply(stream, &output, model, chunk)
 			return nil
 		})

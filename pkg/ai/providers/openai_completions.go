@@ -205,7 +205,9 @@ func applyCompleteOpenAICompletions(output *ai.Message, model ai.Model, raw map[
 		}
 	}
 	if text := textFromCompletionMessage(message["content"]); text != "" {
+		contentIndex := len(blocks)
 		blocks = append(blocks, ai.ContentBlock{Type: "text", Text: text})
+		output.Citations = append(output.Citations, providerCitationsFromAny(message, model.Provider, contentIndex)...)
 	}
 	if toolCalls, ok := message["tool_calls"].([]any); ok {
 		for _, rawToolCall := range toolCalls {

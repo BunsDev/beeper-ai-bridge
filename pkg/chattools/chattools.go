@@ -9,7 +9,9 @@ func Tools(info SessionInfo, fetch FetchOptions, search SearchOptions) []agent.A
 func ToolsWithOptions(info SessionInfo, fetch FetchOptions, search SearchOptions, sessionOptions SessionOptions) []agent.AgentTool[any] {
 	tools := []agent.AgentTool[any]{
 		GetSessionToolWithOptions(info, sessionOptions),
-		FetchTool(fetch),
+	}
+	if !fetch.Disabled {
+		tools = append(tools, FetchTool(fetch))
 	}
 	if search.Enabled {
 		tools = append(tools, WebSearchTool(search))

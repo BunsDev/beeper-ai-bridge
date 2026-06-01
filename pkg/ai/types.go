@@ -248,6 +248,24 @@ type Message struct {
 	FromID        string     `json:"fromId,omitempty"`
 	TokensBefore  int        `json:"tokensBefore,omitempty"`
 	Truncated     bool       `json:"truncated,omitempty"`
+	Citations     []Citation `json:"citations,omitempty"`
+}
+
+type Citation struct {
+	Type         string `json:"type,omitempty"`
+	URL          string `json:"url,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	SiteName     string `json:"siteName,omitempty"`
+	FaviconURL   string `json:"faviconUrl,omitempty"`
+	ImageURL     string `json:"imageUrl,omitempty"`
+	PublishedAt  string `json:"publishedAt,omitempty"`
+	StartIndex   *int   `json:"startIndex,omitempty"`
+	EndIndex     *int   `json:"endIndex,omitempty"`
+	ContentIndex *int   `json:"contentIndex,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	RawType      string `json:"rawType,omitempty"`
 }
 
 type Tool struct {

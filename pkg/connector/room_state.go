@@ -27,6 +27,8 @@ type RoomConfig struct {
 	AdditionalPrompt string
 	ThinkingLevel    string
 	DisabledTools    []string
+	SearchMode       string
+	FetchMode        string
 
 	modelStatePresent  bool
 	modelStateModel    string
@@ -80,6 +82,16 @@ func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (Roo
 		return RoomConfig{}, "", err
 	} else if raw != nil {
 		config.DisabledTools = stringSlice(raw["disabled"])
+		if _, ok := raw["search"]; ok {
+			config.SearchMode = normalizedToolMode(firstString(raw, "search"), defaultSearchMode)
+		} else {
+			config.SearchMode = searchModeFromDisabled(config.DisabledTools)
+		}
+		if _, ok := raw["fetch"]; ok {
+			config.FetchMode = normalizedToolMode(firstString(raw, "fetch"), defaultFetchMode)
+		} else {
+			config.FetchMode = fetchModeFromDisabled(config.DisabledTools)
+		}
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
 	return config, strings.Join(stateEventIDs, ","), nil

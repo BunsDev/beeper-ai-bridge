@@ -39,13 +39,17 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		SelectedModel:      model.ID,
 		SelectedReasoning:  cl.reasoningLevelForModel(model, roomConfig),
 		DisabledTools:      roomConfig.DisabledTools,
+		SearchMode:         roomSearchMode(roomConfig),
+		FetchMode:          roomFetchMode(roomConfig),
 		LastKnownTimestamp: formatSessionTimestampUTC(matrixEventTime(nil)),
+		LastKnownTimezone:  cl.lastKnownTimezone(),
 	}
 	if msg != nil {
 		info.LastKnownTimestamp = formatSessionTimestampUTC(matrixEventTime(msg.Event))
 	}
 	search := cl.searchOptions(roomConfig, provider)
 	fetch := chattools.FetchOptions{
+		Disabled: roomFetchMode(roomConfig) != toolModeBeeper,
 		Timeout:  time.Duration(cl.Main.Config.Fetch.TimeoutMS) * time.Millisecond,
 		MaxBytes: cl.Main.Config.Fetch.MaxBytes,
 		MaxChars: cl.Main.Config.Fetch.MaxChars,
@@ -97,7 +101,7 @@ func modelHasOutputModality(model ai.Model, modality string) bool {
 }
 
 func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderConfig) chattools.SearchOptions {
-	if toolDisabled(roomConfig.DisabledTools, "web_search") || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" {
+	if roomSearchMode(roomConfig) != toolModeBeeper || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" {
 		return chattools.SearchOptions{}
 	}
 	token, err := cl.defaultProviderBearerToken()

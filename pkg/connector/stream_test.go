@@ -589,34 +589,25 @@ func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 	}
 }
 
-func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
+func TestAppendToolOutputsAddsFetchSources(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
 	run.MessageID = "assistant:run"
 	writer := aistream.NewWriter(run, timeNow)
-	writer.ToolStart("call-search", "web_search", 0, nil)
-	writer.ToolEnd("call-search", "web_search", map[string]any{"query": "q"}, nil)
+	writer.ToolStart("call-fetch", "fetch", 0, nil)
+	writer.ToolEnd("call-fetch", "fetch", map[string]any{"url": "https://example.com/one"}, nil)
 
 	appendToolOutputs(run, []toolOutputEvent{{
-		ID:    "call-search",
-		Name:  "web_search",
-		Input: map[string]any{"query": "q"},
+		ID:    "call-fetch",
+		Name:  "fetch",
+		Input: map[string]any{"url": "https://example.com/one"},
 		Result: agent.AgentToolResult[any]{
 			Details: map[string]any{
-				"results": []any{
-					map[string]any{
-						"id":              "doc_1",
-						"title":           "One",
-						"url":             "https://example.com/one",
-						"description":     "desc",
-						"published":       "2026-01-01",
-						"siteName":        "Example",
-						"highlights":      []any{"hit"},
-						"highlightScores": []any{0.5},
-						"summary":         "sum",
-						"subpages":        []any{map[string]any{"title": "Sub", "url": "https://example.com/sub"}},
-						"extras":          map[string]any{"links": []any{"https://example.com/link"}},
-					},
-				},
+				"title":        "One",
+				"url":          "https://example.com/one",
+				"final_url":    "https://example.com/one",
+				"description":  "desc",
+				"published_at": "2026-01-01",
+				"site_name":    "Example",
 			},
 		},
 	}})
@@ -639,8 +630,52 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 		t.Fatalf("missing canonical source metadata: %#v", source)
 	}
 	appearances, ok := source["appearances"].([]map[string]any)
-	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "web_search" || appearances[0]["toolCallId"] != "call-search" || appearances[0]["rank"] != 1 {
+	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "fetch" || appearances[0]["toolCallId"] != "call-fetch" {
 		t.Fatalf("missing source appearances: %#v", source["appearances"])
+	}
+}
+
+func TestAppendToolOutputsKeepsWebSearchResultSources(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolStart("call-search", "web_search", 0, nil)
+	writer.ToolEnd("call-search", "web_search", map[string]any{"query": "latest news"}, nil)
+
+	appendToolOutputs(run, []toolOutputEvent{{
+		ID:    "call-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "latest news"},
+		Result: agent.AgentToolResult[any]{
+			Details: map[string]any{
+				"results": []any{
+					map[string]any{
+						"title":       "Headline",
+						"url":         "https://example.com/headline",
+						"description": "desc",
+					},
+				},
+			},
+		},
+	}})
+
+	message := run.FinalBeeperAIMessage(0, true)
+	var source map[string]any
+	for _, part := range message.Parts {
+		if part["type"] == "source-url" {
+			source = part
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("expected web_search source-url part for tool result list, got %#v", message.Parts)
+	}
+	appearances, ok := source["appearances"].([]map[string]any)
+	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "web_search" || appearances[0]["toolCallId"] != "call-search" || appearances[0]["rank"] != 1 {
+		t.Fatalf("missing web_search source appearance: %#v", source["appearances"])
+	}
+	if appearances[0]["cited"] == true {
+		t.Fatalf("raw web_search result should not be marked cited: %#v", appearances[0])
 	}
 }
 
@@ -909,6 +944,9 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	}
 	if len(publisher.updates) != 1 {
 		t.Fatalf("expected one live stream update, got %#v", publisher.updates)
+	}
+	if len(active.streams) != 1 || len(active.streams[0].tools) != 1 || active.streams[0].tools[0].ID != "call-1" {
+		t.Fatalf("live tool output was not retained for finalization: %#v", active.streams)
 	}
 	aiPayload, ok := publisher.updates[0][aistream.BeeperAIKey].(aistream.BeeperAI)
 	if !ok || len(aiPayload.Events) != 2 {

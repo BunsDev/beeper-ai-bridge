@@ -14,11 +14,14 @@ type SessionInfo struct {
 	SelectedModel      string   `json:"selected_model,omitempty"`
 	SelectedReasoning  string   `json:"selected_reasoning,omitempty"`
 	DisabledTools      []string `json:"disabled_tools,omitempty"`
+	SearchMode         string   `json:"search_mode,omitempty"`
+	FetchMode          string   `json:"fetch_mode,omitempty"`
 	BeeperUsername     string   `json:"beeper_username,omitempty"`
 	BeeperDisplayName  string   `json:"beeper_display_name,omitempty"`
 	BeeperAccountEmail string   `json:"beeper_account_email,omitempty"`
 	GravatarProfile    any      `json:"gravatar_profile,omitempty"`
 	LastKnownTimestamp string   `json:"last_known_timestamp"`
+	LastKnownTimezone  string   `json:"last_known_timezone,omitempty"`
 }
 
 type SessionProfile struct {
@@ -34,6 +37,7 @@ type SessionOptions struct {
 }
 
 type FetchOptions struct {
+	Disabled     bool
 	Timeout      time.Duration
 	MaxBytes     int64
 	MaxChars     int
@@ -93,6 +97,8 @@ type FetchResult struct {
 	Context         string          `json:"context,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	FetchMethod     string          `json:"-"`
+	ResponseHeaders http.Header     `json:"-"`
+	RawBody         []byte          `json:"-"`
 }
 
 type SearchResult struct {

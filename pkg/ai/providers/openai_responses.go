@@ -177,6 +177,7 @@ func applyCompleteOpenAIResponses(output *ai.Message, model ai.Model, options Op
 					if id, ok := item["id"].(string); ok && id != "" {
 						block.TextSignature = mustJSON(map[string]any{"v": 1, "id": id})
 					}
+					output.Citations = append(output.Citations, providerCitationsFromAny(item, model.Provider, len(blocks))...)
 					blocks = append(blocks, block)
 				}
 			case "function_call":

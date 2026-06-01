@@ -277,6 +277,7 @@ func (cl *Client) handleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixM
 	if err := cl.ensureUsablePortal(msg.Portal); err != nil {
 		return nil, err
 	}
+	cl.updateLastKnownTimezoneFromMessage(ctx, msg)
 	if resp, handled, err := cl.handleAISlashCommand(ctx, msg); handled {
 		return resp, err
 	}
@@ -387,7 +388,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		cl.markPendingFailed(ctx, pending, err)
 		return
 	}
-	cl.registerProviderBuiltInToolHooks(agentHarness)
+	cl.registerProviderBuiltInToolHooks(agentHarness, roomConfig)
 	active.harness = agentHarness
 	active.addPending(pending)
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)
@@ -1196,6 +1197,7 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 			downstream.End()
 			return stream
 		}
+		streamSources := newSourceCollector()
 		go func() {
 			defer cancelStream()
 			if onEnd != nil {
@@ -1248,6 +1250,11 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 					cursor.mu.Lock()
 					beforeEvents := len(run.Events)
 					applyAIStreamEvent(writer, evt, model.ContextWindow)
+					if evt.Partial != nil {
+						for _, source := range streamSources.addProviderSources(*evt.Partial) {
+							writer.Custom("com.beeper.source", source)
+						}
+					}
 					afterEvents := len(run.Events)
 					maybeSecondVisibleChunk(evt)
 					if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
@@ -1738,6 +1745,7 @@ func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent, messages ..
 	}
 	for _, message := range messages {
 		sources.addProviderSources(message)
+		sources.addAnswerURLSources(message)
 	}
 	for _, source := range sources.sources() {
 		writer.Custom("com.beeper.source", source)
@@ -2414,6 +2422,7 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, cl *Client, publish
 		return fmt.Errorf("no active assistant stream for tool output")
 	}
 	stream := r.streams[0]
+	stream.tools = append(stream.tools, output)
 	r.mu.Unlock()
 
 	stream.publish.mu.Lock()

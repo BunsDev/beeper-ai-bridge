@@ -374,11 +374,13 @@ Errors are typed with codes (`pkg/agent/harness/public_errors.go`): `CompactionE
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| `get_session` | Live chat metadata (current time/timezone, model, reasoning, disabled tools, attachments) | read-only; recomputes time per call |
-| `fetch` | Fetch an HTTP/HTTPS URL → readable text + metadata | direct fetch (≤2 MiB, ≤20 000 chars) or AI-services `/tools/fetch` with fallback |
-| `web_search` | Web search | only enabled for the Beeper provider with a proxy token; results become source citations |
+| `get_session` | Live chat metadata (current time/timezone, model, reasoning, search/fetch modes, attachments) | read-only; recomputes time per call |
+| `fetch` | Fetch a full HTTP/HTTPS URL → readable text + metadata | direct fetch (≤2 MiB, ≤20 000 chars) or AI-services `/tools/fetch` extraction with fallback |
+| `web_search` | Web search | Exa-backed Beeper search, enabled when room search mode is `beeper`; returns concise URL results for optional follow-up `fetch` calls |
 
-Tools are gated per-room via the `com.beeper.ai.tools` state event's `disabled` array. Web tools route through AI-services (`/tools/web_search`, `/tools/fetch`) using the appservice bearer token. Some models additionally expose **provider-native** built-ins (`image_generation`, `web_search`) injected into the request payload (`pkg/connector/builtin_tools.go`).
+Tools are gated per-room via the `com.beeper.ai.tools` state event. `search` may be `off`, `beeper`, or `native`; `fetch` may be `off` or `beeper`. The legacy `disabled` array is still read for older room state. In `beeper` mode, web tools route through AI-services (`/tools/web_search`, `/tools/fetch`) using the appservice bearer token. In `native` search mode, provider-native `web_search` is injected for models that advertise it; if a provider/model has no native web search, search is unavailable. Search result URLs stay in the tool view; fetched pages, provider-native citation annotations, and final-answer URLs become canonical `com.beeper.source` artifacts for client source cards. Other provider-native built-ins, such as `image_generation`, are still injected from the model catalog (`pkg/connector/builtin_tools.go`).
+
+`fetch` tries the URL directly first with `Accept` preferring Markdown, plain text, JSON, XML, and CSV. If the response is already agent-readable (Markdown/plain/JSON/XML/CSV/source-ish), it returns that result without backend extraction. If the response is HTML, it checks HTTP `Link` headers and HTML `<link rel="alternate" type="text/markdown|text/plain">` for a readable alternate and fetches that directly. Only when the direct representation is not agent-ready does it call AI-services `/tools/fetch`. Local/private hosts, GitHub raw/gist URLs, GitLab-style raw paths, and source/text file extensions are treated as direct-fetch candidates.
 
 **Adding a tool:**
 
@@ -386,9 +388,9 @@ Tools are gated per-room via the `com.beeper.ai.tools` state event's `disabled` 
 2. Return `jsonResult(value)` for consistent text + `Details` output.
 3. Register in `chattools.Tools` (unconditionally or behind a config gate).
 4. Wire config in `pkg/connector/chat_tools.go` and honor `DisabledTools`.
-5. If it produces citable sources, mirror `webSearchSourceParts` so URLs surface as message sources.
+5. If it produces citable sources, add canonical source observations in `pkg/connector/sources.go` so URLs surface as message sources.
 
-> **Security note:** direct `fetch` has **no SSRF guard** — it can reach localhost/private/link-local addresses when the bridge bypasses AI-services for raw assets and local/private targets. Treat it accordingly in your threat model.
+> **Security note:** the direct fetch path has **no SSRF guard** — it can reach localhost/private/link-local addresses when the bridge bypasses AI-services for raw assets and local/private targets. Treat it accordingly in your threat model.
 
 ## Sessions: the branching conversation tree
 
@@ -520,7 +522,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 - **Reasoning is double-validated and clamped** — setting a model can silently change the effective reasoning level.
 - **Two parallel session-tree implementations** (`aidb` vs `session` SQLite files) with near-duplicate SQL and one subtle difference (`ON DELETE CASCADE`).
 - **Token counts are estimates** (≈ chars/4) — compaction thresholds are approximate.
-- **Direct `fetch` has no SSRF protection.**
+- **The direct fetch path has no SSRF protection.**
 - **`ProviderConfig` holds secrets** (API keys, refresh tokens) in login metadata and serializes to JSON *and* YAML — don't log it.
 - **AG-UI `Event` is a map, not a struct** — read typed fields via `Get`/`String`; unknown fields survive round-trips.
 

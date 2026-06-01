@@ -34,7 +34,10 @@ func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 		SelectedModel:      "gpt-5",
 		SelectedReasoning:  "low",
 		DisabledTools:      []string{"web_search"},
+		SearchMode:         "off",
+		FetchMode:          "beeper",
 		LastKnownTimestamp: "2026-05-31T22:34:00Z",
+		LastKnownTimezone:  "Europe/Amsterdam",
 	})
 	result, err := tool.Execute(context.Background(), "call", map[string]any{}, nil)
 	if err != nil {
@@ -44,10 +47,10 @@ func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].Text), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.CurrentTimestamp == "" || info.LastKnownTimestamp != "2026-05-31T22:34:00Z" || info.ChatID != "session-1" || info.ChatTitle != "Markdown Chaos Test" || info.SelectedModel != "gpt-5" || len(info.DisabledTools) != 1 || info.DisabledTools[0] != "web_search" {
+	if info.CurrentTimestamp == "" || info.LastKnownTimestamp != "2026-05-31T22:34:00Z" || info.LastKnownTimezone != "Europe/Amsterdam" || info.ChatID != "session-1" || info.ChatTitle != "Markdown Chaos Test" || info.SelectedModel != "gpt-5" || len(info.DisabledTools) != 1 || info.DisabledTools[0] != "web_search" || info.SearchMode != "off" || info.FetchMode != "beeper" {
 		t.Fatalf("expected fresh session metadata, got %#v", info)
 	}
-	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "chat_title", "chat_first_message_at", "selected_model", "selected_reasoning", "disabled_tools", "last_known_timestamp")
+	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "chat_title", "chat_first_message_at", "selected_model", "selected_reasoning", "disabled_tools", "search_mode", "fetch_mode", "last_known_timestamp", "last_known_timezone")
 }
 
 func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
@@ -115,6 +118,15 @@ func TestToolsOmitsDisabledSearch(t *testing.T) {
 	}
 }
 
+func TestToolsOmitsDisabledFetch(t *testing.T) {
+	tools := Tools(SessionInfo{}, FetchOptions{Disabled: true}, SearchOptions{Enabled: true})
+	for _, tool := range tools {
+		if tool.Tool.Name == "fetch" {
+			t.Fatalf("fetch should not be exposed when disabled")
+		}
+	}
+}
+
 func TestFetch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -138,6 +150,9 @@ func TestFetchUsesDirectFetchForAssetsWhenToolEndpointConfigured(t *testing.T) {
 			exaHit = true
 			return testResponse(req, http.StatusOK, "application/json", `{"results":[]}`), nil
 		}
+		if !strings.Contains(req.Header.Get("Accept"), "text/markdown") {
+			t.Fatalf("direct fetch should prefer readable representations, got Accept=%q", req.Header.Get("Accept"))
+		}
 		return testResponse(req, http.StatusOK, "text/markdown", "# Title\n\nBody"), nil
 	})}
 
@@ -150,23 +165,53 @@ func TestFetchUsesDirectFetchForAssetsWhenToolEndpointConfigured(t *testing.T) {
 	}
 }
 
+func TestFetchUsesMarkdownAlternateBeforeToolEndpoint(t *testing.T) {
+	exaHit := false
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "exa.test" {
+			exaHit = true
+			return testResponse(req, http.StatusOK, "application/json", `{"markdown":"tool result"}`), nil
+		}
+		switch req.URL.Path {
+		case "/page":
+			resp := testResponse(req, http.StatusOK, "text/html; charset=utf-8", `<html><head><link rel="alternate" type="text/markdown" href="/page.md"></head><body>HTML page</body></html>`)
+			resp.Header.Set("Link", `</from-header.md>; rel="alternate"; type="text/markdown"`)
+			return resp, nil
+		case "/from-header.md":
+			return testResponse(req, http.StatusOK, "text/markdown", "# Header markdown"), nil
+		default:
+			return testResponse(req, http.StatusNotFound, "text/plain", "not found"), nil
+		}
+	})}
+
+	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ToolEndpoint: "https://exa.test/contents", Client: client, MaxBytes: 1024, MaxChars: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exaHit || result.FetchMethod != "direct" || result.FinalURL != "https://example.com/from-header.md" || !strings.Contains(result.Markdown, "Header markdown") {
+		t.Fatalf("unexpected alternate fetch result %#v exaHit=%v", result, exaHit)
+	}
+}
+
 func TestFetchUsesToolEndpointForPages(t *testing.T) {
-	exa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer key" {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "exa.test" {
+			return testResponse(req, http.StatusOK, "text/html", "<html><title>Page</title><body>HTML page</body></html>"), nil
+		}
+		if req.Method != http.MethodPost || req.Header.Get("Authorization") != "Bearer key" {
 			t.Fatalf("unexpected request method/header")
 		}
 		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
 		if payload["url"] != "https://example.com/page" || payload["max_chars"] != float64(100) {
 			t.Fatalf("unexpected fetch payload %#v", payload)
 		}
-		_, _ = w.Write([]byte(`{"request_id":"req_1","title":"Page","description":"Page description","url":"https://example.com/page","final_url":"https://example.com/page","markdown":"Extracted page text","published_at":"2026-01-01","author":"A","favicon_url":"https://example.com/favicon.ico","metadata":{"links":["https://example.com/next"]}}`))
-	}))
-	defer exa.Close()
+		return testResponse(req, http.StatusOK, "application/json", `{"request_id":"req_1","title":"Page","description":"Page description","url":"https://example.com/page","final_url":"https://example.com/page","markdown":"Extracted page text","published_at":"2026-01-01","author":"A","favicon_url":"https://example.com/favicon.ico","metadata":{"links":["https://example.com/next"]}}`), nil
+	})}
 
-	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ToolEndpoint: exa.URL, APIKey: "key", MaxChars: 100})
+	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ToolEndpoint: "https://exa.test/contents", APIKey: "key", Client: client, MaxChars: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,6 +349,98 @@ func TestSearchMapsToolOptionsToPayload(t *testing.T) {
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSearchResultsCanBeFetchedByURL(t *testing.T) {
+	var fetchedURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			_, _ = w.Write([]byte(`{"results":[{"title":"One","url":"https://example.com/one","snippet":"first"}]}`))
+		case "/fetch":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			fetchedURL, _ = payload["url"].(string)
+			_, _ = w.Write([]byte(`{"url":"` + fetchedURL + `","final_url":"` + fetchedURL + `","title":"One","markdown":"Full page"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "example.com" {
+			return testResponse(req, http.StatusOK, "text/html", "<html><title>One</title><body>Search result page</body></html>"), nil
+		}
+		return http.DefaultTransport.RoundTrip(req)
+	})}
+
+	tools := Tools(
+		SessionInfo{},
+		FetchOptions{Timeout: time.Second, ToolEndpoint: server.URL + "/fetch", Client: client},
+		SearchOptions{Enabled: true, Endpoint: server.URL + "/search", Timeout: time.Second},
+	)
+	searchIndex := -1
+	fetchIndex := -1
+	for i := range tools {
+		switch tools[i].Tool.Name {
+		case "web_search":
+			searchIndex = i
+		case "fetch":
+			fetchIndex = i
+		}
+	}
+	if searchIndex < 0 || fetchIndex < 0 {
+		t.Fatalf("missing tools")
+	}
+	properties, _ := tools[fetchIndex].Tool.Parameters["properties"].(map[string]any)
+	if _, ok := properties["ref_id"]; ok {
+		t.Fatalf("fetch schema should not expose ref_id, got %#v", tools[fetchIndex].Tool.Parameters)
+	}
+	if _, ok := properties["url"]; !ok {
+		t.Fatalf("fetch schema should expose url, got %#v", tools[fetchIndex].Tool.Parameters)
+	}
+	required, _ := tools[fetchIndex].Tool.Parameters["required"].([]string)
+	if len(required) != 1 || required[0] != "url" {
+		t.Fatalf("fetch schema should require url, got %#v", tools[fetchIndex].Tool.Parameters)
+	}
+
+	searchResult, err := tools[searchIndex].Execute(context.Background(), "search-call", map[string]any{"query": "query"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var searchBody SearchResult
+	if err := json.Unmarshal([]byte(searchResult.Content[0].Text), &searchBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(searchBody.Results) != 1 || searchBody.Results[0].URL != "https://example.com/one" {
+		t.Fatalf("missing URL in search result: %#v", searchBody)
+	}
+
+	fetchResult, err := tools[fetchIndex].Execute(context.Background(), "fetch-call", map[string]any{"url": searchBody.Results[0].URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fetchBody FetchResult
+	if err := json.Unmarshal([]byte(fetchResult.Content[0].Text), &fetchBody); err != nil {
+		t.Fatal(err)
+	}
+	if fetchedURL != "https://example.com/one" || fetchBody.Markdown != "Full page" {
+		t.Fatalf("unexpected fetch by URL: fetchedURL=%q result=%#v", fetchedURL, fetchBody)
+	}
+
+	fetchResult, err = tools[fetchIndex].Execute(context.Background(), "fetch-call-url", map[string]any{"url": "https://example.com/two"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchBody = FetchResult{}
+	if err := json.Unmarshal([]byte(fetchResult.Content[0].Text), &fetchBody); err != nil {
+		t.Fatal(err)
+	}
+	if fetchedURL != "https://example.com/two" || fetchBody.Markdown != "Full page" {
+		t.Fatalf("unexpected fetch by URL target: fetchedURL=%q result=%#v", fetchedURL, fetchBody)
 	}
 }
 

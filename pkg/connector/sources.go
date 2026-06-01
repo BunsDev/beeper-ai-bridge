@@ -3,7 +3,10 @@ package connector
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
 type sourceCollector struct {
@@ -38,12 +41,16 @@ type canonicalSource struct {
 }
 
 type sourceAppearance struct {
-	Kind       string
-	ToolCallID string
-	ToolName   string
-	Query      string
-	Rank       int
-	Cited      bool
+	Kind         string
+	ToolCallID   string
+	ToolName     string
+	Query        string
+	Rank         int
+	Cited        bool
+	StartIndex   *int
+	EndIndex     *int
+	ContentIndex *int
+	Text         string
 }
 
 func newSourceCollector() *sourceCollector {
@@ -104,7 +111,7 @@ func (c *sourceCollector) addSearchResultSource(output toolOutputEvent, query st
 	source := sourceObservation{
 		URL:         sourceString(item, "url", "URL", "uri"),
 		Title:       sourceString(item, "title"),
-		Description: firstSourceString(sourceDescriptionString(item), firstStringFromSlice(item["highlights"]), sourceString(item, "text")),
+		Description: firstSourceString(sourceDescriptionString(item), firstStringFromSlice(item["highlights"])),
 		SiteName:    sourceString(item, "siteName", "site_name", "source"),
 		FaviconURL:  sourceFaviconString(item),
 		ImageURL:    sourceImageString(item),
@@ -163,7 +170,7 @@ func (c *sourceCollector) addFetchOutput(output toolOutputEvent, result any) []m
 	source := sourceObservation{
 		URL:         firstSourceString(sourceString(data, "final_url", "finalUrl"), sourceString(data, "url")),
 		Title:       sourceString(data, "title"),
-		Description: firstSourceString(sourceDescriptionString(data), firstStringFromSlice(data["highlights"]), sourceString(data, "text")),
+		Description: firstSourceString(sourceDescriptionString(data), firstStringFromSlice(data["highlights"])),
 		SiteName:    sourceString(data, "siteName", "site_name", "source"),
 		FaviconURL:  sourceFaviconString(data),
 		ImageURL:    sourceString(data, "image", "imageUrl", "image_url"),
@@ -172,7 +179,7 @@ func (c *sourceCollector) addFetchOutput(output toolOutputEvent, result any) []m
 		Appearance: sourceAppearance{
 			Kind:       "fetch",
 			ToolCallID: output.ID,
-			ToolName:   output.Name,
+			ToolName:   "fetch",
 		},
 	}
 	if updated := c.add(source); updated != nil {
@@ -183,6 +190,20 @@ func (c *sourceCollector) addFetchOutput(output toolOutputEvent, result any) []m
 
 func (c *sourceCollector) addProviderSources(message any) []map[string]any {
 	changed := []map[string]any{}
+	if typed, ok := message.(ai.Message); ok {
+		for _, citation := range typed.Citations {
+			if updated := c.add(providerCitationObservation(citation)); updated != nil {
+				changed = append(changed, updated)
+			}
+		}
+	}
+	if typed, ok := message.(*ai.Message); ok && typed != nil {
+		for _, citation := range typed.Citations {
+			if updated := c.add(providerCitationObservation(citation)); updated != nil {
+				changed = append(changed, updated)
+			}
+		}
+	}
 	walkProviderSources(message, func(source sourceObservation) {
 		source.Priority = 80
 		source.Appearance.Kind = "provider"
@@ -192,6 +213,45 @@ func (c *sourceCollector) addProviderSources(message any) []map[string]any {
 		}
 	})
 	return changed
+}
+
+func (c *sourceCollector) addAnswerURLSources(message ai.Message) []map[string]any {
+	changed := []map[string]any{}
+	for _, rawURL := range extractMessageURLs(message) {
+		obs := sourceObservation{
+			URL:      rawURL,
+			Priority: 70,
+			Appearance: sourceAppearance{
+				Kind:  "answer",
+				Cited: true,
+			},
+		}
+		if updated := c.add(obs); updated != nil {
+			changed = append(changed, updated)
+		}
+	}
+	return changed
+}
+
+func providerCitationObservation(citation ai.Citation) sourceObservation {
+	return sourceObservation{
+		URL:         citation.URL,
+		Title:       citation.Title,
+		Description: citation.Description,
+		SiteName:    citation.SiteName,
+		FaviconURL:  citation.FaviconURL,
+		ImageURL:    citation.ImageURL,
+		PublishedAt: citation.PublishedAt,
+		Priority:    80,
+		Appearance: sourceAppearance{
+			Kind:         "provider",
+			Cited:        true,
+			StartIndex:   citation.StartIndex,
+			EndIndex:     citation.EndIndex,
+			ContentIndex: citation.ContentIndex,
+			Text:         citation.Text,
+		},
+	}
 }
 
 func (c *sourceCollector) add(obs sourceObservation) map[string]any {
@@ -316,7 +376,7 @@ func (s *canonicalSource) addAppearance(appearance sourceAppearance) bool {
 	if appearance.Kind == "" {
 		return false
 	}
-	key := fmt.Sprintf("%s|%s|%s|%s|%d|%t", appearance.Kind, appearance.ToolCallID, appearance.ToolName, appearance.Query, appearance.Rank, appearance.Cited)
+	key := fmt.Sprintf("%s|%s|%s|%s|%d|%t|%s|%s|%s|%s", appearance.Kind, appearance.ToolCallID, appearance.ToolName, appearance.Query, appearance.Rank, appearance.Cited, intPtrKey(appearance.StartIndex), intPtrKey(appearance.EndIndex), intPtrKey(appearance.ContentIndex), appearance.Text)
 	if _, exists := s.seen[key]; exists {
 		return false
 	}
@@ -361,6 +421,54 @@ func (c *sourceCollector) sources() []map[string]any {
 	return out
 }
 
+var markdownURLPattern = regexp.MustCompile(`https?://[^\s<>"'\]\)]+`)
+
+func extractMessageURLs(message ai.Message) []string {
+	text := strings.TrimSpace(messageTextContent(message.Content))
+	if text == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range markdownURLPattern.FindAllString(text, -1) {
+		match = strings.TrimRight(match, ".,;:!?")
+		normalized, ok := normalizeSourceURL(match)
+		if !ok || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func messageTextContent(content any) string {
+	switch typed := content.(type) {
+	case string:
+		return typed
+	case []ai.ContentBlock:
+		var parts []string
+		for _, block := range typed {
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case []any:
+		var parts []string
+		for _, item := range typed {
+			if block, ok := item.(map[string]any); ok && stringFromAny(block["type"]) == "text" {
+				if text := stringFromAny(block["text"]); strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
 func sourceAppearances(values []sourceAppearance) []map[string]any {
 	out := make([]map[string]any, 0, len(values))
 	for _, value := range values {
@@ -380,9 +488,28 @@ func sourceAppearances(values []sourceAppearance) []map[string]any {
 		if value.Cited {
 			item["cited"] = true
 		}
+		if value.StartIndex != nil {
+			item["startIndex"] = *value.StartIndex
+		}
+		if value.EndIndex != nil {
+			item["endIndex"] = *value.EndIndex
+		}
+		if value.ContentIndex != nil {
+			item["contentIndex"] = *value.ContentIndex
+		}
+		if value.Text != "" {
+			item["text"] = value.Text
+		}
 		out = append(out, item)
 	}
 	return out
+}
+
+func intPtrKey(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *value)
 }
 
 func normalizeSourceURL(raw string) (string, bool) {
@@ -415,18 +542,8 @@ func walkProviderSources(value any, emit func(sourceObservation)) {
 	case nil:
 		return
 	case map[string]any:
-		sourceType := strings.ToLower(sourceString(typed, "type"))
-		rawURL := sourceString(typed, "url", "uri")
-		if rawURL != "" && strings.Contains(sourceType, "citation") {
-			emit(sourceObservation{
-				URL:         rawURL,
-				Title:       sourceString(typed, "title"),
-				Description: firstSourceString(sourceDescriptionString(typed), sourceString(typed, "text")),
-				SiteName:    sourceString(typed, "siteName", "site_name"),
-				FaviconURL:  sourceFaviconString(typed),
-				ImageURL:    sourceImageString(typed),
-				PublishedAt: sourceString(typed, "published", "publishedAt", "publishedDate", "datePublished", "date"),
-			})
+		if source, ok := providerCitationSource(typed); ok {
+			emit(source)
 		}
 		for key, item := range typed {
 			lower := strings.ToLower(key)
@@ -449,6 +566,82 @@ func walkProviderSources(value any, emit func(sourceObservation)) {
 			walkProviderSources(data, emit)
 		}
 	}
+}
+
+func providerCitationSource(data map[string]any) (sourceObservation, bool) {
+	sourceType := strings.ToLower(sourceString(data, "type", "rawType"))
+	nested, _ := data["url_citation"].(map[string]any)
+	if nested == nil {
+		nested, _ = data["urlCitation"].(map[string]any)
+	}
+	citation := data
+	if nested != nil {
+		citation = mergeSourceMaps(data, nested)
+		sourceType = firstSourceString(sourceType, strings.ToLower(sourceString(nested, "type", "rawType")))
+	}
+	rawURL := sourceString(citation, "url", "uri")
+	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location") {
+		return sourceObservation{}, false
+	}
+	return sourceObservation{
+		URL:         rawURL,
+		Title:       sourceString(citation, "title"),
+		Description: firstSourceString(sourceDescriptionString(citation), sourceString(citation, "cited_text"), sourceString(citation, "text")),
+		SiteName:    sourceString(citation, "siteName", "site_name"),
+		FaviconURL:  sourceFaviconString(citation),
+		ImageURL:    sourceImageString(citation),
+		PublishedAt: sourceString(citation, "published", "publishedAt", "published_at", "publishedDate", "datePublished", "date"),
+		Appearance: sourceAppearance{
+			Kind:         "provider",
+			Cited:        true,
+			StartIndex:   intPointerFromAny(firstSourceAny(citation, "startIndex", "start_index")),
+			EndIndex:     intPointerFromAny(firstSourceAny(citation, "endIndex", "end_index")),
+			ContentIndex: intPointerFromAny(firstSourceAny(citation, "contentIndex", "content_index", "outputIndex", "output_index")),
+			Text:         firstSourceString(sourceString(citation, "text"), sourceString(citation, "cited_text")),
+		},
+	}, true
+}
+
+func mergeSourceMaps(first map[string]any, second map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range first {
+		out[key] = value
+	}
+	for key, value := range second {
+		out[key] = value
+	}
+	return out
+}
+
+func firstSourceAny(data map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := data[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func intPointerFromAny(value any) *int {
+	var out int
+	switch typed := value.(type) {
+	case int:
+		out = typed
+	case int64:
+		out = int(typed)
+	case float64:
+		out = int(typed)
+	case string:
+		if typed = strings.TrimSpace(typed); typed == "" {
+			return nil
+		}
+		if _, err := fmt.Sscanf(typed, "%d", &out); err != nil {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return &out
 }
 
 func sourceString(data map[string]any, keys ...string) string {

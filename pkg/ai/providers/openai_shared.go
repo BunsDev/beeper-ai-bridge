@@ -472,6 +472,11 @@ func (s *completionsStreamState) apply(stream *ai.AssistantMessageEventStream, o
 		output.Content = s.blocks
 		stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: index, Delta: text, Partial: output})
 	}
+	if annotations, ok := delta["annotations"].([]any); ok {
+		index := s.ensureText(stream, output)
+		output.Citations = append(output.Citations, providerCitationsFromAny(annotations, model.Provider, index)...)
+		stream.Push(ai.AssistantMessageEvent{Type: "source", Partial: output})
+	}
 	for _, field := range []string{"reasoning_content", "reasoning", "reasoning_text"} {
 		if reasoning, ok := delta[field].(string); ok && reasoning != "" {
 			signature := field
@@ -854,6 +859,15 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
 		}
+	case "response.output_text.annotation.added":
+		contentIndex := s.currentIndex
+		if contentIndex < 0 {
+			contentIndex = intFromAny(event["content_index"])
+		}
+		if annotation, ok := event["annotation"].(map[string]any); ok {
+			output.Citations = append(output.Citations, providerCitationsFromAny(annotation, model.Provider, contentIndex)...)
+			push(ai.AssistantMessageEvent{Type: "source", Partial: output})
+		}
 	case "response.function_call_arguments.delta":
 		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "toolCall" {
 			delta, _ := event["delta"].(string)
@@ -892,6 +906,7 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			if text := messageTextFromItem(item); text != "" {
 				s.blocks[s.currentIndex].Text = text
 			}
+			output.Citations = append(output.Citations, providerCitationsFromAny(item, model.Provider, s.currentIndex)...)
 			if id, ok := item["id"].(string); ok && id != "" {
 				payload := map[string]any{"v": 1, "id": id}
 				if phase, ok := item["phase"].(string); ok && phase != "" {

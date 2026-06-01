@@ -357,13 +357,14 @@ func TestSessionCommandStatsFromEntries(t *testing.T) {
 
 func TestFormatSessionCommandInfo(t *testing.T) {
 	text := formatSessionCommandInfo(sessionCommandInfo{
-		SessionID:     "session-1",
-		CreatedAt:     "2026-05-30T00:00:00Z",
-		RoomProvider:  "beeper",
-		RoomModel:     "beeper/gpt-5.5",
-		RoomReasoning: "off",
-		SystemPrompt:  true,
-		Responding:    true,
+		SessionID:         "session-1",
+		CreatedAt:         "2026-05-30T00:00:00Z",
+		RoomProvider:      "beeper",
+		RoomModel:         "beeper/gpt-5.5",
+		RoomReasoning:     "off",
+		SystemPrompt:      true,
+		Responding:        true,
+		LastKnownTimezone: "Europe/Amsterdam",
 		Stats: sessionCommandStats{
 			TotalEntries:       4,
 			Messages:           3,
@@ -377,6 +378,7 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 		"Status: `responding`",
 		"ID: `session-1`",
 		"Room model: `beeper/gpt-5.5`",
+		"Last known timezone: `Europe/Amsterdam`",
 		"System prompt: `yes, 0 chars`",
 		"Messages: `3` total, `1` user, `1` assistant, `1` tool results",
 		"Compactions: `1`",

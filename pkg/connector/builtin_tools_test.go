@@ -1,6 +1,10 @@
 package connector
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/beeper/ai-bridge/pkg/ai"
+)
 
 func TestAddBuiltInToolsToPayloadAddsCatalogBuiltIns(t *testing.T) {
 	payload := map[string]any{
@@ -11,7 +15,7 @@ func TestAddBuiltInToolsToPayloadAddsCatalogBuiltIns(t *testing.T) {
 		}},
 	}
 
-	next, changed := addBuiltInToolsToPayload(payload, []string{"image_generation"})
+	next, changed := addBuiltInToolsToPayload(payload, []map[string]any{{"type": "image_generation"}})
 	if !changed {
 		t.Fatal("expected payload to change")
 	}
@@ -43,7 +47,7 @@ func TestAddBuiltInToolsToPayloadSkipsWhenAlreadyPresent(t *testing.T) {
 		}},
 	}
 
-	_, changed := addBuiltInToolsToPayload(payload, []string{"image_generation"})
+	_, changed := addBuiltInToolsToPayload(payload, []map[string]any{{"type": "image_generation"}})
 	if changed {
 		t.Fatal("did not expect payload change when built-in tool is already present")
 	}
@@ -52,11 +56,75 @@ func TestAddBuiltInToolsToPayloadSkipsWhenAlreadyPresent(t *testing.T) {
 func TestAddBuiltInToolsToPayloadAddsOpenRouterBuiltIn(t *testing.T) {
 	payload := map[string]any{"model": "anthropic/claude-sonnet-4.5"}
 
-	next, changed := addBuiltInToolsToPayload(payload, []string{"openrouter:image_generation"})
+	next, changed := addBuiltInToolsToPayload(payload, []map[string]any{{"type": "openrouter:image_generation"}})
 	if !changed {
 		t.Fatal("expected payload to change")
 	}
 	assertToolType(t, next.(map[string]any)["tools"], "openrouter:image_generation")
+}
+
+func TestActiveBuiltInToolPayloadsHonorsNativeSearchMode(t *testing.T) {
+	model := ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, BuiltInTools: []string{"web_search", "image_generation"}}
+	if got := activeBuiltInToolPayloads(model, RoomConfig{}); len(got) != 1 || got[0]["type"] != "image_generation" {
+		t.Fatalf("default beeper search should suppress native web_search only, got %#v", got)
+	}
+	if got := activeBuiltInToolPayloads(model, RoomConfig{SearchMode: toolModeNative}); len(got) != 2 || got[0]["type"] != "web_search" || got[1]["type"] != "image_generation" {
+		t.Fatalf("native search should allow provider web_search, got %#v", got)
+	}
+	if got := activeBuiltInToolPayloads(model, RoomConfig{SearchMode: toolModeOff}); len(got) != 1 || got[0]["type"] != "image_generation" {
+		t.Fatalf("off search should suppress native web_search only, got %#v", got)
+	}
+}
+
+func TestNativeWebSearchToolPayloadsAreProviderSpecific(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     ai.Model
+		wantKey   string
+		wantValue any
+	}{
+		{
+			name:      "openai responses",
+			model:     ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI, BuiltInTools: []string{"web_search"}},
+			wantKey:   "type",
+			wantValue: "web_search",
+		},
+		{
+			name:      "openrouter",
+			model:     ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter, BuiltInTools: []string{"web_search"}},
+			wantKey:   "type",
+			wantValue: "openrouter:web_search",
+		},
+		{
+			name:      "anthropic",
+			model:     ai.Model{API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic, BuiltInTools: []string{"web_search"}},
+			wantKey:   "type",
+			wantValue: "web_search_20250305",
+		},
+		{
+			name:      "google vertex",
+			model:     ai.Model{API: ai.ApiGoogleVertex, Provider: ai.ProviderGoogleVertex, BuiltInTools: []string{"web_search"}},
+			wantKey:   "google_search",
+			wantValue: map[string]any{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := activeBuiltInToolPayloads(tt.model, RoomConfig{SearchMode: toolModeNative})
+			if len(got) != 1 {
+				t.Fatalf("expected one native search payload, got %#v", got)
+			}
+			if tt.wantKey == "google_search" {
+				if _, ok := got[0]["google_search"].(map[string]any); !ok {
+					t.Fatalf("expected google_search object, got %#v", got[0])
+				}
+				return
+			}
+			if got[0][tt.wantKey] != tt.wantValue {
+				t.Fatalf("unexpected payload %#v", got[0])
+			}
+		})
+	}
 }
 
 func assertToolType(t *testing.T, raw any, toolType string) {

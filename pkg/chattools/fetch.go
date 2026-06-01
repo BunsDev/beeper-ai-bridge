@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/net/html"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -23,9 +25,9 @@ func FetchTool(options FetchOptions) agent.AgentTool[any] {
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "fetch",
-			Description: "Fetch an HTTP or HTTPS URL and return readable page content, metadata, and source details.",
+			Description: "Fetch a URL and return readable page content.",
 			Parameters: objectSchema(map[string]any{
-				"url":       map[string]any{"type": "string", "description": "HTTP or HTTPS URL to fetch."},
+				"url":       map[string]any{"type": "string", "description": "The full HTTP/HTTPS URL to fetch."},
 				"max_chars": map[string]any{"type": "integer", "description": "Maximum number of text characters to return."},
 			}, []string{"url"}),
 		},
@@ -64,7 +66,20 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 	if options.MaxChars == 0 {
 		options.MaxChars = 20000
 	}
-	if options.ToolEndpoint != "" && !shouldDirectFetch(parsed) {
+	directResult, directErr := fetchDirect(ctx, rawURL, parsed, options)
+	if directErr == nil {
+		if shouldReturnDirectResult(parsed, directResult.ContentType) {
+			return directResult, nil
+		}
+		if isHTMLContentType(directResult.ContentType) || looksLikeHTML(directResult.RawBody) {
+			if alternateURL := findReadableAlternate(directResult.ResponseHeaders, directResult.RawBody, directResult.FinalURL); alternateURL != "" {
+				if alternate, err := fetchDirectURL(ctx, alternateURL, options); err == nil && shouldReturnDirectResult(mustParseURL(alternate.FinalURL), alternate.ContentType) {
+					return alternate, nil
+				}
+			}
+		}
+	}
+	if options.ToolEndpoint != "" {
 		result, err := FetchContents(ctx, parsed.String(), options)
 		if err == nil {
 			return result, nil
@@ -76,9 +91,12 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 			Str("fetch_method", "web_tool").
 			Str("target_url", parsed.Redacted()).
 			Str("target_host", parsed.Host).
-			Msg("Falling back to direct fetch after web tool fetch failed")
+			Msg("Falling back to direct fetch result after web tool fetch failed")
 	}
-	return fetchDirect(ctx, rawURL, parsed, options)
+	if directErr != nil {
+		return FetchResult{}, directErr
+	}
+	return directResult, nil
 }
 
 func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options FetchOptions) (FetchResult, error) {
@@ -98,6 +116,7 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 		return FetchResult{}, err
 	}
 	req.Header.Set("User-Agent", "beeper-ai-bridge/1.0")
+	req.Header.Set("Accept", directOpenAcceptHeader)
 	log.Trace().Msg("Sending AI tool HTTP request")
 	started := time.Now()
 	resp, err := client.Do(req)
@@ -123,18 +142,36 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 		truncated = true
 	}
 	metadata := extractHTMLMetadata(body, resp.Request.URL)
+	markdown := ""
+	if isDirectReadableContentType(resp.Header.Get("Content-Type")) || shouldReturnDirectURL(resp.Request.URL) {
+		markdown = text
+	}
 	return FetchResult{
-		URL:         rawURL,
-		FinalURL:    resp.Request.URL.String(),
-		Status:      resp.StatusCode,
-		ContentType: resp.Header.Get("Content-Type"),
-		Title:       metadata.Title,
-		Description: metadata.Description,
-		Text:        text,
-		Favicon:     metadata.Favicon,
-		Truncated:   truncated,
-		FetchMethod: "direct",
+		URL:             rawURL,
+		FinalURL:        resp.Request.URL.String(),
+		Status:          resp.StatusCode,
+		ContentType:     resp.Header.Get("Content-Type"),
+		Title:           metadata.Title,
+		Description:     metadata.Description,
+		Text:            text,
+		Markdown:        markdown,
+		Favicon:         metadata.Favicon,
+		Truncated:       truncated,
+		FetchMethod:     "direct",
+		ResponseHeaders: resp.Header.Clone(),
+		RawBody:         body,
 	}, nil
+}
+
+func fetchDirectURL(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return FetchResult{}, fmt.Errorf("invalid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return FetchResult{}, fmt.Errorf("unsupported URL scheme %s", parsed.Scheme)
+	}
+	return fetchDirect(ctx, rawURL, parsed, options)
 }
 
 func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
@@ -223,7 +260,16 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	return result, nil
 }
 
-func shouldDirectFetch(parsed *url.URL) bool {
+const directOpenAcceptHeader = "text/markdown, text/plain;q=0.95, application/json;q=0.9, application/xml;q=0.85, text/xml;q=0.85, text/csv;q=0.85, text/html;q=0.5, */*;q=0.1"
+
+func shouldReturnDirectResult(parsed *url.URL, contentType string) bool {
+	return isDirectReadableContentType(contentType) || shouldReturnDirectURL(parsed)
+}
+
+func shouldReturnDirectURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
 	host := strings.ToLower(parsed.Hostname())
 	path := strings.ToLower(parsed.EscapedPath())
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
@@ -246,16 +292,168 @@ func shouldDirectFetch(parsed *url.URL) bool {
 	case ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml", ".rss", ".atom",
 		".log", ".diff", ".patch",
 		".go", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sass", ".less",
-		".c", ".cc", ".cpp", ".h", ".hpp", ".java", ".kt", ".kts", ".rs", ".py", ".rb", ".swift", ".sh", ".bash", ".zsh", ".fish", ".sql",
-		".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".svg",
-		".pdf", ".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar",
-		".mp3", ".mp4", ".m4a", ".mov", ".wav", ".webm", ".ogg",
-		".woff", ".woff2", ".ttf", ".otf", ".eot", ".wasm",
-		".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx":
+		".c", ".cc", ".cpp", ".h", ".hpp", ".java", ".kt", ".kts", ".rs", ".py", ".rb", ".swift", ".sh", ".bash", ".zsh", ".fish", ".sql":
 		return true
 	default:
 		return false
 	}
+}
+
+func isDirectReadableContentType(contentType string) bool {
+	mediaType := normalizedMediaType(contentType)
+	if mediaType == "" {
+		return false
+	}
+	if mediaType == "text/markdown" || mediaType == "text/plain" || mediaType == "text/csv" || mediaType == "text/xml" {
+		return true
+	}
+	if strings.HasPrefix(mediaType, "text/") && mediaType != "text/html" {
+		return true
+	}
+	if mediaType == "application/json" || mediaType == "application/xml" {
+		return true
+	}
+	return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+}
+
+func isHTMLContentType(contentType string) bool {
+	mediaType := normalizedMediaType(contentType)
+	return mediaType == "text/html" || mediaType == "application/xhtml+xml"
+}
+
+func looksLikeHTML(body []byte) bool {
+	prefix := strings.ToLower(string(bytes.TrimSpace(body)))
+	return strings.HasPrefix(prefix, "<!doctype html") || strings.HasPrefix(prefix, "<html")
+}
+
+func isReadableAlternateType(contentType string) bool {
+	mediaType := normalizedMediaType(contentType)
+	return mediaType == "text/markdown" || mediaType == "text/plain"
+}
+
+func normalizedMediaType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	}
+	return strings.ToLower(mediaType)
+}
+
+func findReadableAlternate(headers http.Header, body []byte, finalURL string) string {
+	baseURL := mustParseURL(finalURL)
+	if alt := readableAlternateFromLinkHeaders(headers.Values("Link"), baseURL); alt != "" {
+		return alt
+	}
+	return readableAlternateFromHTML(body, baseURL)
+}
+
+func readableAlternateFromLinkHeaders(values []string, baseURL *url.URL) string {
+	for _, value := range values {
+		for _, part := range splitLinkHeader(value) {
+			linkURL, params := parseLinkValue(part)
+			if linkURL == "" {
+				continue
+			}
+			if !relContains(params["rel"], "alternate") || !isReadableAlternateType(params["type"]) {
+				continue
+			}
+			if resolved := resolveMetadataURL(linkURL, baseURL); resolved != "" {
+				return resolved
+			}
+		}
+	}
+	return ""
+}
+
+func splitLinkHeader(value string) []string {
+	var parts []string
+	start := 0
+	inQuote := false
+	inAngle := false
+	for i, r := range value {
+		switch r {
+		case '"':
+			inQuote = !inQuote
+		case '<':
+			if !inQuote {
+				inAngle = true
+			}
+		case '>':
+			if !inQuote {
+				inAngle = false
+			}
+		case ',':
+			if !inQuote && !inAngle {
+				parts = append(parts, strings.TrimSpace(value[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(value[start:]))
+	return parts
+}
+
+func parseLinkValue(value string) (string, map[string]string) {
+	params := map[string]string{}
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "<") {
+		return "", params
+	}
+	end := strings.Index(value, ">")
+	if end < 0 {
+		return "", params
+	}
+	linkURL := strings.TrimSpace(value[1:end])
+	for _, part := range strings.Split(value[end+1:], ";") {
+		key, raw, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		params[strings.ToLower(strings.TrimSpace(key))] = strings.Trim(strings.TrimSpace(raw), `"`)
+	}
+	return linkURL, params
+}
+
+func readableAlternateFromHTML(body []byte, baseURL *url.URL) string {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	var out string
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if out != "" {
+			return
+		}
+		if node.Type == html.ElementNode && strings.EqualFold(node.Data, "link") {
+			if relContains(attr(node, "rel"), "alternate") && isReadableAlternateType(attr(node, "type")) {
+				out = resolveMetadataURL(attr(node, "href"), baseURL)
+				return
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	return out
+}
+
+func relContains(rel string, token string) bool {
+	for _, part := range strings.Fields(strings.ToLower(rel)) {
+		if part == token {
+			return true
+		}
+	}
+	return false
+}
+
+func mustParseURL(rawURL string) *url.URL {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	return parsed
 }
 
 type contentsResponse struct {

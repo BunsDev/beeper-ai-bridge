@@ -89,6 +89,22 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 			run:             runSystemPromptCommand,
 		},
 		{
+			name:            "search",
+			usage:           "/search [off|beeper|native]",
+			description:     "Show or set web search mode for this room.",
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runSearchModeCommand,
+		},
+		{
+			name:            "fetch",
+			usage:           "/fetch [off|beeper]",
+			description:     "Show or set URL fetch mode for this room.",
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runFetchModeCommand,
+		},
+		{
 			name:            "compact",
 			usage:           "/compact [instructions]",
 			description:     "Manually compact this room's AI session context.",

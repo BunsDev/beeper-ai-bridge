@@ -27,3 +27,24 @@ func TestStringSliceDeduplicatesDisabledTools(t *testing.T) {
 		t.Fatalf("unexpected disabled tools %#v", got)
 	}
 }
+
+func TestRoomToolModesDefaultAndLegacyDisabled(t *testing.T) {
+	if got := roomSearchMode(RoomConfig{}); got != toolModeBeeper {
+		t.Fatalf("default search mode = %q", got)
+	}
+	if got := roomFetchMode(RoomConfig{}); got != toolModeBeeper {
+		t.Fatalf("default fetch mode = %q", got)
+	}
+	if got := roomSearchMode(RoomConfig{DisabledTools: []string{"web_search"}}); got != toolModeOff {
+		t.Fatalf("legacy disabled web_search should turn search off, got %q", got)
+	}
+	if got := roomFetchMode(RoomConfig{DisabledTools: []string{"fetch"}}); got != toolModeOff {
+		t.Fatalf("disabled fetch should turn fetch off, got %q", got)
+	}
+	if got := roomSearchMode(RoomConfig{SearchMode: "native", DisabledTools: []string{"web_search"}}); got != toolModeNative {
+		t.Fatalf("explicit search mode should win over disabled list, got %q", got)
+	}
+	if got := roomFetchMode(RoomConfig{FetchMode: "bad"}); got != defaultFetchMode {
+		t.Fatalf("invalid fetch mode should fall back, got %q", got)
+	}
+}
