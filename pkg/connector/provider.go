@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -49,22 +50,14 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 		log.Err(err).Msg("Failed to resolve AI provider")
 		return aiid.ProviderConfig{}, "", err
 	}
-	if provider.ID != aiid.DefaultProvider {
-		log.Debug().
-			Str("provider_id", provider.ID).
-			Str("provider", string(provider.Provider)).
-			Str("model_id", modelID).
-			Msg("Resolved AI provider")
-		return provider, modelID, nil
-	}
 	provider, err = cl.providerWithCatalogModelsStrict(ctx, provider)
 	if err != nil {
-		log.Err(err).Str("provider_id", provider.ID).Msg("Failed to load default AI provider model catalog")
+		log.Err(err).Str("provider_id", provider.ID).Msg("Failed to load AI provider model catalog")
 		return aiid.ProviderConfig{}, "", err
 	}
 	if len(provider.Models) == 0 {
-		err := fmt.Errorf("Beeper AI model catalog is unavailable")
-		log.Err(err).Str("provider_id", provider.ID).Msg("Default AI provider model catalog is empty")
+		err := fmt.Errorf("AI model catalog is unavailable for provider %s", provider.ID)
+		log.Err(err).Str("provider_id", provider.ID).Msg("AI provider model catalog is empty")
 		return aiid.ProviderConfig{}, "", err
 	}
 	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
@@ -175,28 +168,28 @@ func (cl *Client) defaultProviderBearerToken() (string, error) {
 	if cl == nil || cl.Main == nil {
 		return "", fmt.Errorf("missing connector for default provider")
 	}
-	if cl.Main.AppServiceToken == "" {
+	if cl.UserLogin == nil {
+		return "", fmt.Errorf("missing user login for default provider")
+	}
+	return cl.Main.defaultProviderBearerToken(cl.UserLogin.UserMXID)
+}
+
+func (c *Connector) defaultProviderBearerToken(userMXID id.UserID) (string, error) {
+	if c == nil || c.AppServiceToken == "" {
 		return "", fmt.Errorf("missing appservice token for default provider")
 	}
-	username := cl.defaultProviderUsername()
+	username := userMXID.Localpart()
 	if username == "" {
 		return "", fmt.Errorf("missing Beeper username for default provider")
 	}
 	payload, err := json.Marshal(aiServicesAppserviceToken{
-		ASToken:  cl.Main.AppServiceToken,
+		ASToken:  c.AppServiceToken,
 		Username: username,
 	})
 	if err != nil {
 		return "", err
 	}
 	return aiServicesAppserviceTokenPrefix + base64.RawURLEncoding.EncodeToString(payload), nil
-}
-
-func (cl *Client) defaultProviderUsername() string {
-	if cl == nil || cl.UserLogin == nil || cl.UserLogin.UserLogin == nil {
-		return ""
-	}
-	return cl.UserLogin.UserMXID.Localpart()
 }
 
 func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {

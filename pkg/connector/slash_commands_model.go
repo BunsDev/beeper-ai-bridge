@@ -225,10 +225,6 @@ func (cl *Client) modelOptionsText(currentProvider aiid.ProviderConfig) string {
 	options := []string{}
 	for _, providerID := range providerIDs {
 		provider := providers[providerID]
-		if len(provider.Models) == 0 && providerAllowsArbitraryModels(provider) {
-			options = append(options, fmt.Sprintf("`%s/<model>`", provider.ID))
-			continue
-		}
 		for _, model := range contactModels(provider) {
 			options = append(options, fmt.Sprintf("`%s/%s`", provider.ID, model.ID))
 		}

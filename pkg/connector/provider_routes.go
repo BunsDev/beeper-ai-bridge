@@ -96,14 +96,14 @@ func (c *Connector) handleProviderUpsert(w http.ResponseWriter, r *http.Request,
 		}
 		input.ID = routeProviderID
 	}
-	provider, err := c.VerifyProviderConfig(r.Context(), input)
-	if err != nil {
-		writeProviderError(w, http.StatusBadRequest, err)
-		return
-	}
 	login, err := c.loginForProviderRequest(r.Context(), provisioning.GetUser(r), r.URL.Query().Get("login_id"))
 	if err != nil {
 		writeProviderError(w, providerErrorStatus(err), err)
+		return
+	}
+	provider, err := c.VerifyProviderConfig(r.Context(), login, input)
+	if err != nil {
+		writeProviderError(w, http.StatusBadRequest, err)
 		return
 	}
 	if err = c.SaveProviderConfig(r.Context(), login, provider); err != nil {

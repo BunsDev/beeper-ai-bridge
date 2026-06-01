@@ -2,12 +2,9 @@ package connector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
@@ -22,6 +19,8 @@ const (
 	loginFlowOpenAIResponses      = "openai-responses"
 	loginFlowOpenAICompletions    = "openai-completions"
 	loginFlowOpenAICodexResponses = "openai-codex-responses"
+	loginFlowAnthropicMessages    = "anthropic-messages"
+	loginFlowGoogleVertex         = "google-vertex"
 	loginFlowChatGPTDevice        = "chatgpt-device"
 	loginStepBeeper               = "com.beeper.ai.login.beeper"
 	loginStepProviderConfig       = "com.beeper.ai.login.provider.config"
@@ -47,6 +46,14 @@ func (c *Connector) GetLoginFlows() []bridgev2.LoginFlow {
 		Description: "Add a provider using the OpenAI Codex Responses API",
 		ID:          loginFlowOpenAICodexResponses,
 	}, {
+		Name:        "Anthropic",
+		Description: "Add a provider using the Anthropic Messages API",
+		ID:          loginFlowAnthropicMessages,
+	}, {
+		Name:        "Google Vertex",
+		Description: "Add a provider using the Google Vertex API",
+		ID:          loginFlowGoogleVertex,
+	}, {
 		Name:        "ChatGPT",
 		Description: "Log in with ChatGPT using a browser device code",
 		ID:          loginFlowChatGPTDevice,
@@ -63,6 +70,10 @@ func (c *Connector) CreateLogin(ctx context.Context, user *bridgev2.User, flowID
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAICompletions}}, nil
 	case loginFlowOpenAICodexResponses:
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAICodexResponses}}, nil
+	case loginFlowAnthropicMessages:
+		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiAnthropicMessages}}, nil
+	case loginFlowGoogleVertex:
+		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiGoogleVertex}}, nil
 	case loginFlowChatGPTDevice:
 		return &ChatGPTDeviceLogin{Main: c, User: user}, nil
 	default:
@@ -162,18 +173,24 @@ func (l *CustomProviderLogin) submitProviderConfig(ctx context.Context, input ma
 		log.Err(err).Msg("Provider login config rejected")
 		return nil, err
 	}
-	models, err := fetchProviderModels(ctx, l.config.API, providerID, baseURL, apiKey)
+	provider, err := l.Main.providerConfigFromInput(ctx, l.User.MXID, ProviderInput{
+		ID:           providerID,
+		API:          l.config.API,
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		DefaultModel: "",
+	})
 	if err != nil {
-		log.Err(err).Msg("Failed to fetch provider models during login")
+		log.Err(err).Msg("Failed to load provider models during login")
 		return nil, err
 	}
-	log.Debug().Int("model_count", len(models)).Msg("Fetched provider models during login")
-	l.config.ProviderID = providerID
-	l.config.BaseURL = baseURL
-	l.config.APIKey = apiKey
-	l.config.Models = models
-	options := make([]string, 0, len(models))
-	for _, model := range models {
+	log.Debug().Int("model_count", len(provider.Models)).Msg("Loaded provider models during login")
+	l.config.ProviderID = provider.ID
+	l.config.BaseURL = provider.BaseURL
+	l.config.APIKey = provider.APIKey
+	l.config.Models = provider.Models
+	options := make([]string, 0, len(provider.Models))
+	for _, model := range provider.Models {
 		options = append(options, model.ID)
 	}
 	if len(options) == 0 {
@@ -255,7 +272,7 @@ type providerLoginConfig struct {
 
 func supportedProviderLoginAPI(api ai.Api) bool {
 	switch api {
-	case ai.ApiOpenAIResponses, ai.ApiOpenAICompletions, ai.ApiOpenAICodexResponses:
+	case ai.ApiOpenAIResponses, ai.ApiOpenAICompletions, ai.ApiOpenAICodexResponses, ai.ApiAnthropicMessages, ai.ApiGoogleVertex:
 		return true
 	default:
 		return false
@@ -263,7 +280,16 @@ func supportedProviderLoginAPI(api ai.Api) bool {
 }
 
 func defaultBaseURLForAPI(api ai.Api) string {
-	return "https://api.openai.com/v1"
+	switch api {
+	case ai.ApiAnthropicMessages:
+		return "https://api.anthropic.com"
+	case ai.ApiGoogleVertex:
+		return "https://aiplatform.googleapis.com"
+	case ai.ApiOpenAICompletions, ai.ApiOpenAIResponses, ai.ApiOpenAICodexResponses:
+		return "https://api.openai.com/v1"
+	default:
+		return ""
+	}
 }
 
 func providerDisplayName(providerID string) string {
@@ -272,9 +298,11 @@ func providerDisplayName(providerID string) string {
 		return "Provider"
 	}
 	known := map[string]string{
-		"openai":     "OpenAI",
-		"openrouter": "OpenRouter",
-		"lmstudio":   "LM Studio",
+		"anthropic":     "Anthropic",
+		"google-vertex": "Google Vertex",
+		"openai":        "OpenAI",
+		"openrouter":    "OpenRouter",
+		"vertex":        "Google Vertex",
 	}
 	if name, ok := known[strings.ToLower(providerID)]; ok {
 		return name
@@ -289,98 +317,6 @@ func providerDisplayName(providerID string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, " ")
-}
-
-func fetchProviderModels(ctx context.Context, api ai.Api, providerID string, baseURL string, apiKey string) ([]ai.Model, error) {
-	if !supportedProviderLoginAPI(api) {
-		return nil, fmt.Errorf("unsupported API type %s", api)
-	}
-	modelURL, err := url.JoinPath(baseURL, "models")
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+resolveConfiguredAPIKey(apiKey))
-	}
-	client := &http.Client{Timeout: 20 * time.Second}
-	logCtx := zerolog.Ctx(ctx).With().
-		Str("action", "ai_provider_models_http").
-		Str("provider_id", providerID).
-		Str("api", string(api)).
-		Str("method", http.MethodGet)
-	if parsed, parseErr := url.Parse(modelURL); parseErr == nil {
-		logCtx = logCtx.Str("url", parsed.Redacted()).Str("host", parsed.Host).Str("path", parsed.EscapedPath())
-	} else {
-		logCtx = logCtx.Str("url", modelURL)
-	}
-	log := logCtx.Logger()
-	ctx = log.WithContext(ctx)
-	log.Trace().Msg("Sending provider models HTTP request")
-	started := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Err(err).Dur("duration", time.Since(started)).Msg("Provider models HTTP request failed")
-		return nil, fmt.Errorf("failed to fetch models: %w", err)
-	}
-	defer resp.Body.Close()
-	logEvent := log.Debug()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		logEvent = log.Error()
-	}
-	logEvent.Dur("duration", time.Since(started)).
-		Int("status_code", resp.StatusCode).
-		Str("status", resp.Status).
-		Int64("response_content_length", resp.ContentLength).
-		Str("response_content_type", resp.Header.Get("Content-Type")).
-		Msg("Received provider models HTTP response")
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("failed to fetch models: provider returned HTTP %d", resp.StatusCode)
-	}
-	var body aiServicesModelListResponse
-	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to parse models response: %w", err)
-	}
-	models := make([]ai.Model, 0, len(body.Data))
-	seen := map[string]bool{}
-	provider, inferredAPI := inferProviderRoute(providerID, baseURL)
-	if api != "" {
-		inferredAPI = api
-	}
-	providerConfig := aiid.ProviderConfig{
-		ID:       providerID,
-		API:      inferredAPI,
-		Provider: configuredModelProvider(providerID, provider),
-		BaseURL:  baseURL,
-	}
-	for _, item := range body.Data {
-		modelID := strings.TrimSpace(item.ID)
-		if modelID == "" || seen[modelID] {
-			continue
-		}
-		seen[modelID] = true
-		model := ai.Model{
-			ID:            modelID,
-			Name:          item.Name,
-			API:           inferredAPI,
-			Provider:      providerConfig.Provider,
-			BaseURL:       baseURL,
-			Reasoning:     item.reasoning(),
-			Input:         item.inputModalities(),
-			ContextWindow: item.contextWindow(),
-			MaxTokens:     item.maxTokens(),
-		}
-		model = item.applyRuntime(model, providerConfig)
-		models = append(models, normalizeProviderModel(model, providerConfig))
-	}
-	if len(models) == 0 {
-		return nil, fmt.Errorf("provider returned no models")
-	}
-	log.Debug().Int("model_count", len(models)).Msg("Parsed provider models")
-	return models, nil
 }
 
 func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {
@@ -404,7 +340,16 @@ func inferProviderRoute(providerID string, baseURL string) (ai.Provider, ai.Api)
 	if providerID == string(ai.ProviderOpenRouter) || strings.Contains(baseURL, "openrouter.ai") {
 		return ai.ProviderOpenRouter, ai.ApiOpenAICompletions
 	}
-	return ai.ProviderOpenAI, ai.ApiOpenAIResponses
+	if providerID == string(ai.ProviderAnthropic) || strings.Contains(baseURL, "anthropic.com") {
+		return ai.ProviderAnthropic, ai.ApiAnthropicMessages
+	}
+	if providerID == string(ai.ProviderGoogleVertex) || providerID == "vertex" || strings.Contains(baseURL, "aiplatform.googleapis.com") {
+		return ai.ProviderGoogleVertex, ai.ApiGoogleVertex
+	}
+	if providerID == string(ai.ProviderOpenAI) || strings.Contains(baseURL, "api.openai.com") {
+		return ai.ProviderOpenAI, ai.ApiOpenAIResponses
+	}
+	return "", ""
 }
 
 func providerModels(modelList string, defaultModel string, providerID string, baseURL string) []ai.Model {
@@ -452,9 +397,6 @@ func providerModelsFromIDs(modelIDs []string, providerID string, provider ai.Pro
 }
 
 func configuredModelProvider(providerID string, provider ai.Provider) ai.Provider {
-	if providerID != string(ai.ProviderOpenAI) && providerID != string(ai.ProviderOpenRouter) {
-		return ai.Provider(providerID)
-	}
 	return provider
 }
 

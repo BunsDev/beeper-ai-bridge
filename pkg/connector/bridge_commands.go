@@ -223,14 +223,14 @@ func (c *Connector) handleBridgeProviderUpsert(ce *commands.Event, action string
 	if len(fields) == 5 {
 		input.DefaultModel = fields[4]
 	}
-	provider, err := c.VerifyProviderConfig(ce.Ctx, input)
-	if err != nil {
-		ce.Reply("Provider rejected: %v", err)
-		return
-	}
 	login, err := c.loginForBridgeProviderCommand(ce)
 	if err != nil {
 		ce.Reply(err.Error())
+		return
+	}
+	provider, err := c.VerifyProviderConfig(ce.Ctx, login, input)
+	if err != nil {
+		ce.Reply("Provider rejected: %v", err)
 		return
 	}
 	if err = c.SaveProviderConfig(ce.Ctx, login, provider); err != nil {

@@ -139,9 +139,6 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
 		return provider, resolvedModelID, nil
 	}
-	if !providerAllowsModel(provider, modelID) {
-		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
-	}
 	return provider, modelID, nil
 }
 
@@ -149,10 +146,7 @@ func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
 	if _, ok := resolveProviderModelID(provider, modelID); ok {
 		return true
 	}
-	if len(provider.Models) > 0 {
-		return false
-	}
-	return strings.TrimSpace(modelID) != ""
+	return false
 }
 
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {

@@ -647,69 +647,41 @@ func TestProviderModelsParsesOptionalModelList(t *testing.T) {
 	}
 }
 
-func TestFetchProviderModelsVerifiesAndBuildsModels(t *testing.T) {
-	var gotAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"},{"id":"model-a"}]}`))
-	}))
-	defer server.Close()
-
-	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL+"/v1", "key")
-	if err != nil {
-		t.Fatal(err)
+func TestCatalogRuntimeForCustomProviderUsesCustomBaseURL(t *testing.T) {
+	entry := aiServicesModelEntry{
+		ID:   "z-ai/glm-4.5v",
+		Name: "GLM 4.5V",
+		Runtime: &struct {
+			API      string                 `json:"api"`
+			Provider string                 `json:"provider"`
+			BaseURL  string                 `json:"baseUrl"`
+			Model    string                 `json:"model"`
+			Compat   *aiServicesModelCompat `json:"compat"`
+		}{
+			API:      string(ai.ApiOpenAICompletions),
+			Provider: string(ai.ProviderOpenRouter),
+			BaseURL:  "/proxy/openrouter/v1",
+			Model:    "z-ai/glm-4.5v",
+		},
 	}
-	if gotAuth != "Bearer key" {
-		t.Fatalf("unexpected auth header %q", gotAuth)
+	provider := aiid.ProviderConfig{
+		ID:       "openrouter",
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
 	}
-	if len(models) != 2 || models[0].ID != "model-a" || models[1].ID != "model-b" {
-		t.Fatalf("unexpected models %#v", models)
+	model := entry.applyRuntime(ai.Model{
+		ID:       entry.ID,
+		Name:     entry.Name,
+		API:      provider.API,
+		Provider: provider.Provider,
+		BaseURL:  provider.BaseURL,
+	}, provider, false)
+	if model.API != ai.ApiOpenAICompletions || model.Provider != ai.ProviderOpenRouter || model.BaseURL != provider.BaseURL {
+		t.Fatalf("unexpected custom provider runtime %#v", model)
 	}
-	if models[0].API != ai.ApiOpenAIResponses || models[0].Provider != "local" || models[0].BaseURL != server.URL+"/v1" {
-		t.Fatalf("unexpected model route %#v", models[0])
-	}
-}
-
-func TestFetchProviderModelsRespectsPublishedProviderRoutes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[
-				{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","runtime":{"provider":"anthropic","model":"claude-sonnet-4-5","api":"anthropic-messages","baseUrl":"/proxy/anthropic"}},
-				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash-lite","api":"google-vertex","baseUrl":"/proxy/vertex"}},
-				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash","api":"google-vertex","baseUrl":"/proxy/vertex"}}
-			]}`))
-	}))
-	defer server.Close()
-
-	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL, "key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	byID := map[string]ai.Model{}
-	for _, model := range models {
-		byID[model.ID] = model
-	}
-	if got := byID["claude-sonnet-4-5"]; got.API != ai.ApiAnthropicMessages || got.Provider != ai.ProviderAnthropic || got.BaseURL != server.URL+"/proxy/anthropic" {
-		t.Fatalf("unexpected Anthropic route %#v", got)
-	}
-	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
-		t.Fatalf("unexpected Vertex route %#v", got)
-	}
-	if got := byID["google/gemini-2.5-flash"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
-		t.Fatalf("unexpected legacy Google route %#v", got)
-	}
-}
-
-func TestFetchProviderModelsRejectsFailedVerification(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad key", http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	if _, err := fetchProviderModels(context.Background(), ai.ApiOpenAICompletions, "local", server.URL, "bad"); err == nil {
-		t.Fatalf("expected failed verification to return an error")
+	if model.Compat["runtime_model"] != "z-ai/glm-4.5v" || model.Compat["runtime_provider"] != string(ai.ProviderOpenRouter) {
+		t.Fatalf("expected runtime metadata, got %#v", model.Compat)
 	}
 }
 

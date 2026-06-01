@@ -168,22 +168,6 @@ func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.R
 		seen[contact.UserID] = true
 		filtered = append(filtered, contact)
 	}
-	providers := cl.providers()
-	for _, provider := range providers {
-		if !providerAllowsArbitraryModels(provider) {
-			continue
-		}
-		model, ok := arbitraryModelForProvider(provider, query)
-		if !ok {
-			continue
-		}
-		userID := aiid.ModelContactID(provider.ID, model.ID)
-		if seen[userID] {
-			continue
-		}
-		seen[userID] = true
-		filtered = append(filtered, modelContactWithGhost(ctx, cl.bridge(), provider, model))
-	}
 	return filtered
 }
 
@@ -309,9 +293,6 @@ func (cl *Client) providerWithCatalogModels(ctx context.Context, provider aiid.P
 }
 
 func (cl *Client) providerForModelContacts(ctx context.Context, provider aiid.ProviderConfig, refresh bool) (aiid.ProviderConfig, bool) {
-	if provider.ID != aiid.DefaultProvider {
-		return provider, true
-	}
 	refreshed, err := cl.providerWithCatalogModelsStrictWithRefresh(ctx, provider, refresh)
 	if err != nil {
 		zerolog.Ctx(ctx).Warn().
@@ -336,12 +317,6 @@ func (cl *Client) providerWithCatalogModelsStrict(ctx context.Context, provider 
 }
 
 func (cl *Client) providerWithCatalogModelsStrictWithRefresh(ctx context.Context, provider aiid.ProviderConfig, refresh bool) (aiid.ProviderConfig, error) {
-	if provider.ID != aiid.DefaultProvider {
-		return provider, nil
-	}
-	if len(provider.Models) > 0 && !refresh {
-		return provider, nil
-	}
 	models, err := cl.cachedAIServicesCatalogModels(ctx, provider, refresh)
 	if err != nil {
 		return provider, err
@@ -402,10 +377,17 @@ func listedProviderModelContacts(ctx context.Context, br *bridgev2.Bridge, provi
 }
 
 func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.ProviderConfig) ([]ai.Model, error) {
-	if cl == nil || cl.Main == nil || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" || cl.Main.AppServiceToken == "" {
+	if cl == nil || cl.Main == nil || cl.UserLogin == nil || cl.Main.AppServiceToken == "" {
 		return nil, nil
 	}
-	modelsURL, err := aiServicesModelsURL(provider.BaseURL)
+	catalogProvider := provider
+	if provider.ID != aiid.DefaultProvider {
+		catalogProvider = cl.Main.defaultProviderConfig(cl.UserLogin.UserMXID)
+		if catalogProvider.BaseURL == "" {
+			return nil, fmt.Errorf("AI Services is not available for %s", cl.UserLogin.UserMXID.Homeserver())
+		}
+	}
+	modelsURL, err := aiServicesModelsURL(catalogProvider.BaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +415,9 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 	}
 	models := make([]ai.Model, 0, len(body.Data))
 	for _, item := range body.Data {
+		if provider.ID != aiid.DefaultProvider && !item.matchesProvider(provider.Provider) {
+			continue
+		}
 		modelID := strings.TrimSpace(item.ID)
 		if modelID == "" {
 			continue
@@ -454,7 +439,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			BuiltInTools:         item.builtInTools(),
 			Compat:               item.compat(),
 		}
-		model = item.applyRuntime(model, provider)
+		model = item.applyRuntime(model, provider, provider.ID == aiid.DefaultProvider)
 		models = append(models, normalizeProviderModel(model, provider))
 	}
 	return models, nil
@@ -546,7 +531,14 @@ type aiServicesModelCompat struct {
 	AllowEmptySignature                         *bool  `json:"allowEmptySignature,omitempty"`
 }
 
-func (entry aiServicesModelEntry) applyRuntime(model ai.Model, provider aiid.ProviderConfig) ai.Model {
+func (entry aiServicesModelEntry) matchesProvider(provider ai.Provider) bool {
+	if entry.Runtime == nil || entry.Runtime.Provider == "" {
+		return provider == ""
+	}
+	return ai.Provider(entry.Runtime.Provider) == provider
+}
+
+func (entry aiServicesModelEntry) applyRuntime(model ai.Model, provider aiid.ProviderConfig, useRuntimeBaseURL bool) ai.Model {
 	if entry.Runtime == nil {
 		return model
 	}
@@ -563,7 +555,7 @@ func (entry aiServicesModelEntry) applyRuntime(model ai.Model, provider aiid.Pro
 		model.Provider = ai.Provider(entry.Runtime.Provider)
 		model.Compat["runtime_provider"] = entry.Runtime.Provider
 	}
-	if entry.Runtime.BaseURL != "" {
+	if useRuntimeBaseURL && entry.Runtime.BaseURL != "" {
 		model.BaseURL = aiServicesRuntimeBaseURL(provider.BaseURL, entry.Runtime.BaseURL)
 	}
 	entry.Runtime.Compat.applyTo(model.Compat)
@@ -820,16 +812,6 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 			return model, true
 		}
 	}
-	if modelID, ok := strings.CutPrefix(identifier, provider.ID+"/"); ok {
-		if model, ok := arbitraryModelForProvider(provider, modelID); ok && providerAllowsArbitraryModels(provider) {
-			return model, true
-		}
-	}
-	if !strings.Contains(identifier, "/") && providerAllowsArbitraryModels(provider) {
-		if model, ok := arbitraryModelForProvider(provider, identifier); ok {
-			return model, true
-		}
-	}
 	return ai.Model{}, false
 }
 
@@ -881,30 +863,6 @@ func contactModels(provider aiid.ProviderConfig) []ai.Model {
 		return nil
 	}
 	return []ai.Model{normalizeProviderModel(modelForProviderConfig(provider, provider.DefaultModel), provider)}
-}
-
-func arbitraryModelForProvider(provider aiid.ProviderConfig, query string) (ai.Model, bool) {
-	modelID := strings.TrimSpace(query)
-	if modelID == "" {
-		return ai.Model{}, false
-	}
-	if stripped, ok := strings.CutPrefix(modelID, provider.ID+"/"); ok {
-		modelID = strings.TrimSpace(stripped)
-	}
-	if modelID == "" {
-		return ai.Model{}, false
-	}
-	model := normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
-	displayName := provider.DisplayName
-	if displayName == "" {
-		displayName = providerDisplayName(provider.ID)
-	}
-	model.Name = displayName + ": " + modelID
-	return model, true
-}
-
-func providerAllowsArbitraryModels(provider aiid.ProviderConfig) bool {
-	return provider.ID != aiid.DefaultProvider
 }
 
 func cloneModelContacts(contacts []*bridgev2.ResolveIdentifierResponse) []*bridgev2.ResolveIdentifierResponse {
