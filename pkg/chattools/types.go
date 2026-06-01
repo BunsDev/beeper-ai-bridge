@@ -88,8 +88,8 @@ type FetchResult struct {
 	Entities        []any           `json:"entities,omitempty"`
 	Extras          map[string]any  `json:"extras,omitempty"`
 	Source          string          `json:"source,omitempty"`
-	RequestID       string          `json:"requestId,omitempty"`
-	RequestIDSnake  string          `json:"request_id,omitempty"`
+	RequestID       string          `json:"-"`
+	RequestIDSnake  string          `json:"-"`
 	Context         string          `json:"context,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	FetchMethod     string          `json:"-"`
@@ -97,8 +97,8 @@ type FetchResult struct {
 
 type SearchResult struct {
 	Query              string         `json:"query"`
-	RequestID          string         `json:"requestId,omitempty"`
-	RequestIDSnake     string         `json:"request_id,omitempty"`
+	RequestID          string         `json:"-"`
+	RequestIDSnake     string         `json:"-"`
 	ResolvedSearchType string         `json:"resolvedSearchType,omitempty"`
 	SearchType         string         `json:"searchType,omitempty"`
 	SearchContextSize  string         `json:"search_context_size,omitempty"`
