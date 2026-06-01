@@ -10,16 +10,36 @@ import (
 
 func providerCitationsFromAny(value any, provider ai.Provider, contentIndex int) []ai.Citation {
 	out := []ai.Citation{}
+	seen := map[string]struct{}{}
+	add := func(citation ai.Citation) {
+		key := fmt.Sprintf("%s|%s|%s|%s", citation.URL, citation.RawType, intPointerKey(citation.StartIndex), intPointerKey(citation.EndIndex))
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, citation)
+	}
 	if data, ok := value.(map[string]any); ok {
-		out = append(out, googleGroundingCitationsFromMap(data, provider, contentIndex)...)
-		out = append(out, googleURLContextCitationsFromMap(data, provider, contentIndex)...)
+		for _, citation := range googleGroundingCitationsFromMap(data, provider, contentIndex) {
+			add(citation)
+		}
+		for _, citation := range googleURLContextCitationsFromMap(data, provider, contentIndex) {
+			add(citation)
+		}
 	}
 	walkProviderCitationMaps(value, func(item map[string]any) {
 		if citation, ok := providerCitationFromMap(item, provider, contentIndex); ok {
-			out = append(out, citation)
+			add(citation)
 		}
 	})
 	return out
+}
+
+func intPointerKey(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.Itoa(*value)
 }
 
 func googleGroundingCitationsFromMap(data map[string]any, provider ai.Provider, contentIndex int) []ai.Citation {
@@ -171,16 +191,19 @@ func walkProviderCitationMaps(value any, emit func(map[string]any)) {
 }
 
 func providerCitationFromMap(data map[string]any, provider ai.Provider, contentIndex int) (ai.Citation, bool) {
-	rawType := strings.ToLower(stringFromAny(data["type"]))
+	rawType := strings.ToLower(firstCitationString(stringFromAny(data["rawType"]), stringFromAny(data["type"])))
 	citationData := data
 	if nested, _ := data["url_citation"].(map[string]any); nested != nil {
 		citationData = mergeCitationMaps(data, nested)
 	} else if nested, _ := data["urlCitation"].(map[string]any); nested != nil {
 		citationData = mergeCitationMaps(data, nested)
 	}
-	rawType = firstCitationString(rawType, strings.ToLower(stringFromAny(citationData["type"])))
+	rawType = firstCitationString(
+		strings.ToLower(firstCitationString(stringFromAny(citationData["rawType"]), stringFromAny(citationData["type"]))),
+		rawType,
+	)
 	url := firstCitationString(stringFromAny(citationData["url"]), stringFromAny(citationData["uri"]))
-	if url == "" || (!strings.Contains(rawType, "citation") && rawType != "web_search_result_location" && rawType != "web_fetch_result" && rawType != "openrouter:web_fetch") {
+	if url == "" || (!strings.Contains(rawType, "citation") && rawType != "web_search_result_location" && rawType != "web_search_result" && rawType != "web_fetch_result" && rawType != "openrouter:web_fetch") {
 		return ai.Citation{}, false
 	}
 	title := stringFromAny(citationData["title"])

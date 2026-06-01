@@ -130,6 +130,7 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 	isZai := provider == "zai" || strings.Contains(baseURL, "api.z.ai")
 	isTogether := provider == "together" || strings.Contains(baseURL, "api.together.ai") || strings.Contains(baseURL, "api.together.xyz")
 	isMoonshot := provider == "moonshotai" || provider == "moonshotai-cn" || strings.Contains(baseURL, "api.moonshot.")
+	isOpenRouter := provider == "openrouter" || strings.Contains(baseURL, "openrouter.ai")
 	isCloudflareWorkersAI := provider == "cloudflare-workers-ai" || strings.Contains(baseURL, "api.cloudflare.com")
 	isCloudflareAIGateway := provider == "cloudflare-ai-gateway" || strings.Contains(baseURL, "gateway.ai.cloudflare.com")
 	isA8C := provider == "a8c" || strings.Contains(baseURL, "/proxy/a8c/")
@@ -158,7 +159,7 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 		thinkingFormat = "together"
 	} else if isA8C {
 		thinkingFormat = "a8c"
-	} else if provider == "openrouter" || strings.Contains(baseURL, "openrouter.ai") {
+	} else if isOpenRouter {
 		thinkingFormat = "openrouter"
 	}
 	maxTokensField := "max_completion_tokens"
@@ -171,7 +172,7 @@ func detectOpenAICompletionsCompat(model ai.Model) ResolvedOpenAICompletionsComp
 	}
 	return ResolvedOpenAICompletionsCompat{
 		SupportsStore:                               !isNonStandard,
-		SupportsDeveloperRole:                       !isNonStandard,
+		SupportsDeveloperRole:                       !isNonStandard && !isOpenRouter,
 		SupportsReasoningEffort:                     !isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAIGateway,
 		SupportsUsageInStreaming:                    true,
 		MaxTokensField:                              maxTokensField,
@@ -785,6 +786,13 @@ func responsesEventItemID(event map[string]any) string {
 	return strings.TrimSpace(stringFromAny(event["item_id"]))
 }
 
+func responsesNativeToolKey(item map[string]any, toolCall ai.ToolCall) string {
+	if id := responsesItemID(item); id != "" {
+		return id
+	}
+	return toolCall.ID
+}
+
 func (s *responsesStreamState) eventItemID(event map[string]any) string {
 	if id := responsesEventItemID(event); id != "" {
 		return id
@@ -938,6 +946,11 @@ func responsesNativeToolResult(item map[string]any, provider ai.Provider) map[st
 			result[key] = value
 		}
 	}
+	if toolName == "web_search" {
+		if results := item["results"]; results != nil {
+			result["results"] = results
+		}
+	}
 	if toolName == "fetch" {
 		if url := stringFromAny(item["url"]); url != "" {
 			result["final_url"] = url
@@ -1037,7 +1050,12 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			if !ok {
 				return
 			}
-			s.nativeToolsByItemID[itemID] = toolCall
+			toolKey := responsesNativeToolKey(item, toolCall)
+			s.nativeToolsByItemID[toolKey] = toolCall
+			if itemID == "" {
+				s.setEventOutputIndex(event, toolKey)
+				s.currentItemID = toolKey
+			}
 			s.currentIndex = -1
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: &toolCall, Partial: output})
@@ -1285,6 +1303,9 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
 		itemID := responsesItemID(item)
+		if itemID == "" {
+			itemID = s.eventItemID(event)
+		}
 		if _, _, ok := responsesNativeToolInfo(item, model.Provider); ok {
 			toolCall := s.nativeToolsByItemID[itemID]
 			if toolCall.ID == "" {

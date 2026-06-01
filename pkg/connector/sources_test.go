@@ -117,6 +117,34 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 		t.Fatalf("OpenRouter web fetch source was not mapped: %#v", openRouterFetchSources)
 	}
 
+	nestedCitationSources := newSourceCollector().addProviderSources(map[string]any{
+		"type": "annotation",
+		"url_citation": map[string]any{
+			"type":  "url_citation",
+			"url":   "https://example.com/nested",
+			"title": "Nested Citation",
+		},
+	})
+	if len(nestedCitationSources) != 1 || nestedCitationSources[0]["title"] != "Nested Citation" {
+		t.Fatalf("nested provider citation was not mapped: %#v", nestedCitationSources)
+	}
+
+	nativeSearchSources := newSourceCollector().addWebSearchOutput(toolOutputEvent{
+		ID:    "native-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "q"},
+	}, map[string]any{
+		"native": true,
+		"results": []map[string]any{{
+			"type":  "web_search_result",
+			"url":   "https://example.com/native-search",
+			"title": "Native Search",
+		}},
+	})
+	if len(nativeSearchSources) != 1 || nativeSearchSources[0]["title"] != "Native Search" {
+		t.Fatalf("native search source was not mapped: %#v", nativeSearchSources)
+	}
+
 	messageSources := newSourceCollector().addProviderSources(ai.Message{
 		Citations: []ai.Citation{{
 			Type:       "url_citation",
@@ -155,13 +183,16 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 	if len(searchSources) != 1 {
 		t.Fatalf("expected search source, got %#v", searchSources)
 	}
-	answerSources := collector.addAnswerURLSources(ai.Message{Content: "Use https://example.com/known and https://example.org/new."})
-	if len(answerSources) != 2 {
+	answerSources := collector.addAnswerURLSources(ai.Message{Content: "Use https://example.com/known and https://example.org/new. Per https://en.wikipedia.org/wiki/Mercury_(element), done."})
+	if len(answerSources) != 3 {
 		t.Fatalf("expected answer URL sources, got %#v", answerSources)
 	}
 	sources := collector.sources()
-	if len(sources) != 2 {
+	if len(sources) != 3 {
 		t.Fatalf("expected canonical known + new sources, got %#v", sources)
+	}
+	if sources[2]["url"] != "https://en.wikipedia.org/wiki/Mercury_(element)" {
+		t.Fatalf("parenthesized URL was not preserved: %#v", sources[2])
 	}
 	answerAppearances, ok := sources[0]["appearances"].([]map[string]any)
 	if !ok || len(answerAppearances) != 2 || answerAppearances[1]["kind"] != "answer" || answerAppearances[1]["cited"] != true {

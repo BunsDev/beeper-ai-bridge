@@ -165,12 +165,12 @@ func TestFetchUsesDirectFetchForAssetsWhenToolEndpointConfigured(t *testing.T) {
 	}
 }
 
-func TestFetchUsesMarkdownAlternateBeforeToolEndpoint(t *testing.T) {
+func TestFetchUsesMarkdownAlternateAfterToolEndpointFails(t *testing.T) {
 	exaHit := false
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host == "exa.test" {
 			exaHit = true
-			return testResponse(req, http.StatusOK, "application/json", `{"markdown":"tool result"}`), nil
+			return testResponse(req, http.StatusBadGateway, "text/plain", "nope"), nil
 		}
 		switch req.URL.Path {
 		case "/page":
@@ -188,7 +188,7 @@ func TestFetchUsesMarkdownAlternateBeforeToolEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exaHit || result.FetchMethod != "direct" || result.FinalURL != "https://example.com/from-header.md" || !strings.Contains(result.Markdown, "Header markdown") {
+	if !exaHit || result.FetchMethod != "direct" || result.FinalURL != "https://example.com/from-header.md" || !strings.Contains(result.Markdown, "Header markdown") {
 		t.Fatalf("unexpected alternate fetch result %#v exaHit=%v", result, exaHit)
 	}
 }
@@ -208,14 +208,14 @@ func TestFetchUsesToolEndpointForPages(t *testing.T) {
 		if payload["url"] != "https://example.com/page" || payload["max_chars"] != float64(100) {
 			t.Fatalf("unexpected fetch payload %#v", payload)
 		}
-		return testResponse(req, http.StatusOK, "application/json", `{"request_id":"req_1","title":"Page","description":"Page description","url":"https://example.com/page","final_url":"https://example.com/page","markdown":"Extracted page text","published_at":"2026-01-01","author":"A","favicon_url":"https://example.com/favicon.ico","metadata":{"links":["https://example.com/next"]}}`), nil
+		return testResponse(req, http.StatusOK, "application/json", `{"request_id":"req_1","title":"Page","description":"Page description","url":"https://example.com/page","final_url":"https://example.com/page","text":"Plain page text","markdown":"# Extracted page text","published_at":"2026-01-01","author":"A","favicon_url":"https://example.com/favicon.ico","metadata":{"links":["https://example.com/next"]}}`), nil
 	})}
 
 	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ToolEndpoint: "https://exa.test/contents", APIKey: "key", Client: client, MaxChars: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.FetchMethod != "web_tool" || result.RequestID != "req_1" || result.Title != "Page" || result.Text != "Extracted page text" || result.Markdown != "Extracted page text" {
+	if result.FetchMethod != "web_tool" || result.RequestID != "req_1" || result.Title != "Page" || result.Text != "Plain page text" || result.Markdown != "# Extracted page text" {
 		t.Fatalf("unexpected fetch result %#v", result)
 	}
 	if result.Description != "Page description" || result.Favicon != "https://example.com/favicon.ico" || result.FaviconURL != "https://example.com/favicon.ico" || result.Published != "2026-01-01" || result.Author != "A" || result.Extras["links"] == nil {
@@ -265,6 +265,26 @@ func TestFetchFallsBackToDirectWhenToolEndpointFails(t *testing.T) {
 	}
 	if !exaHit || result.FetchMethod != "direct" || result.Title != "Fallback" || !strings.Contains(result.Text, "Direct page") {
 		t.Fatalf("unexpected fallback result %#v exaHit=%v", result, exaHit)
+	}
+}
+
+func TestFetchNonSuccessDirectFallsBackToToolEndpoint(t *testing.T) {
+	var directHits, toolHits int
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "exa.test" {
+			toolHits++
+			return testResponse(req, http.StatusOK, "application/json", `{"url":"https://example.com/not-found.txt","markdown":"Recovered"}`), nil
+		}
+		directHits++
+		return testResponse(req, http.StatusNotFound, "text/plain", "not found"), nil
+	})}
+
+	result, err := Fetch(context.Background(), "https://example.com/not-found.txt", FetchOptions{Timeout: time.Second, ToolEndpoint: "https://exa.test/contents", Client: client, MaxBytes: 1024, MaxChars: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directHits != 1 || toolHits != 1 || result.FetchMethod != "web_tool" || result.Text != "Recovered" {
+		t.Fatalf("unexpected fallback result %#v directHits=%d toolHits=%d", result, directHits, toolHits)
 	}
 }
 

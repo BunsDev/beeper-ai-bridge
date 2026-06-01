@@ -132,7 +132,14 @@ func aiServicesLimitsURL(proxyBaseURL string) (string, error) {
 
 func formatLimitsCommandInfo(limits aiServicesLimitsResponse, now time.Time) string {
 	var text strings.Builder
-	appendLimitSection(&text, "Models", limits.Windows.LLM, now)
+	text.WriteString("# AI limits\n\n")
+	appendLimitSectionIfReported(&text, "Models", limits.Windows.LLM, now)
+	appendLimitSectionIfReported(&text, "Web Search", limits.Windows.WebTools, now)
+	appendLimitSectionIfReported(&text, "Transcription", limits.Windows.AudioTranscriptions, now)
+	appendLimitSectionIfReported(&text, "Audio Generation", limits.Windows.AudioGeneration, now)
+	if strings.TrimSpace(text.String()) == "# AI limits" {
+		text.WriteString("No limits reported.\n")
+	}
 	return text.String()
 }
 
@@ -163,6 +170,17 @@ func limitCategories(limits aiServicesLimitsResponse) []limitCategory {
 
 func appendLimitSection(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {
 	appendLimitSectionWithUsedFormatter(text, label, windows, now, formatLimitUsed)
+}
+
+func appendLimitSectionIfReported(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {
+	if emptyLimitWindows(windows) {
+		return
+	}
+	if text.Len() > 0 && !strings.HasSuffix(text.String(), "\n\n") {
+		text.WriteString("\n")
+	}
+	appendLimitSection(text, label, windows, now)
+	text.WriteString("\n")
 }
 
 func appendLimitSectionWithUsedFormatter(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time, formatUsed func(aiServicesLimitWindow) string) {

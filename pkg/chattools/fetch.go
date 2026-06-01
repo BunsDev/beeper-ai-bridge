@@ -66,17 +66,13 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 	if options.MaxChars == 0 {
 		options.MaxChars = 20000
 	}
-	directResult, directErr := fetchDirect(ctx, rawURL, parsed, options)
-	if directErr == nil {
-		if shouldReturnDirectResult(parsed, directResult.ContentType) {
-			return directResult, nil
-		}
-		if isHTMLContentType(directResult.ContentType) || looksLikeHTML(directResult.RawBody) {
-			if alternateURL := findReadableAlternate(directResult.ResponseHeaders, directResult.RawBody, directResult.FinalURL); alternateURL != "" {
-				if alternate, err := fetchDirectURL(ctx, alternateURL, options); err == nil && shouldReturnDirectResult(mustParseURL(alternate.FinalURL), alternate.ContentType) {
-					return alternate, nil
-				}
-			}
+	directFirst := options.ToolEndpoint == "" || shouldReturnDirectURL(parsed)
+	var directResult FetchResult
+	var directErr error
+	if directFirst {
+		directResult, directErr = fetchDirect(ctx, rawURL, parsed, options)
+		if result, ok := directFetchResult(ctx, directResult, directErr, options); ok {
+			return result, nil
 		}
 	}
 	if options.ToolEndpoint != "" {
@@ -93,10 +89,40 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 			Str("target_host", parsed.Host).
 			Msg("Falling back to direct fetch result after web tool fetch failed")
 	}
+	if !directFirst {
+		directResult, directErr = fetchDirect(ctx, rawURL, parsed, options)
+		if result, ok := directFetchResult(ctx, directResult, directErr, options); ok {
+			return result, nil
+		}
+	}
 	if directErr != nil {
 		return FetchResult{}, directErr
 	}
+	if !isHTTPSuccess(directResult.Status) {
+		return FetchResult{}, fmt.Errorf("direct fetch failed with HTTP %d", directResult.Status)
+	}
 	return directResult, nil
+}
+
+func directFetchResult(ctx context.Context, directResult FetchResult, directErr error, options FetchOptions) (FetchResult, bool) {
+	if directErr != nil || !isHTTPSuccess(directResult.Status) {
+		return FetchResult{}, false
+	}
+	if shouldReturnDirectResult(mustParseURL(directResult.FinalURL), directResult.ContentType) {
+		return directResult, true
+	}
+	if isHTMLContentType(directResult.ContentType) || looksLikeHTML(directResult.RawBody) {
+		if alternateURL := findReadableAlternate(directResult.ResponseHeaders, directResult.RawBody, directResult.FinalURL); alternateURL != "" {
+			if alternate, err := fetchDirectURL(ctx, alternateURL, options); err == nil && isHTTPSuccess(alternate.Status) && shouldReturnDirectResult(mustParseURL(alternate.FinalURL), alternate.ContentType) {
+				return alternate, true
+			}
+		}
+	}
+	return FetchResult{}, false
+}
+
+func isHTTPSuccess(status int) bool {
+	return status >= 200 && status < 300
 }
 
 func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options FetchOptions) (FetchResult, error) {
@@ -233,7 +259,7 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 		Title:          body.Title,
 		Description:    body.Description,
 		SiteName:       body.SiteName,
-		Text:           firstNonEmpty(body.Markdown, body.Text),
+		Text:           firstNonEmpty(body.Text, body.Markdown),
 		Markdown:       firstNonEmpty(body.Markdown, body.Text),
 		Truncated:      body.Truncated,
 		RequestID:      firstNonEmpty(body.RequestID, body.RequestIDSnake),
@@ -250,7 +276,11 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	if len([]rune(result.Text)) > textMaxChars {
 		runes := []rune(result.Text)
 		result.Text = string(runes[:textMaxChars])
-		result.Markdown = result.Text
+		result.Truncated = true
+	}
+	if len([]rune(result.Markdown)) > textMaxChars {
+		runes := []rune(result.Markdown)
+		result.Markdown = string(runes[:textMaxChars])
 		result.Truncated = true
 	}
 	log.Debug().

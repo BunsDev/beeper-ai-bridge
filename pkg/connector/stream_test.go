@@ -246,6 +246,105 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	}
 }
 
+func TestStreamPublisherUsesFreshTextMessageAfterToolContinuationWithPriorText(t *testing.T) {
+	ctx := context.Background()
+	toolAPI := ai.Api("test-stream-tool-prior-text")
+	answerAPI := ai.Api("test-stream-answer-after-prior-text")
+	ai.RegisterAPIProvider(toolAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			toolCall := &ai.ToolCall{ID: "call-session", Name: "get_session", Arguments: map[string]any{}}
+			message := ai.Message{
+				Role: "assistant",
+				Content: []ai.ContentBlock{
+					{Type: "text", Text: "before "},
+					{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
+				},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "before "})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{
+				Role:       "assistant",
+				Content:    []ai.ContentBlock{{Type: "text", Text: "after"}},
+				StopReason: ai.StopReasonStop,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "after"})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(toolAPI)
+	defer ai.UnregisterAPIProvider(answerAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	cursor := &streamPublishCursor{nextSeq: 1}
+
+	toolResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: toolAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if toolResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected tool stream result %#v", toolResult)
+	}
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolEnd("call-session", "get_session", map[string]any{}, map[string]any{"state": agui.ToolResultStateComplete, "status": "success"})
+
+	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if answerResult.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected answer stream result %#v", answerResult)
+	}
+
+	textMessageIDs := textContentMessageIDs(run.Events)
+	if strings.Join(textMessageIDs, "|") != "assistant:run|assistant:run-text-1" {
+		t.Fatalf("resumed answer reused a prior text message id: %#v", textMessageIDs)
+	}
+	message := run.FinalBeeperAIMessage(0, true)
+	got := uiPartSummary(message.Parts)
+	want := []string{"text:before ", "tool-call:call-session", "text:after"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("continued UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, message.Parts)
+	}
+}
+
+func TestDoneFallbackAfterPriorTextUsesCurrentWriterOnly(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	firstWriter := aistream.NewWriter(run, timeNow)
+	firstWriter.Start()
+	firstWriter.TextDelta(0, "before ")
+	firstWriter.ToolStart("call-session", "get_session", 1, nil)
+	firstWriter.ToolInputComplete("call-session", "get_session", map[string]any{})
+	firstWriter.AwaitToolUseWithUsage(nil)
+
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "after"}},
+		StopReason: ai.StopReasonStop,
+	}
+	secondWriter := aistream.NewWriter(run, timeNow)
+	applyAIStreamEvent(secondWriter, ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+
+	textMessageIDs := textContentMessageIDs(run.Events)
+	if strings.Join(textMessageIDs, "|") != "assistant:run|assistant:run-text-1" {
+		t.Fatalf("done fallback reused a prior text message id: %#v", textMessageIDs)
+	}
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := uiPartSummary(uiMessage.Parts)
+	want := []string{"text:before ", "tool-call:call-session", "text:after"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("fallback UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
 func TestFinalizedAssistantRunPreservesAccumulatedStreamUsage(t *testing.T) {
 	run := *aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
 	run.Usage = agui.Usage{PromptTokens: 13, CompletionTokens: 3, ReasoningTokens: 3, TotalTokens: 16}
@@ -1121,6 +1220,44 @@ func TestPublishNewStreamEventsSuppressesMautrixRequestBodyLogs(t *testing.T) {
 	if publisher.publishLogLevels[0] < zerolog.FatalLevel {
 		t.Fatalf("stream carrier publish should suppress mautrix request body logs, got level %s", publisher.publishLogLevels[0])
 	}
+}
+
+func textContentMessageIDs(events []agui.Event) []string {
+	var ids []string
+	for _, evt := range events {
+		if evt.Type() != agui.EventTextMessageContent && evt.Type() != agui.EventTextMessageChunk {
+			continue
+		}
+		delta, _ := evt.Get("delta").(string)
+		if delta == "" {
+			continue
+		}
+		messageID, _ := evt.Get("messageId").(string)
+		ids = append(ids, messageID)
+	}
+	return ids
+}
+
+func uiPartSummary(parts []aistream.MessagePart) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part["type"] {
+		case "text", "thinking":
+			out = append(out, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			out = append(out, fmt.Sprintf("tool-call:%s", firstNonEmptyString(part["toolCallId"], part["id"])))
+		}
+	}
+	return out
+}
+
+func firstNonEmptyString(values ...any) string {
+	for _, value := range values {
+		if text, _ := value.(string); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func testAIStore(t *testing.T) *aidb.Store {

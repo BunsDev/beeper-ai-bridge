@@ -546,9 +546,9 @@ func buildOpenAIClientConfig(model ai.Model, llmContext ai.Context, options ai.S
 			}
 		case ai.ApiOpenAICompletions:
 			compat := ResolveOpenAICompletionsCompat(model)
+			headers["x-client-request-id"] = options.SessionID
 			if compat.SendSessionAffinityHeaders {
 				headers["session_id"] = options.SessionID
-				headers["x-client-request-id"] = options.SessionID
 				headers["x-session-affinity"] = options.SessionID
 			}
 		}

@@ -55,10 +55,10 @@ type SearchOptions struct {
 }
 
 type SearchRequestOptions struct {
-	SearchContextSize string          `json:"search_context_size,omitempty"`
-	Category          string          `json:"category,omitempty"`
-	AllowedDomains    []string        `json:"allowed_domains,omitempty"`
-	Freshness         SearchFreshness `json:"freshness,omitempty"`
+	SearchContextSize string           `json:"search_context_size,omitempty"`
+	Category          string           `json:"category,omitempty"`
+	AllowedDomains    []string         `json:"allowed_domains,omitempty"`
+	Freshness         *SearchFreshness `json:"freshness,omitempty"`
 }
 
 type SearchFreshness struct {

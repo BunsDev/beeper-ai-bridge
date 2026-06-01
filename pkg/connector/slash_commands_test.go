@@ -589,17 +589,22 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		},
 	}}, now)
 	for _, want := range []string{
+		"# AI limits",
 		"## Models",
+		"## Web Search",
+		"## Transcription",
+		"## Audio Generation",
 		"| Window | Left | Used | Reset |",
 		"| Daily | `75%` | `250 / 1,000` | in 1 day 2 hours 3 minutes |",
 		"| Weekly | Unlimited | `1,234` used | in 1 day 2 hours 3 minutes |",
 		"| Monthly | **Out** | `30,500 / 30,000` | in 1 day 2 hours 3 minutes |",
+		"`1 / 200,000`",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"AI limits", "## Web Search", "## Transcription", "## Audio Generation", "`199,999`", "2030-01-01T00:00:00Z"} {
+	for _, notWant := range []string{"2030-01-01T00:00:00Z"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
 		}
@@ -616,6 +621,7 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 		},
 	}}, now)
 	for _, want := range []string{
+		"# AI limits",
 		"## Models",
 		"| Daily | `75%` | Not reported | in 1 day 1 hour 3 minutes |",
 		"| Weekly | `100%` | Not reported | in 7 days |",
@@ -625,7 +631,7 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"AI limits", "## Web Search", "No limits reported.", "Everything resets"} {
+	for _, notWant := range []string{"## Web Search", "No limits reported.", "Everything resets"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed %q:\n%s", notWant, text)
 		}

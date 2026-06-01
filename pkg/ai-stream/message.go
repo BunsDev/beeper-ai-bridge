@@ -726,7 +726,7 @@ func nativeOpenAIWebSearchQuery(part MessagePart) string {
 		return ""
 	}
 	output, _ := part["output"].(map[string]any)
-	if output == nil || output["native"] != true || firstString(output["provider"]) != "openai" {
+	if output == nil || output["native"] != true {
 		return ""
 	}
 	input, _ := part["input"].(map[string]any)

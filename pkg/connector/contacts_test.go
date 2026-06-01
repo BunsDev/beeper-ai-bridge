@@ -170,7 +170,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 			t.Fatalf("unexpected query %s", r.URL.RawQuery)
 		}
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","provider":{"id":"openrouter","model_id":"minimax/minimax-m2.7","api":"openai-responses"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","provider":{"id":"openrouter","model_id":"minimax/minimax-m2.7","api":"openai-completions"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
 	}))
 	defer server.Close()
 
@@ -223,6 +223,9 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 	if models[1].DefaultThinkingLevel != ai.ModelThinkingLevelLow || roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelOff) {
 		t.Fatalf("expected MiniMax reasoning to default to low and reject off, got %#v", models[1])
+	}
+	if models[1].API != ai.ApiOpenAICompletions || models[1].Provider != ai.ProviderOpenRouter || models[1].BaseURL != server.URL+"/proxy/openrouter/v1" {
+		t.Fatalf("expected MiniMax OpenRouter route, got %#v", models[1])
 	}
 	if roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelMinimal) {
 		t.Fatalf("expected MiniMax reasoning to reject minimal, got %#v", models[1])
@@ -327,7 +330,7 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 				{"id":"x-ai/grok-4.20","name":"Grok 4.20","provider":{"id":"wpcom_xai","model_id":"x-ai/grok-4.20","api":"openai-responses"}},
 			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","provider":{"id":"wpcom_groq","model_id":"groq/qwen/qwen3-32b","api":"openai-responses"}},
 			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","provider":{"id":"wpcom_a8c","model_id":"gpt-oss-120b","api":"openai-completions"}},
-			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-responses"}}
+			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-completions"}}
 		]}`))
 	}))
 	defer server.Close()
@@ -372,7 +375,7 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	if got := byID["openai/gpt-oss-120b"]; got.API != ai.ApiOpenAICompletions || got.Provider != ai.Provider("a8c") || got.BaseURL != server.URL+"/proxy/a8c/v1" {
 		t.Fatalf("unexpected A8C route %#v", got)
 	}
-	if got := byID["anthropic/claude-sonnet-4.5"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderOpenRouter || got.BaseURL != server.URL+"/proxy/openrouter/v1" {
+	if got := byID["anthropic/claude-sonnet-4.5"]; got.API != ai.ApiOpenAICompletions || got.Provider != ai.ProviderOpenRouter || got.BaseURL != server.URL+"/proxy/openrouter/v1" {
 		t.Fatalf("unexpected OpenRouter route %#v", got)
 	}
 	if got := byID["anthropic/claude-sonnet-4.5"]; got.Compat["provider_logo_url"] != "/models/providers/anthropic.png" || got.Compat["provider_model_id"] != "anthropic/claude-sonnet-4.5" || got.Compat["family"] != "claude" {

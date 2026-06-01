@@ -583,7 +583,10 @@ func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider ai
 		model.Provider = ai.Provider("a8c")
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "a8c", true)
 	case "openrouter":
-		model.API = ai.ApiOpenAIResponses
+		model.API = ai.ApiOpenAICompletions
+		if entry.Provider.API == string(ai.ApiOpenAIResponses) {
+			model.API = ai.ApiOpenAIResponses
+		}
 		model.Provider = ai.ProviderOpenRouter
 		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openrouter", true)
 	}

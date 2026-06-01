@@ -386,41 +386,45 @@ func TestFinalBeeperAIMessageKeepsStreamingThinkingPartEmptyUntilTokensArrive(t 
 	}
 }
 
-func TestFinalBeeperAIMessageDedupesNativeOpenAIWebSearchRows(t *testing.T) {
-	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
-	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
-	query := "pop culture latest Oscars Grammys Wikipedia"
-	writer.ToolStart("ws_aggregate", "web_search", 0, nil)
-	writer.ToolEnd("ws_aggregate", "web_search", map[string]any{
-		"query":   query,
-		"queries": []any{query, "latest entertainment news film music television"},
-	}, map[string]any{
-		"state":    "complete",
-		"status":   "success",
-		"provider": "openai",
-		"native":   true,
-		"query":    query,
-		"queries":  []any{query, "latest entertainment news film music television"},
-	})
-	writer.ToolStart("ws_single", "web_search", 0, nil)
-	writer.ToolEnd("ws_single", "web_search", map[string]any{"query": query}, map[string]any{
-		"state":    "complete",
-		"status":   "success",
-		"provider": "openai",
-		"native":   true,
-		"query":    query,
-	})
-	writer.Finish(agui.FinishReasonStop)
+func TestFinalBeeperAIMessageDedupesNativeWebSearchRows(t *testing.T) {
+	for _, provider := range []string{"openai", "openrouter"} {
+		t.Run(provider, func(t *testing.T) {
+			run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+			writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+			query := "pop culture latest Oscars Grammys Wikipedia"
+			writer.ToolStart("ws_aggregate", "web_search", 0, nil)
+			writer.ToolEnd("ws_aggregate", "web_search", map[string]any{
+				"query":   query,
+				"queries": []any{query, "latest entertainment news film music television"},
+			}, map[string]any{
+				"state":    "complete",
+				"status":   "success",
+				"provider": provider,
+				"native":   true,
+				"query":    query,
+				"queries":  []any{query, "latest entertainment news film music television"},
+			})
+			writer.ToolStart("ws_single", "web_search", 0, nil)
+			writer.ToolEnd("ws_single", "web_search", map[string]any{"query": query}, map[string]any{
+				"state":    "complete",
+				"status":   "success",
+				"provider": provider,
+				"native":   true,
+				"query":    query,
+			})
+			writer.Finish(agui.FinishReasonStop)
 
-	uiMessage := run.FinalBeeperAIMessage(0, true)
-	var webSearchIDs []string
-	for _, part := range uiMessage.Parts {
-		if part["type"] == "tool-call" && part["name"] == "web_search" {
-			webSearchIDs = append(webSearchIDs, firstString(part["toolCallId"]))
-		}
-	}
-	if !reflect.DeepEqual(webSearchIDs, []string{"ws_single"}) {
-		t.Fatalf("expected only the final native OpenAI web_search row, got IDs=%#v parts=%#v", webSearchIDs, uiMessage.Parts)
+			uiMessage := run.FinalBeeperAIMessage(0, true)
+			var webSearchIDs []string
+			for _, part := range uiMessage.Parts {
+				if part["type"] == "tool-call" && part["name"] == "web_search" {
+					webSearchIDs = append(webSearchIDs, firstString(part["toolCallId"]))
+				}
+			}
+			if !reflect.DeepEqual(webSearchIDs, []string{"ws_single"}) {
+				t.Fatalf("expected only the final native web_search row, got IDs=%#v parts=%#v", webSearchIDs, uiMessage.Parts)
+			}
+		})
 	}
 }
 

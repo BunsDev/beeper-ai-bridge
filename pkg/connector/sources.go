@@ -76,7 +76,7 @@ func (c *sourceCollector) addWebSearchOutput(output toolOutputEvent, result any)
 	if data == nil {
 		return nil
 	}
-	rawResults, _ := data["results"].([]any)
+	rawResults := sourceSlice(data, "results")
 	if len(rawResults) == 0 {
 		return nil
 	}
@@ -421,7 +421,7 @@ func (c *sourceCollector) sources() []map[string]any {
 	return out
 }
 
-var markdownURLPattern = regexp.MustCompile(`https?://[^\s<>"'\]\)]+`)
+var markdownURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
 
 func extractMessageURLs(message ai.Message) []string {
 	text := strings.TrimSpace(messageTextContent(message.Content))
@@ -431,7 +431,7 @@ func extractMessageURLs(message ai.Message) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, match := range markdownURLPattern.FindAllString(text, -1) {
-		match = strings.TrimRight(match, ".,;:!?")
+		match = trimExtractedURL(match)
 		normalized, ok := normalizeSourceURL(match)
 		if !ok || seen[normalized] {
 			continue
@@ -440,6 +440,27 @@ func extractMessageURLs(message ai.Message) []string {
 		out = append(out, normalized)
 	}
 	return out
+}
+
+func trimExtractedURL(raw string) string {
+	raw = strings.TrimRight(strings.TrimSpace(raw), ".,;:!?")
+	for len(raw) > 0 {
+		last := raw[len(raw)-1]
+		switch last {
+		case ')':
+			if strings.Count(raw, ")") <= strings.Count(raw, "(") {
+				return raw
+			}
+		case ']':
+			if strings.Count(raw, "]") <= strings.Count(raw, "[") {
+				return raw
+			}
+		default:
+			return raw
+		}
+		raw = strings.TrimRight(raw[:len(raw)-1], ".,;:!?")
+	}
+	return raw
 }
 
 func messageTextContent(content any) string {
@@ -569,7 +590,7 @@ func walkProviderSources(value any, emit func(sourceObservation)) {
 }
 
 func providerCitationSource(data map[string]any) (sourceObservation, bool) {
-	sourceType := strings.ToLower(sourceString(data, "type", "rawType"))
+	sourceType := strings.ToLower(firstSourceString(sourceString(data, "rawType"), sourceString(data, "type")))
 	nested, _ := data["url_citation"].(map[string]any)
 	if nested == nil {
 		nested, _ = data["urlCitation"].(map[string]any)
@@ -577,10 +598,13 @@ func providerCitationSource(data map[string]any) (sourceObservation, bool) {
 	citation := data
 	if nested != nil {
 		citation = mergeSourceMaps(data, nested)
-		sourceType = firstSourceString(sourceType, strings.ToLower(sourceString(nested, "type", "rawType")))
+		sourceType = firstSourceString(
+			strings.ToLower(firstSourceString(sourceString(nested, "rawType"), sourceString(nested, "type"))),
+			sourceType,
+		)
 	}
 	rawURL := sourceString(citation, "url", "uri")
-	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location" && sourceType != "web_fetch_result" && sourceType != "openrouter:web_fetch" && sourceType != "url_context") {
+	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location" && sourceType != "web_search_result" && sourceType != "web_fetch_result" && sourceType != "openrouter:web_fetch" && sourceType != "url_context") {
 		return sourceObservation{}, false
 	}
 	title := sourceString(citation, "title")
@@ -682,6 +706,15 @@ func sourceSlice(data map[string]any, keys ...string) []any {
 				return typed
 			}
 		case []string:
+			if len(typed) == 0 {
+				continue
+			}
+			out := make([]any, 0, len(typed))
+			for _, value := range typed {
+				out = append(out, value)
+			}
+			return out
+		case []map[string]any:
 			if len(typed) == 0 {
 				continue
 			}

@@ -1258,6 +1258,12 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 							writer.Custom("com.beeper.source", source)
 						}
 					}
+					if evt.Type == "toolresult" && evt.ToolCall != nil {
+						output := toolOutputEvent{ID: evt.ToolCall.ID, Name: evt.ToolCall.Name, Input: evt.ToolCall.Arguments}
+						for _, source := range streamSources.addToolOutput(output, evt.CustomValue) {
+							writer.Custom("com.beeper.source", source)
+						}
+					}
 					afterEvents := len(run.Events)
 					maybeSecondVisibleChunk(evt)
 					if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
@@ -1715,25 +1721,13 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 }
 
 func writeFinalTextFallback(writer *aistream.Writer, message ai.Message) {
-	if writer == nil || writer.Run == nil || writer.Run.Text() != "" || runHasStreamedText(*writer.Run) {
+	if writer == nil || writer.Run == nil || writer.HasTextContent() {
 		return
 	}
 	if text := msgconv.AssistantText(message); text != "" {
 		writer.Text(text)
 		writer.TextEnd(0)
 	}
-}
-
-func runHasStreamedText(run aistream.Run) bool {
-	for _, evt := range run.Events {
-		switch evt.Type() {
-		case agui.EventTextMessageContent, agui.EventTextMessageChunk:
-			if delta, _ := evt.Get("delta").(string); delta != "" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 type toolOutputEvent struct {

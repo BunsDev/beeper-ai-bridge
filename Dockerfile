@@ -26,7 +26,7 @@ FROM ${DOCKER_HUB}/alpine:3.23
 ENV UID=1337 \
     GID=1337
 
-RUN apk add --no-cache su-exec ca-certificates bash jq curl yq-go
+RUN apk add --no-cache su-exec ca-certificates bash jq curl yq-go tzdata
 
 COPY --from=builder /build/ai /usr/bin/ai
 COPY ./docker-run.sh /docker-run.sh

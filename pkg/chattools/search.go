@@ -235,14 +235,16 @@ func searchPayload(query string, limit int, request SearchRequestOptions) map[st
 	addString(payload, "search_context_size", request.SearchContextSize)
 	addString(payload, "category", request.Category)
 	addStrings(payload, "allowed_domains", request.AllowedDomains)
-	freshness := map[string]any{}
-	if request.Freshness.Days > 0 {
-		freshness["days"] = request.Freshness.Days
-	}
-	addString(freshness, "published_after", request.Freshness.PublishedAfter)
-	addString(freshness, "published_before", request.Freshness.PublishedBefore)
-	if len(freshness) > 0 {
-		payload["freshness"] = freshness
+	if request.Freshness != nil {
+		freshness := map[string]any{}
+		if request.Freshness.Days > 0 {
+			freshness["days"] = request.Freshness.Days
+		}
+		addString(freshness, "published_after", request.Freshness.PublishedAfter)
+		addString(freshness, "published_before", request.Freshness.PublishedBefore)
+		if len(freshness) > 0 {
+			payload["freshness"] = freshness
+		}
 	}
 	return payload
 }
@@ -257,9 +259,11 @@ func requestOptions(params any) SearchRequestOptions {
 	out.Category = stringValueParam(values, "category")
 	out.AllowedDomains = stringSliceParam(values, "allowed_domains")
 	if freshness := mapParam(values, "freshness"); freshness != nil {
-		out.Freshness.Days = intParam(freshness, "days", 0)
-		out.Freshness.PublishedAfter = stringValueParam(freshness, "published_after")
-		out.Freshness.PublishedBefore = stringValueParam(freshness, "published_before")
+		out.Freshness = &SearchFreshness{
+			Days:            intParam(freshness, "days", 0),
+			PublishedAfter:  stringValueParam(freshness, "published_after"),
+			PublishedBefore: stringValueParam(freshness, "published_before"),
+		}
 	}
 	return out
 }

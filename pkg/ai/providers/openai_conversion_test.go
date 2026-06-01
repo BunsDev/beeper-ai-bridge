@@ -203,6 +203,31 @@ func TestProviderCitationsFromAnthropicWebSearchLocation(t *testing.T) {
 	}
 }
 
+func TestProviderCitationsFromNativeWebSearchResult(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type":  "web_search_result",
+		"url":   "https://example.com/native",
+		"title": "Native Result",
+	}, ai.ProviderAnthropic, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/native" || citations[0].Title != "Native Result" || citations[0].RawType != "web_search_result" {
+		t.Fatalf("unexpected native search citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsPreferNestedCitationType(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type": "annotation",
+		"url_citation": map[string]any{
+			"type":  "url_citation",
+			"url":   "https://example.com/nested",
+			"title": "Nested",
+		},
+	}, ai.ProviderOpenAI, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/nested" || citations[0].Title != "Nested" {
+		t.Fatalf("unexpected nested citations %#v", citations)
+	}
+}
+
 func TestProviderCitationsFromAnthropicWebFetchResult(t *testing.T) {
 	citations := providerCitationsFromAny(map[string]any{
 		"type": "web_fetch_tool_result",
@@ -474,6 +499,25 @@ func TestBuildCompletionsParamsUsesDetectedCompat(t *testing.T) {
 	}
 }
 
+func TestOpenRouterCompletionsCompatDoesNotUseDeveloperRole(t *testing.T) {
+	model := ai.Model{
+		ID:        "z-ai/glm-4.5v",
+		API:       ai.ApiOpenAICompletions,
+		Provider:  ai.ProviderOpenRouter,
+		BaseURL:   "https://openrouter.ai/api/v1",
+		Reasoning: true,
+		Input:     []string{"text", "image"},
+	}
+	params := BuildCompletionsParams(model, ai.Context{SystemPrompt: "You are concise."}, OpenAICompletionsOptions{})
+	messages := params["messages"].([]map[string]any)
+	if messages[0]["role"] != "system" {
+		t.Fatalf("OpenRouter completions must not use developer role, got %#v", messages[0])
+	}
+	if thinking := params["reasoning"].(map[string]any); thinking["effort"] != "none" {
+		t.Fatalf("expected OpenRouter default reasoning none, got %#v", thinking)
+	}
+}
+
 func TestRegisterBuiltInsIncludesOpenAICodexResponses(t *testing.T) {
 	ResetAPIProviders()
 	provider, ok := ai.GetAPIProvider(ai.ApiOpenAICodexResponses)
@@ -553,8 +597,8 @@ func TestOpenAIClientConfigResolvesCloudflareGatewayHeaders(t *testing.T) {
 	if config.Headers["x-model"] != "1" || config.Headers["x-extra"] != "2" {
 		t.Fatalf("expected merged headers, got %#v", config.Headers)
 	}
-	if _, ok := config.Headers["x-client-request-id"]; ok {
-		t.Fatalf("default completions compat should not send request id header, got %#v", config.Headers)
+	if config.Headers["x-client-request-id"] != "session-1" {
+		t.Fatalf("default completions compat should send request id header, got %#v", config.Headers)
 	}
 }
 
@@ -585,10 +629,13 @@ func TestOpenAIClientConfigCompletionsAffinityHeadersRequireCompat(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"session_id", "x-client-request-id", "x-session-affinity"} {
+	for _, key := range []string{"session_id", "x-session-affinity"} {
 		if _, ok := defaultConfig.Headers[key]; ok {
 			t.Fatalf("default completions compat should not send %s, got %#v", key, defaultConfig.Headers)
 		}
+	}
+	if defaultConfig.Headers["x-client-request-id"] != "session-1" {
+		t.Fatalf("default completions compat should send request id header, got %#v", defaultConfig.Headers)
 	}
 
 	enabledConfig, err := buildOpenAIClientConfig(ai.Model{
