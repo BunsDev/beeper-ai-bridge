@@ -652,8 +652,9 @@ func TestCatalogRuntimeForCustomProviderUsesCustomBaseURL(t *testing.T) {
 		Runtime: &struct {
 			API      string                 `json:"api"`
 			Provider string                 `json:"provider"`
-			BaseURL  string                 `json:"baseUrl"`
+			BaseURL  string                 `json:"base_url"`
 			Model    string                 `json:"model"`
+			Endpoint string                 `json:"endpoint"`
 			Compat   *aiServicesModelCompat `json:"compat"`
 		}{
 			API:      string(ai.ApiOpenAICompletions),

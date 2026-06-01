@@ -315,6 +315,85 @@ func TestStreamPublisherUsesFreshTextMessageAfterToolContinuationWithPriorText(t
 	}
 }
 
+func TestStreamPublisherAnchorsContinuationThinkingAndSecondToolAfterApproval(t *testing.T) {
+	ctx := context.Background()
+	toolAPI := ai.Api("test-stream-tool-prior-text-second-tool")
+	answerAPI := ai.Api("test-stream-answer-thinking-second-tool")
+	ai.RegisterAPIProvider(toolAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			toolCall := &ai.ToolCall{ID: "call-session", Name: "get_session", Arguments: map[string]any{}}
+			message := ai.Message{
+				Role: "assistant",
+				Content: []ai.ContentBlock{
+					{Type: "text", Text: "before "},
+					{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
+				},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "before "})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			secondTool := &ai.ToolCall{ID: "call-second", Name: "second_tool", Arguments: map[string]any{"ok": true}}
+			message := ai.Message{
+				Role: "assistant",
+				Content: []ai.ContentBlock{
+					{Type: "thinking", Thinking: "checking approval"},
+					{Type: "text", Text: "after "},
+					{Type: "toolCall", ID: secondTool.ID, Name: secondTool.Name, Arguments: secondTool.Arguments},
+				},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "checking approval"})
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 1, Delta: "after "})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 2, ToolCall: secondTool})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 2, ToolCall: secondTool})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(toolAPI)
+	defer ai.UnregisterAPIProvider(answerAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	cursor := &streamPublishCursor{nextSeq: 1}
+
+	toolResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: toolAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if toolResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected first tool stream result %#v", toolResult)
+	}
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolEnd("call-session", "get_session", map[string]any{}, map[string]any{"state": agui.ToolResultStateComplete, "status": "success"})
+
+	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if answerResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected answer stream result %#v", answerResult)
+	}
+
+	parents := toolParentMessageIDs(run.Events)
+	if parents["call-second"] != "assistant:run-text-2" {
+		t.Fatalf("second continuation tool used wrong parent: %#v", parents)
+	}
+
+	message := run.FinalBeeperAIMessage(0, true)
+	got := uiPartSummary(message.Parts)
+	want := []string{"text:before ", "tool-call:call-session", "thinking:checking approval", "text:after ", "tool-call:call-second"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("continued UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, message.Parts)
+	}
+}
+
 func TestDoneFallbackAfterPriorTextUsesCurrentWriterOnly(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
 	run.MessageID = "assistant:run"
@@ -901,7 +980,7 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","runtime":{"provider":"openai","model":"gpt-5.5","api":"openai-responses","baseUrl":"/proxy/openai/v1"}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","runtime":{"provider":"openai","model":"gpt-5.5","api":"openai-responses","base_url":"/proxy/openai/v1"}}]}`))
 	}))
 	defer server.Close()
 
@@ -1236,6 +1315,17 @@ func textContentMessageIDs(events []agui.Event) []string {
 		ids = append(ids, messageID)
 	}
 	return ids
+}
+
+func toolParentMessageIDs(events []agui.Event) map[string]string {
+	parents := map[string]string{}
+	for _, evt := range events {
+		if evt.Type() != agui.EventToolCallStart {
+			continue
+		}
+		parents[firstNonEmptyString(evt.Get("toolCallId"))] = firstNonEmptyString(evt.Get("parentMessageId"))
+	}
+	return parents
 }
 
 func uiPartSummary(parts []aistream.MessagePart) []string {

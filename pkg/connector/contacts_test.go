@@ -170,7 +170,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 			t.Fatalf("unexpected query %s", r.URL.RawQuery)
 		}
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","runtime":{"provider":"openrouter","model":"minimax/minimax-m2.7","api":"openai-completions","baseUrl":"/proxy/openrouter/v1","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_completion_tokens","thinkingFormat":"openrouter"}},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","runtime":{"provider":"openrouter","model":"minimax/minimax-m2.7","api":"openai-completions","base_url":"/proxy/openrouter/v1","compat":{"supports_developer_role":false,"supports_reasoning_effort":true,"max_tokens_field":"max_completion_tokens","thinking_format":"openrouter"}},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
 	}))
 	defer server.Close()
 
@@ -322,14 +322,14 @@ func TestAIServicesModelsURLUsesBaseURL(t *testing.T) {
 func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[
-			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","runtime":{"provider":"anthropic","model":"claude-sonnet-4-5","api":"anthropic-messages","baseUrl":"/proxy/anthropic"}},
-				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash-lite","api":"google-vertex","baseUrl":"/proxy/vertex"}},
-				{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","runtime":{"provider":"google-vertex","model":"gemini-3.1-pro-preview","api":"google-vertex","baseUrl":"/proxy/vertex"}},
-				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash","api":"google-vertex","baseUrl":"/proxy/vertex"}},
-				{"id":"x-ai/grok-4.20","name":"Grok 4.20","runtime":{"provider":"xai","model":"x-ai/grok-4.20","api":"openai-responses","baseUrl":"/proxy/xai/v1"}},
-			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","runtime":{"provider":"groq","model":"groq/qwen/qwen3-32b","api":"openai-responses","baseUrl":"/proxy/groq/v1"}},
-			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","runtime":{"provider":"a8c","model":"gpt-oss-120b","api":"openai-completions","baseUrl":"/proxy/a8c/v1"}},
-			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"runtime":{"provider":"openrouter","model":"anthropic/claude-sonnet-4.5","api":"openai-completions","baseUrl":"/proxy/openrouter/v1","compat":{"supportsDeveloperRole":false,"thinkingFormat":"openrouter","cacheControlFormat":"anthropic"}}}
+			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","runtime":{"provider":"anthropic","model":"claude-sonnet-4-5","api":"anthropic-messages","base_url":"/proxy/anthropic"}},
+				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash-lite","api":"google-vertex","base_url":"/proxy/vertex"}},
+				{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","runtime":{"provider":"google-vertex","model":"gemini-3.1-pro-preview","api":"google-vertex","base_url":"/proxy/vertex"}},
+				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash","api":"google-vertex","base_url":"/proxy/vertex"}},
+				{"id":"x-ai/grok-4.20","name":"Grok 4.20","runtime":{"provider":"xai","model":"x-ai/grok-4.20","api":"openai-responses","base_url":"/proxy/xai/v1"}},
+			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","runtime":{"provider":"groq","model":"groq/qwen/qwen3-32b","api":"openai-responses","base_url":"/proxy/groq/v1"}},
+			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","runtime":{"provider":"a8c","model":"gpt-oss-120b","api":"openai-completions","base_url":"/proxy/a8c/v1"}},
+			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"runtime":{"provider":"openrouter","model":"anthropic/claude-sonnet-4.5","api":"openai-completions","base_url":"/proxy/openrouter/v1","compat":{"supports_developer_role":false,"thinking_format":"openrouter","cache_control_format":"anthropic"}}}
 		]}`))
 	}))
 	defer server.Close()

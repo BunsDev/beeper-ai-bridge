@@ -478,8 +478,9 @@ type aiServicesModelEntry struct {
 	Runtime *struct {
 		API      string                 `json:"api"`
 		Provider string                 `json:"provider"`
-		BaseURL  string                 `json:"baseUrl"`
+		BaseURL  string                 `json:"base_url"`
 		Model    string                 `json:"model"`
+		Endpoint string                 `json:"endpoint"`
 		Compat   *aiServicesModelCompat `json:"compat"`
 	} `json:"runtime"`
 	Capabilities *struct {
@@ -508,27 +509,27 @@ type aiServicesModelEntry struct {
 }
 
 type aiServicesModelCompat struct {
-	SupportsStore                               *bool  `json:"supportsStore,omitempty"`
-	SupportsDeveloperRole                       *bool  `json:"supportsDeveloperRole,omitempty"`
-	SupportsReasoningEffort                     *bool  `json:"supportsReasoningEffort,omitempty"`
-	SupportsUsageInStreaming                    *bool  `json:"supportsUsageInStreaming,omitempty"`
-	MaxTokensField                              string `json:"maxTokensField,omitempty"`
-	RequiresToolResultName                      *bool  `json:"requiresToolResultName,omitempty"`
-	RequiresAssistantAfterToolResult            *bool  `json:"requiresAssistantAfterToolResult,omitempty"`
-	RequiresThinkingAsText                      *bool  `json:"requiresThinkingAsText,omitempty"`
-	RequiresReasoningContentOnAssistantMessages *bool  `json:"requiresReasoningContentOnAssistantMessages,omitempty"`
-	ThinkingFormat                              string `json:"thinkingFormat,omitempty"`
-	ZaiToolStream                               *bool  `json:"zaiToolStream,omitempty"`
-	SupportsStrictMode                          *bool  `json:"supportsStrictMode,omitempty"`
-	CacheControlFormat                          string `json:"cacheControlFormat,omitempty"`
-	SendSessionAffinityHeaders                  *bool  `json:"sendSessionAffinityHeaders,omitempty"`
-	SupportsLongCacheRetention                  *bool  `json:"supportsLongCacheRetention,omitempty"`
-	SendSessionIDHeader                         *bool  `json:"sendSessionIdHeader,omitempty"`
-	SupportsEagerToolInputStreaming             *bool  `json:"supportsEagerToolInputStreaming,omitempty"`
-	SupportsCacheControlOnTools                 *bool  `json:"supportsCacheControlOnTools,omitempty"`
-	SupportsTemperature                         *bool  `json:"supportsTemperature,omitempty"`
-	ForceAdaptiveThinking                       *bool  `json:"forceAdaptiveThinking,omitempty"`
-	AllowEmptySignature                         *bool  `json:"allowEmptySignature,omitempty"`
+	SupportsStore                               *bool  `json:"supports_store,omitempty"`
+	SupportsDeveloperRole                       *bool  `json:"supports_developer_role,omitempty"`
+	SupportsReasoningEffort                     *bool  `json:"supports_reasoning_effort,omitempty"`
+	SupportsUsageInStreaming                    *bool  `json:"supports_usage_in_streaming,omitempty"`
+	MaxTokensField                              string `json:"max_tokens_field,omitempty"`
+	RequiresToolResultName                      *bool  `json:"requires_tool_result_name,omitempty"`
+	RequiresAssistantAfterToolResult            *bool  `json:"requires_assistant_after_tool_result,omitempty"`
+	RequiresThinkingAsText                      *bool  `json:"requires_thinking_as_text,omitempty"`
+	RequiresReasoningContentOnAssistantMessages *bool  `json:"requires_reasoning_content_on_assistant_messages,omitempty"`
+	ThinkingFormat                              string `json:"thinking_format,omitempty"`
+	ZaiToolStream                               *bool  `json:"zai_tool_stream,omitempty"`
+	SupportsStrictMode                          *bool  `json:"supports_strict_mode,omitempty"`
+	CacheControlFormat                          string `json:"cache_control_format,omitempty"`
+	SendSessionAffinityHeaders                  *bool  `json:"send_session_affinity_headers,omitempty"`
+	SupportsLongCacheRetention                  *bool  `json:"supports_long_cache_retention,omitempty"`
+	SendSessionIDHeader                         *bool  `json:"send_session_id_header,omitempty"`
+	SupportsEagerToolInputStreaming             *bool  `json:"supports_eager_tool_input_streaming,omitempty"`
+	SupportsCacheControlOnTools                 *bool  `json:"supports_cache_control_on_tools,omitempty"`
+	SupportsTemperature                         *bool  `json:"supports_temperature,omitempty"`
+	ForceAdaptiveThinking                       *bool  `json:"force_adaptive_thinking,omitempty"`
+	AllowEmptySignature                         *bool  `json:"allow_empty_signature,omitempty"`
 }
 
 func (entry aiServicesModelEntry) matchesProvider(provider ai.Provider) bool {

@@ -186,6 +186,7 @@ type Writer struct {
 	textOpen                  map[int]bool
 	textContentWritten        bool
 	textIndexOffset           int
+	currentAssistantMessageID string
 	reasoningMessages         map[int]string
 	reasoningOpen             map[int]bool
 	reasoningContent          map[int]string
@@ -233,7 +234,7 @@ func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *R
 func NewWriter(run *Run, now func() time.Time) *Writer {
 	textIndexOffset := nextMessageOrdinal(run, messageOrdinalText)
 	reasoningIndexOffset := nextMessageOrdinal(run, messageOrdinalReasoning)
-	return &Writer{
+	writer := &Writer{
 		Run:                  run,
 		builder:              agui.NewEventBuilder(run.Model, now),
 		textMessages:         map[int]string{},
@@ -247,6 +248,8 @@ func NewWriter(run *Run, now func() time.Time) *Writer {
 		lastAccountedChars:   utf8.RuneCountInString(run.Text()),
 		previewText:          run.Text(),
 	}
+	writer.currentAssistantMessageID = writer.textMessageID(0)
+	return writer
 }
 
 func (w *Writer) Add(evt agui.Event) {
@@ -303,6 +306,7 @@ func (w *Writer) Thinking(delta string) {
 }
 
 func (w *Writer) ReasoningMessageStart(index int) string {
+	w.ensureCurrentAssistantMessage()
 	w.ensureReasoningPhase()
 	return w.ensureReasoningMessage(index)
 }
@@ -345,11 +349,13 @@ func (w *Writer) ReasoningMessageEnd(index int) {
 }
 
 func (w *Writer) StepStart(stepID string) {
-	w.Add(w.builder.StepStarted(w.Run.MessageID, stepID))
+	messageID := w.ensureCurrentAssistantMessage()
+	w.Add(w.builder.StepStarted(messageID, stepID))
 }
 
 func (w *Writer) StepFinish(stepID string) {
-	w.Add(w.builder.StepFinished(w.Run.MessageID, stepID))
+	messageID := w.ensureCurrentAssistantMessage()
+	w.Add(w.builder.StepFinished(messageID, stepID))
 }
 
 func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApproval) {
@@ -358,7 +364,7 @@ func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApp
 
 func (w *Writer) ToolStartWithMetadata(toolCallID, name string, index int, approval *ToolApproval, metadata map[string]any) {
 	idx := index
-	w.Add(w.builder.ToolCallStartWithMetadata(w.Run.MessageID, toolCallID, name, &idx, metadata))
+	w.Add(w.builder.ToolCallStartWithMetadata(w.currentAssistantMessage(), toolCallID, name, &idx, metadata))
 	if approval != nil {
 		w.recordApprovalRequest(toolCallID, name, approval)
 	}
@@ -661,6 +667,7 @@ func (w *Writer) finishText() {
 func (w *Writer) ensureTextMessage(index int) string {
 	w.initState()
 	if messageID := w.textMessages[index]; messageID != "" {
+		w.currentAssistantMessageID = messageID
 		if !w.textOpen[index] {
 			w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
 			w.textOpen[index] = true
@@ -668,6 +675,34 @@ func (w *Writer) ensureTextMessage(index int) string {
 		return messageID
 	}
 	messageID := w.textMessageID(index)
+	w.textMessages[index] = messageID
+	w.currentAssistantMessageID = messageID
+	w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
+	w.textOpen[index] = true
+	return messageID
+}
+
+func (w *Writer) currentAssistantMessage() string {
+	w.initState()
+	if w.currentAssistantMessageID == "" {
+		w.currentAssistantMessageID = w.textMessageID(0)
+	}
+	return w.currentAssistantMessageID
+}
+
+func (w *Writer) ensureCurrentAssistantMessage() string {
+	messageID := w.currentAssistantMessage()
+	for index, existingID := range w.textMessages {
+		if existingID != messageID {
+			continue
+		}
+		if !w.textOpen[index] {
+			w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
+			w.textOpen[index] = true
+		}
+		return messageID
+	}
+	index := w.textIndexForMessageID(messageID)
 	w.textMessages[index] = messageID
 	w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
 	w.textOpen[index] = true
@@ -715,6 +750,18 @@ func (w *Writer) reasoningMessageID(index int) string {
 		w.nextSyntheticReasoningIdx++
 	}
 	return fmt.Sprintf("%s-reasoning-%d", w.Run.MessageID, w.reasoningIndexOffset+max(index, 0))
+}
+
+func (w *Writer) textIndexForMessageID(messageID string) int {
+	ordinal, ok := messageOrdinal(w.Run.MessageID, messageID, messageOrdinalText)
+	if !ok {
+		return 0
+	}
+	index := ordinal - w.textIndexOffset
+	if index < 0 {
+		return 0
+	}
+	return index
 }
 
 func (w *Writer) toolResultMessageID(toolCallID string) string {

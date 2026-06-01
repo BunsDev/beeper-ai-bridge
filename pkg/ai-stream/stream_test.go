@@ -195,6 +195,78 @@ func TestWriterKeepsReasoningMessagesSeparate(t *testing.T) {
 	}
 }
 
+func TestWriterAnchorsContinuationReasoningBeforeTextToFreshAssistantMessage(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text("before ")
+	writer.ToolStart("tool-1", "ask_approval", 1, nil)
+	writer.AwaitToolUseWithUsage(nil)
+
+	continuation := NewWriter(run, func() time.Time { return time.Unix(11, 0) })
+	continuation.ReasoningMessageStart(0)
+	continuation.ReasoningDelta(0, "checking approval")
+	continuation.Text("after")
+
+	var ordered []string
+	for _, evt := range run.Events {
+		switch evt.Type() {
+		case agui.EventTextMessageStart:
+			ordered = append(ordered, "text-start:"+asString(evt.Get("messageId")))
+		case agui.EventReasoningMsgStart:
+			ordered = append(ordered, "thinking-start:"+asString(evt.Get("messageId")))
+		case agui.EventReasoningMsgCont:
+			ordered = append(ordered, "thinking:"+asString(evt.Get("delta")))
+		case agui.EventTextMessageContent:
+			if delta := asString(evt.Get("delta")); delta != "" {
+				ordered = append(ordered, "text:"+asString(evt.Get("messageId"))+":"+delta)
+			}
+		}
+	}
+	got := strings.Join(ordered, "|")
+	if !strings.Contains(got, "text-start:msg-run-1-text-1|thinking-start:msg-run-1-reasoning-0|thinking:checking approval|text:msg-run-1-text-1:after") {
+		t.Fatalf("continuation reasoning was not anchored to the fresh assistant message:\n%s", got)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	gotParts := uiPartSummary(uiMessage.Parts)
+	wantParts := []string{"text:before ", "tool-call:tool-1", "thinking:checking approval", "text:after"}
+	if !reflect.DeepEqual(gotParts, wantParts) {
+		t.Fatalf("continued reasoning UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", gotParts, wantParts, uiMessage.Parts)
+	}
+}
+
+func TestWriterParentsContinuationToolsToCurrentAssistantMessage(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text("before ")
+	writer.ToolStart("tool-1", "ask_approval", 1, nil)
+	writer.AwaitToolUseWithUsage(nil)
+
+	continuation := NewWriter(run, func() time.Time { return time.Unix(11, 0) })
+	continuation.Text("after ")
+	continuation.ToolStart("tool-2", "second_tool", 1, nil)
+
+	parentByTool := map[string]string{}
+	for _, evt := range run.Events {
+		if evt.Type() != agui.EventToolCallStart {
+			continue
+		}
+		parentByTool[asString(evt.Get("toolCallId"))] = asString(evt.Get("parentMessageId"))
+	}
+	if parentByTool["tool-2"] != "msg-run-1-text-1" {
+		t.Fatalf("second continuation tool used wrong parent: %#v", parentByTool)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	gotParts := uiPartSummary(uiMessage.Parts)
+	wantParts := []string{"text:before ", "tool-call:tool-1", "text:after ", "tool-call:tool-2"}
+	if !reflect.DeepEqual(gotParts, wantParts) {
+		t.Fatalf("continued tool UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", gotParts, wantParts, uiMessage.Parts)
+	}
+}
+
 func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
@@ -1032,4 +1104,17 @@ func TestApprovalQueueKeepsOneActiveInterruptAndTimeouts(t *testing.T) {
 	if result.Status != "timed_out" || result.State != agui.ToolResultStateError || result.Approved {
 		t.Fatalf("bad timed-out tool result: %#v", result)
 	}
+}
+
+func uiPartSummary(parts []MessagePart) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part["type"] {
+		case "text", "thinking":
+			out = append(out, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			out = append(out, fmt.Sprintf("tool-call:%s", firstString(part["toolCallId"], part["id"])))
+		}
+	}
+	return out
 }
