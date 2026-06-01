@@ -537,12 +537,20 @@ func buildOpenAIClientConfig(model ai.Model, llmContext ai.Context, options ai.S
 		}
 	}
 	if options.SessionID != "" && resolveCacheRetention(options.CacheRetention) != ai.CacheRetentionNone {
-		headers["x-client-request-id"] = options.SessionID
-		if model.API == ai.ApiOpenAIResponses || ResolveOpenAICompletionsCompat(model).SendSessionAffinityHeaders {
-			headers["session_id"] = options.SessionID
-		}
-		if model.API == ai.ApiOpenAICompletions && ResolveOpenAICompletionsCompat(model).SendSessionAffinityHeaders {
-			headers["x-session-affinity"] = options.SessionID
+		switch model.API {
+		case ai.ApiOpenAIResponses:
+			compat := ResolveOpenAIResponsesCompat(model)
+			headers["x-client-request-id"] = options.SessionID
+			if compat.SendSessionIDHeader {
+				headers["session_id"] = options.SessionID
+			}
+		case ai.ApiOpenAICompletions:
+			compat := ResolveOpenAICompletionsCompat(model)
+			if compat.SendSessionAffinityHeaders {
+				headers["session_id"] = options.SessionID
+				headers["x-client-request-id"] = options.SessionID
+				headers["x-session-affinity"] = options.SessionID
+			}
 		}
 	}
 	for key, value := range options.Headers {

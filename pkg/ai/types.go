@@ -8,6 +8,7 @@ type Provider string
 type ImagesProvider string
 type ThinkingLevel string
 type ModelThinkingLevel string
+type ModelReasoningMode string
 type CacheRetention string
 type Transport string
 type StopReason string
@@ -68,6 +69,8 @@ const (
 	ThinkingLevelXHigh   ThinkingLevel = "xhigh"
 
 	ModelThinkingLevelOff ModelThinkingLevel = "off"
+
+	ModelReasoningModeAdaptive ModelReasoningMode = "adaptive"
 
 	CacheRetentionNone  CacheRetention = "none"
 	CacheRetentionShort CacheRetention = "short"
@@ -139,6 +142,7 @@ type Model struct {
 	Reasoning            bool                           `json:"reasoning"`
 	ThinkingLevelMap     map[ModelThinkingLevel]*string `json:"thinkingLevelMap,omitempty"`
 	DefaultThinkingLevel ModelThinkingLevel             `json:"defaultThinkingLevel,omitempty"`
+	ReasoningMode        ModelReasoningMode             `json:"reasoningMode,omitempty"`
 	Input                []string                       `json:"input"`
 	Output               []string                       `json:"output,omitempty"`
 	Cost                 ModelCost                      `json:"cost"`

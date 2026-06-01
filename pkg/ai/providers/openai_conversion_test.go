@@ -553,8 +553,57 @@ func TestOpenAIClientConfigResolvesCloudflareGatewayHeaders(t *testing.T) {
 	if config.Headers["x-model"] != "1" || config.Headers["x-extra"] != "2" {
 		t.Fatalf("expected merged headers, got %#v", config.Headers)
 	}
+	if _, ok := config.Headers["x-client-request-id"]; ok {
+		t.Fatalf("default completions compat should not send request id header, got %#v", config.Headers)
+	}
+}
+
+func TestOpenAIClientConfigResponsesHonorsSessionIDCompat(t *testing.T) {
+	config, err := buildOpenAIClientConfig(ai.Model{
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  "https://api.openai.com/v1",
+		Compat:   map[string]any{"sendSessionIdHeader": false},
+	}, ai.Context{}, ai.StreamOptions{APIKey: "token", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if config.Headers["x-client-request-id"] != "session-1" {
 		t.Fatalf("expected request id header, got %#v", config.Headers)
+	}
+	if _, ok := config.Headers["session_id"]; ok {
+		t.Fatalf("sendSessionIdHeader=false should suppress session_id, got %#v", config.Headers)
+	}
+}
+
+func TestOpenAIClientConfigCompletionsAffinityHeadersRequireCompat(t *testing.T) {
+	defaultConfig, err := buildOpenAIClientConfig(ai.Model{
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
+	}, ai.Context{}, ai.StreamOptions{APIKey: "token", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"session_id", "x-client-request-id", "x-session-affinity"} {
+		if _, ok := defaultConfig.Headers[key]; ok {
+			t.Fatalf("default completions compat should not send %s, got %#v", key, defaultConfig.Headers)
+		}
+	}
+
+	enabledConfig, err := buildOpenAIClientConfig(ai.Model{
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
+		Compat:   map[string]any{"sendSessionAffinityHeaders": true},
+	}, ai.Context{}, ai.StreamOptions{APIKey: "token", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"session_id", "x-client-request-id", "x-session-affinity"} {
+		if enabledConfig.Headers[key] != "session-1" {
+			t.Fatalf("expected %s=session-1, got %#v", key, enabledConfig.Headers)
+		}
 	}
 }
 

@@ -185,6 +185,7 @@ type Writer struct {
 	textOpen                  map[int]bool
 	reasoningMessages         map[int]string
 	reasoningOpen             map[int]bool
+	reasoningContent          map[int]string
 	reasoningPhaseID          string
 	reasoningPhaseOpen        bool
 	nextSyntheticReasoningIdx int
@@ -233,6 +234,7 @@ func NewWriter(run *Run, now func() time.Time) *Writer {
 		textOpen:           map[int]bool{},
 		reasoningMessages:  map[int]string{},
 		reasoningOpen:      map[int]bool{},
+		reasoningContent:   map[int]string{},
 		reasoningPhaseID:   "reasoning-" + run.RunID,
 		lastAccountedChars: utf8.RuneCountInString(run.Text()),
 		previewText:        run.Text(),
@@ -297,7 +299,26 @@ func (w *Writer) ReasoningDelta(index int, delta string) {
 		return
 	}
 	messageID := w.ReasoningMessageStart(index)
+	w.reasoningContent[index] += delta
 	w.Add(w.builder.ReasoningMessageContent(messageID, delta))
+}
+
+func (w *Writer) ReasoningContentSnapshot(index int, content string) {
+	if content == "" {
+		return
+	}
+	w.initState()
+	previous := w.reasoningContent[index]
+	if content == previous {
+		return
+	}
+	if previous == "" {
+		w.ReasoningDelta(index, content)
+		return
+	}
+	if strings.HasPrefix(content, previous) {
+		w.ReasoningDelta(index, content[len(previous):])
+	}
 }
 
 func (w *Writer) ReasoningMessageEnd(index int) {
@@ -729,6 +750,9 @@ func (w *Writer) initState() {
 	}
 	if w.reasoningOpen == nil {
 		w.reasoningOpen = map[int]bool{}
+	}
+	if w.reasoningContent == nil {
+		w.reasoningContent = map[int]string{}
 	}
 	if w.reasoningPhaseID == "" && w.Run != nil {
 		w.reasoningPhaseID = "reasoning-" + w.Run.RunID

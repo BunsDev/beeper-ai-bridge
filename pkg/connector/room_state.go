@@ -26,16 +26,18 @@ type RoomConfig struct {
 	ModelID          string
 	AdditionalPrompt string
 	ThinkingLevel    string
+	ReasoningMode    string
 	DisabledTools    []string
 	SearchMode       string
 	FetchMode        string
 
-	modelStatePresent  bool
-	modelStateModel    string
-	modelStateName     string
-	modelStateReason   string
-	modelStateEventID  string
-	promptStateEventID string
+	modelStatePresent       bool
+	modelStateModel         string
+	modelStateName          string
+	modelStateReason        string
+	modelStateReasoningMode string
+	modelStateEventID       string
+	promptStateEventID      string
 }
 
 func (c *Connector) aiRoomStateStore() AIRoomStateStore {
@@ -64,10 +66,14 @@ func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (Roo
 		config.modelStateModel = firstString(raw, "model")
 		config.modelStateName = firstString(raw, "name")
 		config.modelStateReason = firstString(raw, "reasoning")
+		config.modelStateReasoningMode = firstString(raw, "reasoning_mode")
 		config.modelStateEventID = eventID
 		applyRoomModelConfig(&config, raw)
 		if _, ok := raw["reasoning"]; !ok {
 			config.ThinkingLevel = ""
+		}
+		if _, ok := raw["reasoning_mode"]; !ok {
+			config.ReasoningMode = ""
 		}
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
@@ -221,6 +227,9 @@ func applyRoomModelConfig(config *RoomConfig, raw map[string]any) {
 	}
 	if reasoning := firstString(raw, "reasoning"); reasoning != "" {
 		config.ThinkingLevel = reasoning
+	}
+	if reasoningMode := firstString(raw, "reasoning_mode"); reasoningMode != "" {
+		config.ReasoningMode = reasoningMode
 	}
 }
 

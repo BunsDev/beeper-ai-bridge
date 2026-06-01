@@ -170,7 +170,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 			t.Fatalf("unexpected query %s", r.URL.RawQuery)
 		}
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","provider":{"id":"openrouter","model_id":"minimax/minimax-m2.7","api":"openai-responses"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","provider":{"id":"openrouter","model_id":"minimax/minimax-m2.7","api":"openai-responses"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
 	}))
 	defer server.Close()
 
@@ -211,6 +211,9 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 	if got := models[0].ThinkingLevelMap[ai.ModelThinkingLevelXHigh]; got == nil || *got != "xhigh" {
 		t.Fatalf("expected AI Services xhigh map, got %#v", models[0].ThinkingLevelMap)
+	}
+	if models[0].ReasoningMode != "adaptive" {
+		t.Fatalf("expected AI Services reasoning mode, got %#v", models[0].ReasoningMode)
 	}
 	if len(models[0].BuiltInTools) != 1 || models[0].BuiltInTools[0] != "image_generation" {
 		t.Fatalf("expected AI Services built-in tools, got %#v", models[0].BuiltInTools)

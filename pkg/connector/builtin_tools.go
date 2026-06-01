@@ -20,6 +20,9 @@ func (cl *Client) registerProviderBuiltInToolHooks(agentHarness *harness.AgentHa
 		if event.Model == nil || roomFetchMode(roomConfig) != toolModeNative || event.Model.API != ai.ApiAnthropicMessages {
 			return nil, nil
 		}
+		if !modelSupportsBuiltInTool(*event.Model, "web_fetch") {
+			return nil, nil
+		}
 		if _, ok := nativeWebFetchToolPayload(*event.Model); !ok {
 			return nil, nil
 		}
@@ -43,12 +46,12 @@ func (cl *Client) registerProviderBuiltInToolHooks(agentHarness *harness.AgentHa
 
 func activeBuiltInToolPayloads(model ai.Model, roomConfig RoomConfig) []map[string]any {
 	out := make([]map[string]any, 0, len(model.BuiltInTools)+2)
-	if roomSearchMode(roomConfig) == toolModeNative {
+	if roomSearchMode(roomConfig) == toolModeNative && modelSupportsBuiltInTool(model, "web_search") {
 		if payload, ok := nativeWebSearchToolPayload(model); ok {
 			out = appendBuiltInToolPayload(out, payload)
 		}
 	}
-	if roomFetchMode(roomConfig) == toolModeNative {
+	if roomFetchMode(roomConfig) == toolModeNative && modelSupportsBuiltInTool(model, "web_fetch") {
 		if payload, ok := nativeWebFetchToolPayload(model); ok {
 			out = appendBuiltInToolPayload(out, payload)
 		}
@@ -61,6 +64,16 @@ func activeBuiltInToolPayloads(model ai.Model, roomConfig RoomConfig) []map[stri
 		out = appendBuiltInToolPayload(out, payload)
 	}
 	return out
+}
+
+func modelSupportsBuiltInTool(model ai.Model, tool string) bool {
+	canonical := normalizedBuiltInTool(tool)
+	for _, supported := range model.BuiltInTools {
+		if normalizedBuiltInTool(supported) == canonical {
+			return true
+		}
+	}
+	return false
 }
 
 func builtInToolPayload(model ai.Model, roomConfig RoomConfig, tool string) (map[string]any, bool) {

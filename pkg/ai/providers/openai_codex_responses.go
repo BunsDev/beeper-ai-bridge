@@ -672,7 +672,7 @@ func BuildCodexSSEHeaders(modelHeaders map[string]string, additionalHeaders map[
 	headers["accept"] = "text/event-stream"
 	headers["content-type"] = "application/json"
 	if sessionID != "" {
-		headers["session_id"] = sessionID
+		headers["session-id"] = sessionID
 		headers["x-client-request-id"] = sessionID
 	}
 	return headers
@@ -686,7 +686,7 @@ func BuildCodexWebSocketHeaders(modelHeaders map[string]string, additionalHeader
 	delete(headers, "openai-beta")
 	headers["OpenAI-Beta"] = openAIBetaResponsesWebSockets
 	headers["x-client-request-id"] = requestID
-	headers["session_id"] = requestID
+	headers["session-id"] = requestID
 	return headers
 }
 

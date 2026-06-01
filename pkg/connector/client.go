@@ -1662,6 +1662,7 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 	case "thinking_delta":
 		writer.ReasoningDelta(evt.ContentIndex, evt.Delta)
 	case "thinking_end":
+		writer.ReasoningContentSnapshot(evt.ContentIndex, evt.Content)
 		writer.ReasoningMessageEnd(evt.ContentIndex)
 	case "toolcall_start":
 		if toolCall := toolCallFromEvent(); toolCall != nil {

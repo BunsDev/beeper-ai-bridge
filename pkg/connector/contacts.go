@@ -445,6 +445,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			Reasoning:            item.reasoning(),
 			ThinkingLevelMap:     item.thinkingLevelMap(),
 			DefaultThinkingLevel: item.defaultThinkingLevel(),
+			ReasoningMode:        item.reasoningMode(),
 			Input:                item.inputModalities(),
 			Output:               item.outputModalities(),
 			ContextWindow:        item.contextWindow(),
@@ -526,6 +527,7 @@ type aiServicesModelEntry struct {
 			Levels       []string           `json:"levels"`
 			LevelMap     map[string]*string `json:"level_map"`
 			DefaultLevel string             `json:"default_level"`
+			Mode         string             `json:"mode"`
 		} `json:"reasoning"`
 		Tools *struct {
 			Supported bool     `json:"supported"`
@@ -656,6 +658,13 @@ func (entry aiServicesModelEntry) maxTokens() int {
 
 func (entry aiServicesModelEntry) reasoning() bool {
 	return entry.Capabilities != nil && entry.Capabilities.Reasoning != nil && entry.Capabilities.Reasoning.Supported
+}
+
+func (entry aiServicesModelEntry) reasoningMode() ai.ModelReasoningMode {
+	if entry.Capabilities == nil || entry.Capabilities.Reasoning == nil {
+		return ""
+	}
+	return ai.ModelReasoningMode(strings.ToLower(strings.TrimSpace(entry.Capabilities.Reasoning.Mode)))
 }
 
 func (entry aiServicesModelEntry) builtInTools() []string {

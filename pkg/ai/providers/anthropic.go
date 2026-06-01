@@ -447,9 +447,9 @@ func anthropicHeaders(model ai.Model, llmContext ai.Context, options AnthropicOp
 		if len(betas) > 0 {
 			headers["Anthropic-Beta"] = strings.Join(betas, ",")
 		}
-		if options.SessionID != "" && getAnthropicCompat(model).SendSessionAffinityHeaders && resolveAnthropicCacheRetention(options.CacheRetention) != ai.CacheRetentionNone {
-			headers["X-Session-Affinity"] = options.SessionID
-		}
+	}
+	if options.SessionID != "" && getAnthropicCompat(model).SendSessionAffinityHeaders && resolveAnthropicCacheRetention(options.CacheRetention) != ai.CacheRetentionNone {
+		headers["X-Session-Affinity"] = options.SessionID
 	}
 	for key, value := range model.Headers {
 		headers[key] = value
@@ -468,7 +468,7 @@ func getAnthropicCompat(model ai.Model) resolvedAnthropicCompat {
 		SupportsLongCacheRetention:      compatBool(model, "supportsLongCacheRetention", !isFireworks),
 		SendSessionAffinityHeaders:      compatBool(model, "sendSessionAffinityHeaders", isFireworks || isCloudflareGatewayAnthropic),
 		SupportsCacheControlOnTools:     compatBool(model, "supportsCacheControlOnTools", !isFireworks),
-		ForceAdaptiveThinking:           compatBool(model, "forceAdaptiveThinking", false),
+		ForceAdaptiveThinking:           model.ReasoningMode == "adaptive" || compatBool(model, "forceAdaptiveThinking", false),
 		AllowEmptySignature:             compatBool(model, "allowEmptySignature", false),
 	}
 }

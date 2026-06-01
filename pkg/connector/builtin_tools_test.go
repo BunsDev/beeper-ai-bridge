@@ -89,11 +89,11 @@ func TestActiveBuiltInToolPayloadsHonorsNativeFetchMode(t *testing.T) {
 	}
 }
 
-func TestActiveBuiltInToolPayloadsInjectsNativeModesWithoutCatalogBuiltIns(t *testing.T) {
+func TestActiveBuiltInToolPayloadsDoesNotInjectNativeModesWithoutCatalogBuiltIns(t *testing.T) {
 	model := ai.Model{API: ai.ApiGoogleGenerativeAI, Provider: ai.ProviderGoogle}
 	got := activeBuiltInToolPayloads(model, RoomConfig{SearchMode: toolModeNative, FetchMode: toolModeNative})
-	if len(got) != 2 || builtInToolKey(got[0]) != "google_search" || builtInToolKey(got[1]) != "url_context" {
-		t.Fatalf("expected mode-driven native Google tools, got %#v", got)
+	if len(got) != 0 {
+		t.Fatalf("native modes should not synthesize unsupported catalog tools, got %#v", got)
 	}
 }
 
@@ -163,25 +163,25 @@ func TestNativeWebFetchToolPayloadsAreProviderSpecific(t *testing.T) {
 		},
 		{
 			name:      "openrouter responses",
-			model:     ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter},
+			model:     ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter, BuiltInTools: []string{"web_fetch"}},
 			wantKey:   "type",
 			wantValue: "openrouter:web_fetch",
 		},
 		{
 			name:      "openrouter completions",
-			model:     ai.Model{API: ai.ApiOpenAICompletions, Provider: ai.ProviderOpenRouter},
+			model:     ai.Model{API: ai.ApiOpenAICompletions, Provider: ai.ProviderOpenRouter, BuiltInTools: []string{"web_fetch"}},
 			wantKey:   "type",
 			wantValue: "openrouter:web_fetch",
 		},
 		{
 			name:      "anthropic",
-			model:     ai.Model{API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic},
+			model:     ai.Model{API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic, BuiltInTools: []string{"web_fetch"}},
 			wantKey:   "type",
 			wantValue: "web_fetch_20250910",
 		},
 		{
 			name:      "google",
-			model:     ai.Model{API: ai.ApiGoogleGenerativeAI, Provider: ai.ProviderGoogle},
+			model:     ai.Model{API: ai.ApiGoogleGenerativeAI, Provider: ai.ProviderGoogle, BuiltInTools: []string{"web_fetch"}},
 			wantKey:   "url_context",
 			wantValue: map[string]any{},
 		},

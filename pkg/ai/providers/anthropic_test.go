@@ -245,6 +245,25 @@ func TestAnthropicBeeperProxyUsesBearerAuth(t *testing.T) {
 	}
 }
 
+func TestAnthropicBeeperProxyForwardsSessionAffinityWhenSupported(t *testing.T) {
+	model := ai.Model{
+		ID:       "claude-test",
+		API:      ai.ApiAnthropicMessages,
+		Provider: ai.ProviderAnthropic,
+		BaseURL:  "https://ai-services.beeper.localtest.me/proxy/anthropic",
+		Compat:   map[string]any{"sendSessionAffinityHeaders": true},
+	}
+	headers := anthropicHeaders(model, ai.Context{}, AnthropicOptions{StreamOptions: ai.StreamOptions{APIKey: "matrix-token", SessionID: "session-1"}}, false)
+	if headers["X-Session-Affinity"] != "session-1" {
+		t.Fatalf("expected forwarded session affinity, got %#v", headers)
+	}
+
+	disabled := anthropicHeaders(model, ai.Context{}, AnthropicOptions{StreamOptions: ai.StreamOptions{APIKey: "matrix-token", SessionID: "session-1", CacheRetention: ai.CacheRetentionNone}}, false)
+	if _, ok := disabled["X-Session-Affinity"]; ok {
+		t.Fatalf("cacheRetention=none should suppress session affinity, got %#v", disabled)
+	}
+}
+
 func TestAnthropicHeadersIncludeWebFetchBetaFromMetadata(t *testing.T) {
 	model := ai.Model{ID: "claude-test", API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic}
 	headers := anthropicHeaders(model, ai.Context{}, AnthropicOptions{StreamOptions: ai.StreamOptions{
@@ -253,5 +272,36 @@ func TestAnthropicHeadersIncludeWebFetchBetaFromMetadata(t *testing.T) {
 	}}, false)
 	if !strings.Contains(headers["Anthropic-Beta"], webFetchBeta) || !strings.Contains(headers["Anthropic-Beta"], interleavedThinkingBeta) {
 		t.Fatalf("expected web fetch beta to compose with generated betas, got %#v", headers)
+	}
+}
+
+func TestAnthropicOpus47PlusUsesAdaptiveThinkingByDefault(t *testing.T) {
+	model := ai.Model{
+		ID:            "anthropic/claude-opus-4.8",
+		API:           ai.ApiAnthropicMessages,
+		Provider:      ai.ProviderAnthropic,
+		Reasoning:     true,
+		ReasoningMode: "adaptive",
+		MaxTokens:     128000,
+	}
+	if !getAnthropicCompat(model).ForceAdaptiveThinking {
+		t.Fatal("expected catalog adaptive reasoning mode to force adaptive thinking")
+	}
+
+	enabled := true
+	params := BuildAnthropicParams(model, ai.Context{Messages: []ai.Message{{Role: "user", Content: "hi"}}}, false, AnthropicOptions{
+		ThinkingEnabled: &enabled,
+		Effort:          "high",
+	})
+	thinking, ok := params["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("expected adaptive thinking params, got %#v", params["thinking"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("adaptive thinking must not include manual budget_tokens: %#v", thinking)
+	}
+	outputConfig, ok := params["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != "high" {
+		t.Fatalf("expected adaptive effort output_config, got %#v", params["output_config"])
 	}
 }

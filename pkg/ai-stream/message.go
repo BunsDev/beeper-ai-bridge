@@ -172,6 +172,13 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 			messageID, _ := evt.Get("messageId").(string)
 			message := ensureReasoningMessage(messageID)
 			message.content.WriteString(asString(evt.Get("delta")))
+		case agui.EventReasoningMsgChunk:
+			if !includeReasoning {
+				continue
+			}
+			messageID, _ := evt.Get("messageId").(string)
+			message := ensureReasoningMessage(messageID)
+			message.content.WriteString(asString(evt.Get("delta")))
 		case agui.EventReasoningMsgEnd:
 			messageID, _ := evt.Get("messageId").(string)
 			closeReasoningMessage(messageID)
@@ -443,6 +450,16 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			messageID, _ := evt.Get("messageId").(string)
 			ensureThinkingPart(messageID)
 		case agui.EventReasoningMsgCont:
+			delta, _ := evt.Get("delta").(string)
+			if delta == "" {
+				continue
+			}
+			if !includeThinking {
+				continue
+			}
+			messageID, _ := evt.Get("messageId").(string)
+			ensureThinkingPart(messageID).content.WriteString(delta)
+		case agui.EventReasoningMsgChunk:
 			delta, _ := evt.Get("delta").(string)
 			if delta == "" {
 				continue
@@ -801,6 +818,7 @@ func isReasoningEventType(eventType string) bool {
 		agui.EventReasoningEnd,
 		agui.EventReasoningMsgStart,
 		agui.EventReasoningMsgCont,
+		agui.EventReasoningMsgChunk,
 		agui.EventReasoningMsgEnd:
 		return true
 	default:

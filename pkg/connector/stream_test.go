@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -943,6 +944,57 @@ func TestApplyAIStreamEventDoesNotPublishReasoningSignaturesToAGUI(t *testing.T)
 		if evt.Type() == agui.EventReasoningEncrypted {
 			t.Fatalf("reasoning signatures must not be published as AG-UI events: %#v", run.Events)
 		}
+	}
+}
+
+func TestApplyAIStreamEventPublishesReasoningContentFromEndSnapshot(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:     "thinking",
+			Thinking: "final summary",
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "final summary", Partial: partial})
+
+	var reasoningContent []string
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventReasoningMsgCont {
+			reasoningContent = append(reasoningContent, fmt.Sprint(evt.Get("delta")))
+		}
+	}
+	if strings.Join(reasoningContent, "") != "final summary" {
+		t.Fatalf("expected thinking_end content to be emitted before end, got events=%#v", run.Events)
+	}
+}
+
+func TestApplyAIStreamEventDoesNotDuplicateReasoningEndSnapshot(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:     "thinking",
+			Thinking: "hidden continuity",
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "hidden continuity", Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "hidden continuity", Partial: partial})
+
+	var reasoningContent []string
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventReasoningMsgCont {
+			reasoningContent = append(reasoningContent, fmt.Sprint(evt.Get("delta")))
+		}
+	}
+	if strings.Join(reasoningContent, "") != "hidden continuity" || len(reasoningContent) != 1 {
+		t.Fatalf("expected reasoning content once, got %#v events=%#v", reasoningContent, run.Events)
 	}
 }
 

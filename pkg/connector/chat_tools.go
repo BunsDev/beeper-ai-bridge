@@ -179,6 +179,32 @@ func (cl *Client) validateReasoningLevel(model ai.Model, roomConfig RoomConfig) 
 	return fmt.Errorf("model %s does not support reasoning level %q", model.ID, level)
 }
 
+func (cl *Client) configuredReasoningMode(model ai.Model, roomConfig RoomConfig) string {
+	if roomConfig.ReasoningMode != "" && roomConfig.ReasoningMode != "default" {
+		return roomConfig.ReasoningMode
+	}
+	return string(model.ReasoningMode)
+}
+
+func (cl *Client) reasoningModeForModel(model ai.Model, roomConfig RoomConfig) string {
+	return cl.configuredReasoningMode(model, roomConfig)
+}
+
+func (cl *Client) validateReasoningMode(model ai.Model, roomConfig RoomConfig) error {
+	mode := strings.ToLower(strings.TrimSpace(roomConfig.ReasoningMode))
+	switch mode {
+	case "", "default":
+		return nil
+	case string(ai.ModelReasoningModeAdaptive):
+		if model.ReasoningMode == ai.ModelReasoningModeAdaptive {
+			return nil
+		}
+		return fmt.Errorf("model %s does not support reasoning mode %q", model.ID, mode)
+	default:
+		return fmt.Errorf("reasoning mode %q is invalid", roomConfig.ReasoningMode)
+	}
+}
+
 func clampRoomReasoningLevel(model ai.Model, level ai.ModelThinkingLevel) ai.ModelThinkingLevel {
 	return ai.ClampThinkingLevel(model, level)
 }

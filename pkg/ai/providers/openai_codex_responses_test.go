@@ -104,11 +104,11 @@ func TestCodexAccountAndHeaders(t *testing.T) {
 	if headers["Authorization"] != "Bearer "+token || headers["chatgpt-account-id"] != "acct_123" || headers["OpenAI-Beta"] != "responses=experimental" {
 		t.Fatalf("unexpected sse headers %#v", headers)
 	}
-	if headers["session_id"] != "session-1" || headers["x-client-request-id"] != "session-1" {
+	if headers["session-id"] != "session-1" || headers["x-client-request-id"] != "session-1" {
 		t.Fatalf("expected session headers, got %#v", headers)
 	}
 	wsHeaders := BuildCodexWebSocketHeaders(headers, nil, accountID, token, "request-1")
-	if wsHeaders["OpenAI-Beta"] != openAIBetaResponsesWebSockets || wsHeaders["session_id"] != "request-1" {
+	if wsHeaders["OpenAI-Beta"] != openAIBetaResponsesWebSockets || wsHeaders["session-id"] != "request-1" {
 		t.Fatalf("unexpected websocket headers %#v", wsHeaders)
 	}
 	if _, ok := wsHeaders["accept"]; ok {
