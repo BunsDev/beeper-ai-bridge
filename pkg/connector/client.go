@@ -520,7 +520,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 	cl.queueAssistantTyping(msg.Portal.PortalKey, 30*time.Second)
 	unsubscribeToolOutputs := agentHarness.Subscribe(func(ctx context.Context, event harness.AgentHarnessEvent) error {
 		if event.Type == "message_end" && event.Message != nil && event.Message.Role == "user" && event.SessionEntryID != "" {
-			active.markConsumed(ctx, cl, event.SessionEntryID, time.Now())
+			active.markConsumed(ctx, cl, event.SessionEntryID)
 			return nil
 		}
 		if event.Type == "message_end" && event.Message != nil && event.Message.Role == "assistant" && event.SessionEntryID != "" {
@@ -682,7 +682,7 @@ func (cl *Client) markConsumedFailed(ctx context.Context, pending *pendingAIMess
 	cl.Main.Bridge.Matrix.SendMessageStatus(ctx, &status, bridgev2.StatusEventInfoFromEvent(pending.msg.Event))
 }
 
-func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIMessage, userEntryID string, consumedAt time.Time) {
+func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIMessage, userEntryID string) {
 	if pending == nil || pending.msg == nil {
 		return
 	}
@@ -690,6 +690,7 @@ func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIM
 	pending.metadata.Role = "user"
 	pending.metadata.StreamStatus = "done"
 	messageID := aiid.UserMessageID(userEntryID)
+	echoTimestamp := matrixEventTime(pending.msg.Event)
 	cl.UserLogin.QueueRemoteEvent(&simplevent.PreConvertedMessage{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessage,
@@ -697,7 +698,8 @@ func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIM
 			Sender: bridgev2.EventSender{
 				Sender: cl.GetUserID(),
 			},
-			Timestamp: consumedAt,
+			Timestamp:   echoTimestamp,
+			StreamOrder: echoTimestamp.UnixNano(),
 		},
 		ID:            messageID,
 		TransactionID: pending.txnID,
@@ -2342,7 +2344,7 @@ func (r *activeAIRun) replyTarget() *networkid.MessageOptionalPartID {
 	}
 }
 
-func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID string, consumedAt time.Time) {
+func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID string) {
 	r.mu.Lock()
 	if len(r.pending) == 0 {
 		r.mu.Unlock()
@@ -2355,7 +2357,7 @@ func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID stri
 		r.status = bridgev2.StatusEventInfoFromEvent(pending.msg.Event)
 	}
 	r.mu.Unlock()
-	cl.queueConsumedUserEcho(ctx, pending, entryID, consumedAt)
+	cl.queueConsumedUserEcho(ctx, pending, entryID)
 }
 
 func (r *activeAIRun) failAll(ctx context.Context, cl *Client, err error) {
