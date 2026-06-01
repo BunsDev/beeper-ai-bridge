@@ -167,6 +167,149 @@ func TestResponsesStreamStateFinalizesReasoningTextToolAndUsage(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamStateBackfillsTextAndReasoningDoneEvents(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "reasoning", "id": "rs_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":    "response.reasoning_text.done",
+		"item_id": "rs_1",
+		"text":    "full reasoning",
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "message", "id": "msg_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":    "response.output_text.done",
+		"item_id": "msg_1",
+		"text":    "full answer",
+	})
+
+	if state.blocks[0].Thinking != "full reasoning" || state.blocks[1].Text != "full answer" {
+		t.Fatalf("expected done events to backfill content, got %#v", state.blocks)
+	}
+	events := drainAssistantEvents(stream)
+	var thinkingDelta, textDelta bool
+	for _, event := range events {
+		if event.Type == "thinking_delta" && event.Delta == "full reasoning" {
+			thinkingDelta = true
+		}
+		if event.Type == "text_delta" && event.Delta == "full answer" {
+			textDelta = true
+		}
+	}
+	if !thinkingDelta || !textDelta {
+		t.Fatalf("expected done events to emit missing deltas, got %#v", events)
+	}
+}
+
+func TestResponsesStreamStateBackfillsPartDoneEvents(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item":         map[string]any{"type": "reasoning", "id": "rs_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":         "response.content_part.done",
+		"output_index": 0,
+		"part":         map[string]any{"type": "reasoning_text", "text": "part reasoning"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 1,
+		"item":         map[string]any{"type": "message", "id": "msg_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":         "response.content_part.done",
+		"output_index": 1,
+		"part":         map[string]any{"type": "output_text", "text": "part answer"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 2,
+		"item":         map[string]any{"type": "message", "id": "msg_2"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":         "response.refusal.done",
+		"output_index": 2,
+		"refusal":      "final refusal",
+	})
+
+	if state.blocks[0].Thinking != "part reasoning" || state.blocks[1].Text != "part answer" || state.blocks[2].Text != "final refusal" {
+		t.Fatalf("expected part done events to backfill content, got %#v", state.blocks)
+	}
+	events := drainAssistantEvents(stream)
+	var thinkingDelta, answerDelta, refusalDelta bool
+	for _, event := range events {
+		if event.Type == "thinking_delta" && event.Delta == "part reasoning" {
+			thinkingDelta = true
+		}
+		if event.Type == "text_delta" && event.Delta == "part answer" {
+			answerDelta = true
+		}
+		if event.Type == "text_delta" && event.Delta == "final refusal" {
+			refusalDelta = true
+		}
+	}
+	if !thinkingDelta || !answerDelta || !refusalDelta {
+		t.Fatalf("expected part done events to emit missing deltas, got %#v", events)
+	}
+}
+
+func TestResponsesStreamStateBackfillsReasoningSummaryPartDone(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "reasoning", "id": "rs_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":    "response.reasoning_summary_part.added",
+		"item_id": "rs_1",
+		"part":    map[string]any{"type": "summary_text", "text": ""},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":    "response.reasoning_summary_part.done",
+		"item_id": "rs_1",
+		"part":    map[string]any{"type": "summary_text", "text": "summary only on part done"},
+	})
+
+	if state.blocks[0].Thinking != "summary only on part done\n\n" {
+		t.Fatalf("expected summary part done to backfill summary text, got %#v", state.blocks[0])
+	}
+	events := drainAssistantEvents(stream)
+	var summaryDelta, separatorDelta bool
+	for _, event := range events {
+		if event.Type == "thinking_delta" && event.Delta == "summary only on part done" {
+			summaryDelta = true
+		}
+		if event.Type == "thinking_delta" && event.Delta == "\n\n" {
+			separatorDelta = true
+		}
+	}
+	if !summaryDelta || !separatorDelta {
+		t.Fatalf("expected summary part done to emit content and separator deltas, got %#v", events)
+	}
+}
+
 func TestResponsesStreamStateMapsNativeWebSearchCallToToolActivity(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()
@@ -211,6 +354,63 @@ func TestResponsesStreamStateMapsNativeWebSearchCallToToolActivity(t *testing.T)
 	}
 	if !started || !result {
 		t.Fatalf("expected native web search start/result events, got %#v", events)
+	}
+}
+
+func TestResponsesStreamStateKeepsReasoningStreamingAcrossNativeToolItems(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "reasoning", "id": "rs_1"},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":    "response.reasoning_summary_part.added",
+		"item_id": "rs_1",
+		"part":    map[string]any{"type": "summary_text", "text": ""},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{
+			"type":   "web_search_call",
+			"id":     "ws_1",
+			"status": "searching",
+			"action": map[string]any{"type": "search", "query": "Amsterdam news"},
+		},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type":    "response.reasoning_summary_text.delta",
+		"item_id": "rs_1",
+		"delta":   "checking sources",
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{"type": "web_search_call", "id": "ws_1", "status": "completed", "action": map[string]any{"type": "search", "query": "Amsterdam news"}},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{"type": "reasoning", "id": "rs_1", "summary": []any{map[string]any{"type": "summary_text", "text": "checking sources"}}},
+	})
+
+	if len(state.blocks) != 1 || state.blocks[0].Thinking != "checking sources" {
+		t.Fatalf("expected reasoning summary to survive native tool interleave, got %#v", state.blocks)
+	}
+	events := drainAssistantEvents(stream)
+	var thinkingDelta, thinkingEnd bool
+	for _, event := range events {
+		if event.Type == "thinking_delta" && event.Delta == "checking sources" {
+			thinkingDelta = true
+		}
+		if event.Type == "thinking_end" && event.Content == "checking sources" {
+			thinkingEnd = true
+		}
+	}
+	if !thinkingDelta || !thinkingEnd {
+		t.Fatalf("expected streamed reasoning delta and end, got %#v", events)
 	}
 }
 

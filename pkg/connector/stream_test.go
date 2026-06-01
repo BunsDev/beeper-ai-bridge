@@ -74,6 +74,50 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamPublisherPublishesThinkingDeltasLiveAfterThinkingStart(t *testing.T) {
+	ctx := context.Background()
+	testAPI := ai.Api("test-stream-thinking")
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "thinking", Thinking: "checking context"}, {Type: "text", Text: "answer"}}, StopReason: ai.StopReasonStop}
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "checking context", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 1, Delta: "answer", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "checking context", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	result := client.streamPublisher(publisher, "!room:example.com", "$event", run)(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if result.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected stream result %#v", result)
+	}
+	var sawThinkingStart, sawThinkingDelta, sawTextDelta bool
+	for _, update := range publisher.updates {
+		payload, _ := update[aistream.BeeperAIKey].(aistream.BeeperAI)
+		for _, envelope := range payload.Events {
+			switch envelope.Event.Type() {
+			case agui.EventReasoningMsgStart:
+				sawThinkingStart = true
+			case agui.EventReasoningMsgCont:
+				sawThinkingDelta = envelope.Event.Get("delta") == "checking context"
+			case agui.EventTextMessageContent:
+				sawTextDelta = envelope.Event.Get("delta") == "answer"
+			}
+		}
+	}
+	if !sawThinkingStart || !sawThinkingDelta || !sawTextDelta {
+		t.Fatalf("expected live thinking and text carriers, start=%v thinking=%v text=%v updates=%#v", sawThinkingStart, sawThinkingDelta, sawTextDelta, publisher.updates)
+	}
+}
+
 func TestStreamPublisherFailsAfterIdleTimeout(t *testing.T) {
 	ctx := context.Background()
 	oldTimeout := activeStreamIdleTimeout

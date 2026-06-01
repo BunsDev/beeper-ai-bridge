@@ -748,20 +748,112 @@ func hasToolHistory(messages []ai.Message) bool {
 type responsesStreamState struct {
 	blocks                  []ai.ContentBlock
 	currentIndex            int
+	currentItemID           string
 	currentItemType         string
 	currentItem             map[string]any
 	currentMessagePartType  string
 	hasReasoningSummaryPart bool
+	itemIndexByID           map[string]int
+	itemIDByOutputIndex     map[int]string
+	itemTypeByID            map[string]string
+	messagePartTypeByID     map[string]string
+	reasoningSummaryByID    map[string]bool
 	toolArgsByIndex         map[int]string
+	toolArgsByItemID        map[string]string
 	nativeToolsByItemID     map[string]ai.ToolCall
 }
 
 func newResponsesStreamState() *responsesStreamState {
-	return &responsesStreamState{currentIndex: -1, toolArgsByIndex: map[int]string{}, nativeToolsByItemID: map[string]ai.ToolCall{}}
+	return &responsesStreamState{
+		currentIndex:         -1,
+		itemIndexByID:        map[string]int{},
+		itemIDByOutputIndex:  map[int]string{},
+		itemTypeByID:         map[string]string{},
+		messagePartTypeByID:  map[string]string{},
+		reasoningSummaryByID: map[string]bool{},
+		toolArgsByIndex:      map[int]string{},
+		toolArgsByItemID:     map[string]string{},
+		nativeToolsByItemID:  map[string]ai.ToolCall{},
+	}
 }
 
 func responsesItemID(item map[string]any) string {
 	return strings.TrimSpace(stringFromAny(item["id"]))
+}
+
+func responsesEventItemID(event map[string]any) string {
+	return strings.TrimSpace(stringFromAny(event["item_id"]))
+}
+
+func (s *responsesStreamState) eventItemID(event map[string]any) string {
+	if id := responsesEventItemID(event); id != "" {
+		return id
+	}
+	if outputIndex, ok := event["output_index"]; ok {
+		if id := s.itemIDByOutputIndex[intFromAny(outputIndex)]; id != "" {
+			return id
+		}
+	}
+	return s.currentItemID
+}
+
+func (s *responsesStreamState) eventContentIndex(event map[string]any) int {
+	itemID := s.eventItemID(event)
+	if itemID != "" {
+		if index, ok := s.itemIndexByID[itemID]; ok {
+			return index
+		}
+	}
+	return s.currentIndex
+}
+
+func (s *responsesStreamState) eventItemType(event map[string]any) string {
+	itemID := s.eventItemID(event)
+	if itemID != "" {
+		if itemType := s.itemTypeByID[itemID]; itemType != "" {
+			return itemType
+		}
+	}
+	return s.currentItemType
+}
+
+func (s *responsesStreamState) setItemIndex(itemID, itemType string, index int) {
+	if itemID == "" {
+		return
+	}
+	s.itemIndexByID[itemID] = index
+	s.itemTypeByID[itemID] = itemType
+}
+
+func (s *responsesStreamState) setEventOutputIndex(event map[string]any, itemID string) {
+	if itemID == "" {
+		return
+	}
+	if outputIndex, ok := event["output_index"]; ok {
+		s.itemIDByOutputIndex[intFromAny(outputIndex)] = itemID
+	}
+}
+
+func appendMissingPrefix(current, full string) string {
+	if full == "" || full == current {
+		return ""
+	}
+	if current == "" {
+		return full
+	}
+	if strings.HasPrefix(full, current) {
+		return full[len(current):]
+	}
+	return ""
+}
+
+func responsesPartText(part map[string]any, partType string) string {
+	switch partType {
+	case "refusal":
+		return stringFromAny(part["refusal"])
+	default:
+		return stringFromAny(part["text"])
+	}
 }
 
 func responsesNativeToolCall(item map[string]any, fallbackIndex int, provider ai.Provider) (ai.ToolCall, bool) {
@@ -892,7 +984,10 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 	case "response.output_item.added":
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
+		itemID := responsesItemID(item)
 		s.currentItem = item
+		s.currentItemID = itemID
+		s.setEventOutputIndex(event, itemID)
 		s.currentItemType = itemType
 		s.currentMessagePartType = ""
 		s.hasReasoningSummaryPart = false
@@ -900,11 +995,13 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 		case "reasoning":
 			s.blocks = append(s.blocks, ai.ContentBlock{Type: "thinking"})
 			s.currentIndex = len(s.blocks) - 1
+			s.setItemIndex(itemID, itemType, s.currentIndex)
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: s.currentIndex, Partial: output})
 		case "message":
 			s.blocks = append(s.blocks, ai.ContentBlock{Type: "text"})
 			s.currentIndex = len(s.blocks) - 1
+			s.setItemIndex(itemID, itemType, s.currentIndex)
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "text_start", ContentIndex: s.currentIndex, Partial: output})
 		case "function_call":
@@ -912,20 +1009,25 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			arguments := fmt.Sprint(item["arguments"])
 			s.blocks = append(s.blocks, ai.ContentBlock{Type: "toolCall", ID: id, Name: fmt.Sprint(item["name"]), Arguments: parseJSONMap(arguments)})
 			s.currentIndex = len(s.blocks) - 1
+			s.setItemIndex(itemID, itemType, s.currentIndex)
 			s.toolArgsByIndex[s.currentIndex] = arguments
+			if itemID != "" {
+				s.toolArgsByItemID[itemID] = arguments
+			}
 			output.Content = s.blocks
 			toolCall := ai.ToolCall{Type: "toolCall", ID: id, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
 		case "image_generation_call":
 			s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
 			s.currentIndex = len(s.blocks) - 1
+			s.setItemIndex(itemID, itemType, s.currentIndex)
 			output.Content = s.blocks
 		case "web_search_call", "openrouter:web_search", "openrouter:web_fetch":
 			toolCall, ok := responsesNativeToolCall(item, len(s.nativeToolsByItemID), model.Provider)
 			if !ok {
 				return
 			}
-			s.nativeToolsByItemID[responsesItemID(item)] = toolCall
+			s.nativeToolsByItemID[itemID] = toolCall
 			s.currentIndex = -1
 			output.Content = s.blocks
 			push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: &toolCall, Partial: output})
@@ -934,60 +1036,200 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			}
 		}
 	case "response.reasoning_summary_part.added":
-		if s.currentItemType == "reasoning" {
-			s.hasReasoningSummaryPart = true
+		itemID := s.eventItemID(event)
+		if s.eventItemType(event) == "reasoning" {
+			if itemID != "" {
+				s.reasoningSummaryByID[itemID] = true
+			}
+			if itemID == "" || itemID == s.currentItemID {
+				s.hasReasoningSummaryPart = true
+			}
 		}
 	case "response.reasoning_summary_text.delta":
-		if s.hasReasoningSummaryPart && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "thinking" {
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		hasSummaryPart := s.hasReasoningSummaryPart
+		if itemID != "" {
+			hasSummaryPart = s.reasoningSummaryByID[itemID]
+		}
+		if hasSummaryPart && index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "thinking" {
 			delta, _ := event["delta"].(string)
-			s.blocks[s.currentIndex].Thinking += delta
+			s.blocks[index].Thinking += delta
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: delta, Partial: output})
 		}
 	case "response.reasoning_text.delta":
-		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "thinking" {
+		index := s.eventContentIndex(event)
+		if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "thinking" {
 			delta, _ := event["delta"].(string)
-			s.blocks[s.currentIndex].Thinking += delta
+			s.blocks[index].Thinking += delta
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: delta, Partial: output})
+		}
+	case "response.reasoning_text.done":
+		index := s.eventContentIndex(event)
+		if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "thinking" {
+			text, _ := event["text"].(string)
+			if delta := appendMissingPrefix(s.blocks[index].Thinking, text); delta != "" {
+				s.blocks[index].Thinking += delta
+				output.Content = s.blocks
+				push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: delta, Partial: output})
+			}
 		}
 	case "response.reasoning_summary_part.done":
-		if s.hasReasoningSummaryPart && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "thinking" {
-			s.blocks[s.currentIndex].Thinking += "\n\n"
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		hasSummaryPart := s.hasReasoningSummaryPart
+		if itemID != "" {
+			hasSummaryPart = s.reasoningSummaryByID[itemID]
+		}
+		if hasSummaryPart && index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "thinking" {
+			if part, ok := event["part"].(map[string]any); ok {
+				if delta := appendMissingPrefix(s.blocks[index].Thinking, responsesPartText(part, "summary_text")); delta != "" {
+					s.blocks[index].Thinking += delta
+					output.Content = s.blocks
+					push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: delta, Partial: output})
+				}
+			}
+			if s.blocks[index].Thinking == "" || strings.HasSuffix(s.blocks[index].Thinking, "\n\n") {
+				return
+			}
+			s.blocks[index].Thinking += "\n\n"
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: s.currentIndex, Delta: "\n\n", Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: "\n\n", Partial: output})
+		}
+	case "response.reasoning_summary_text.done":
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		hasSummaryPart := s.hasReasoningSummaryPart
+		if itemID != "" {
+			hasSummaryPart = s.reasoningSummaryByID[itemID]
+		}
+		if hasSummaryPart && index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "thinking" {
+			text, _ := event["text"].(string)
+			if delta := appendMissingPrefix(s.blocks[index].Thinking, text); delta != "" {
+				s.blocks[index].Thinking += delta
+				output.Content = s.blocks
+				push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: delta, Partial: output})
+			}
 		}
 	case "response.content_part.added":
-		if s.currentItemType == "message" {
+		itemID := s.eventItemID(event)
+		if s.eventItemType(event) == "message" {
 			if part, ok := event["part"].(map[string]any); ok {
 				partType, _ := part["type"].(string)
 				if partType == "output_text" || partType == "refusal" {
-					s.currentMessagePartType = partType
+					if itemID != "" {
+						s.messagePartTypeByID[itemID] = partType
+					}
+					if itemID == "" || itemID == s.currentItemID {
+						s.currentMessagePartType = partType
+					}
 				}
 			}
 		}
 	case "response.output_text.delta":
-		if s.currentItemType == "message" && s.currentMessagePartType == "" {
-			s.currentMessagePartType = "output_text"
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		partType := s.currentMessagePartType
+		if itemID != "" {
+			partType = s.messagePartTypeByID[itemID]
 		}
-		if s.currentMessagePartType == "output_text" && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "text" {
+		if s.eventItemType(event) == "message" && partType == "" {
+			partType = "output_text"
+			if itemID != "" {
+				s.messagePartTypeByID[itemID] = partType
+			}
+			if itemID == "" || itemID == s.currentItemID {
+				s.currentMessagePartType = partType
+			}
+		}
+		if partType == "output_text" && index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "text" {
 			delta, _ := event["delta"].(string)
-			s.blocks[s.currentIndex].Text += delta
+			s.blocks[index].Text += delta
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: index, Delta: delta, Partial: output})
+		}
+	case "response.output_text.done":
+		index := s.eventContentIndex(event)
+		if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "text" {
+			text, _ := event["text"].(string)
+			if delta := appendMissingPrefix(s.blocks[index].Text, text); delta != "" {
+				s.blocks[index].Text += delta
+				output.Content = s.blocks
+				push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: index, Delta: delta, Partial: output})
+			}
 		}
 	case "response.refusal.delta":
-		if s.currentItemType == "message" && s.currentMessagePartType == "" {
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		partType := s.currentMessagePartType
+		if itemID != "" {
+			partType = s.messagePartTypeByID[itemID]
+		}
+		if s.eventItemType(event) == "message" && partType == "" {
+			partType = "refusal"
+			if itemID != "" {
+				s.messagePartTypeByID[itemID] = partType
+			}
+			if itemID == "" || itemID == s.currentItemID {
+				s.currentMessagePartType = partType
+			}
+		}
+		if partType == "refusal" && index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "text" {
+			delta, _ := event["delta"].(string)
+			s.blocks[index].Text += delta
+			output.Content = s.blocks
+			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: index, Delta: delta, Partial: output})
+		}
+	case "response.refusal.done":
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		if itemID != "" {
+			s.messagePartTypeByID[itemID] = "refusal"
+		}
+		if itemID == "" || itemID == s.currentItemID {
 			s.currentMessagePartType = "refusal"
 		}
-		if s.currentMessagePartType == "refusal" && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "text" {
-			delta, _ := event["delta"].(string)
-			s.blocks[s.currentIndex].Text += delta
-			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
+		if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "text" {
+			refusal, _ := event["refusal"].(string)
+			if delta := appendMissingPrefix(s.blocks[index].Text, refusal); delta != "" {
+				s.blocks[index].Text += delta
+				output.Content = s.blocks
+				push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: index, Delta: delta, Partial: output})
+			}
+		}
+	case "response.content_part.done":
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		part, _ := event["part"].(map[string]any)
+		partType, _ := part["type"].(string)
+		switch partType {
+		case "output_text", "refusal":
+			if itemID != "" {
+				s.messagePartTypeByID[itemID] = partType
+			}
+			if itemID == "" || itemID == s.currentItemID {
+				s.currentMessagePartType = partType
+			}
+			if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "text" {
+				if delta := appendMissingPrefix(s.blocks[index].Text, responsesPartText(part, partType)); delta != "" {
+					s.blocks[index].Text += delta
+					output.Content = s.blocks
+					push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: index, Delta: delta, Partial: output})
+				}
+			}
+		case "reasoning_text":
+			if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "thinking" {
+				if delta := appendMissingPrefix(s.blocks[index].Thinking, responsesPartText(part, partType)); delta != "" {
+					s.blocks[index].Thinking += delta
+					output.Content = s.blocks
+					push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: index, Delta: delta, Partial: output})
+				}
+			}
 		}
 	case "response.output_text.annotation.added":
-		contentIndex := s.currentIndex
+		contentIndex := s.eventContentIndex(event)
 		if contentIndex < 0 {
 			contentIndex = intFromAny(event["content_index"])
 		}
@@ -996,31 +1238,45 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			push(ai.AssistantMessageEvent{Type: "source", Partial: output})
 		}
 	case "response.function_call_arguments.delta":
-		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "toolCall" {
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "toolCall" {
 			delta, _ := event["delta"].(string)
-			s.toolArgsByIndex[s.currentIndex] += delta
-			s.blocks[s.currentIndex].Arguments = parseJSONMap(s.toolArgsByIndex[s.currentIndex])
+			if itemID != "" {
+				s.toolArgsByItemID[itemID] += delta
+				s.blocks[index].Arguments = parseJSONMap(s.toolArgsByItemID[itemID])
+			} else {
+				s.toolArgsByIndex[index] += delta
+				s.blocks[index].Arguments = parseJSONMap(s.toolArgsByIndex[index])
+			}
 			output.Content = s.blocks
-			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
-			push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: delta, ToolCall: &toolCall, Partial: output})
+			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[index].ID, Name: s.blocks[index].Name, Arguments: s.blocks[index].Arguments}
+			push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: index, Delta: delta, ToolCall: &toolCall, Partial: output})
 		}
 	case "response.function_call_arguments.done":
-		if s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "toolCall" {
+		itemID := s.eventItemID(event)
+		index := s.eventContentIndex(event)
+		if index >= 0 && index < len(s.blocks) && s.blocks[index].Type == "toolCall" {
 			args, _ := event["arguments"].(string)
-			previous := s.toolArgsByIndex[s.currentIndex]
-			s.toolArgsByIndex[s.currentIndex] = args
-			s.blocks[s.currentIndex].Arguments = parseJSONMap(args)
+			previous := s.toolArgsByIndex[index]
+			if itemID != "" {
+				previous = s.toolArgsByItemID[itemID]
+				s.toolArgsByItemID[itemID] = args
+			}
+			s.toolArgsByIndex[index] = args
+			s.blocks[index].Arguments = parseJSONMap(args)
 			output.Content = s.blocks
 			if strings.HasPrefix(args, previous) && len(args) > len(previous) {
-				toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
-				push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: args[len(previous):], ToolCall: &toolCall, Partial: output})
+				toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[index].ID, Name: s.blocks[index].Name, Arguments: s.blocks[index].Arguments}
+				push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: index, Delta: args[len(previous):], ToolCall: &toolCall, Partial: output})
 			}
 		}
 	case "response.output_item.done":
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
+		itemID := responsesItemID(item)
 		if _, _, ok := responsesNativeToolInfo(item, model.Provider); ok {
-			toolCall := s.nativeToolsByItemID[responsesItemID(item)]
+			toolCall := s.nativeToolsByItemID[itemID]
 			if toolCall.ID == "" {
 				toolCall, _ = responsesNativeToolCall(item, len(s.nativeToolsByItemID), model.Provider)
 			} else if args := responsesNativeToolArguments(item, toolCall.Name); len(args) > 0 {
@@ -1035,48 +1291,54 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.currentIndex = -1
 			return
 		}
-		if s.currentIndex < 0 && itemType != "image_generation_call" {
+		index := s.currentIndex
+		if itemID != "" {
+			if storedIndex, ok := s.itemIndexByID[itemID]; ok {
+				index = storedIndex
+			}
+		}
+		if index < 0 && itemType != "image_generation_call" {
 			return
 		}
 		switch itemType {
 		case "reasoning":
-			s.blocks[s.currentIndex].Thinking = reasoningTextFromItem(item, s.blocks[s.currentIndex].Thinking)
-			s.blocks[s.currentIndex].ThinkingSignature = mustJSON(item)
+			s.blocks[index].Thinking = reasoningTextFromItem(item, s.blocks[index].Thinking)
+			s.blocks[index].ThinkingSignature = mustJSON(item)
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: s.currentIndex, Content: s.blocks[s.currentIndex].Thinking, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: index, Content: s.blocks[index].Thinking, Partial: output})
 			s.currentIndex = -1
 		case "message":
 			if text := messageTextFromItem(item); text != "" {
-				s.blocks[s.currentIndex].Text = text
+				s.blocks[index].Text = text
 			}
-			output.Citations = append(output.Citations, providerCitationsFromAny(item, model.Provider, s.currentIndex)...)
+			output.Citations = append(output.Citations, providerCitationsFromAny(item, model.Provider, index)...)
 			if id, ok := item["id"].(string); ok && id != "" {
 				payload := map[string]any{"v": 1, "id": id}
 				if phase, ok := item["phase"].(string); ok && phase != "" {
 					payload["phase"] = phase
 				}
-				s.blocks[s.currentIndex].TextSignature = mustJSON(payload)
+				s.blocks[index].TextSignature = mustJSON(payload)
 			}
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "text_end", ContentIndex: s.currentIndex, Content: s.blocks[s.currentIndex].Text, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "text_end", ContentIndex: index, Content: s.blocks[index].Text, Partial: output})
 			s.currentIndex = -1
 		case "function_call":
-			if s.blocks[s.currentIndex].Name == "" {
-				s.blocks[s.currentIndex].Name = fmt.Sprint(item["name"])
+			if s.blocks[index].Name == "" {
+				s.blocks[index].Name = fmt.Sprint(item["name"])
 			}
 			if args, ok := item["arguments"].(string); ok && args != "" {
-				s.blocks[s.currentIndex].Arguments = parseJSONMap(args)
+				s.blocks[index].Arguments = parseJSONMap(args)
 			}
-			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[s.currentIndex].ID, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
+			toolCall := ai.ToolCall{Type: "toolCall", ID: s.blocks[index].ID, Name: s.blocks[index].Name, Arguments: s.blocks[index].Arguments}
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+			push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: index, ToolCall: &toolCall, Partial: output})
 			s.currentIndex = -1
 		case "image_generation_call":
-			if s.currentIndex < 0 || s.currentIndex >= len(s.blocks) || s.blocks[s.currentIndex].Type != "image" {
+			if index < 0 || index >= len(s.blocks) || s.blocks[index].Type != "image" {
 				s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
 				s.currentIndex = len(s.blocks) - 1
 			} else {
-				s.blocks[s.currentIndex] = imageBlockFromGenerationItem(item, s.blocks[s.currentIndex])
+				s.blocks[index] = imageBlockFromGenerationItem(item, s.blocks[index])
 			}
 			output.Content = s.blocks
 			s.currentIndex = -1

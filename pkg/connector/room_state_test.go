@@ -1,9 +1,13 @@
 package connector
 
 import (
+	"reflect"
 	"testing"
 
+	"maunium.net/go/mautrix/event"
+
 	ai "github.com/beeper/ai-bridge/pkg/ai"
+	"github.com/beeper/ai-bridge/pkg/aiid"
 )
 
 func TestApplyRoomModelConfigUsesProviderModelRefAndReasoning(t *testing.T) {
@@ -25,6 +29,50 @@ func TestRoomModelStateContentOmitsEmptyReasoningMode(t *testing.T) {
 	content := roomModelStateContent(ai.Model{ID: "openai/gpt-5.5"}, "beeper/openai/gpt-5.5", "medium", "")
 	if _, ok := content["reasoning_mode"]; ok {
 		t.Fatalf("unexpected empty reasoning mode in room model content %#v", content)
+	}
+}
+
+func TestAIRoomStateEventContentTypesParse(t *testing.T) {
+	tests := []struct {
+		name    string
+		evtType string
+		raw     []byte
+		want    any
+	}{
+		{
+			name:    "model",
+			evtType: aiid.RoomModelType,
+			raw:     []byte(`{"model":"beeper/openai/gpt-5.5","name":"GPT-5.5","reasoning":"medium","reasoning_mode":"adaptive"}`),
+			want: &aiRoomModelStateEventContent{
+				Model:         "beeper/openai/gpt-5.5",
+				Name:          "GPT-5.5",
+				Reasoning:     "medium",
+				ReasoningMode: "adaptive",
+			},
+		},
+		{
+			name:    "prompt",
+			evtType: aiid.RoomPromptType,
+			raw:     []byte(`{"prompt":"be terse"}`),
+			want:    &aiRoomPromptStateEventContent{Prompt: "be terse"},
+		},
+		{
+			name:    "tools",
+			evtType: aiid.RoomToolsType,
+			raw:     []byte(`{"disabled":["web_search"],"search":"native","fetch":"beeper"}`),
+			want:    &aiRoomToolsStateEventContent{Disabled: []string{"web_search"}, Search: "native", Fetch: "beeper"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := event.Content{VeryRaw: tt.raw}
+			if err := content.ParseRaw(aiRoomStateEventType(tt.evtType)); err != nil {
+				t.Fatalf("expected AI room state to parse: %v", err)
+			}
+			if got := content.Parsed; !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("unexpected parsed content %#v", got)
+			}
+		})
 	}
 }
 
