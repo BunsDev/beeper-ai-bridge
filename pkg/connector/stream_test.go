@@ -915,6 +915,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		"run",
 		&event.BeeperStreamInfo{Type: "com.beeper.ai.response"},
 		*run,
+		timeNow(),
 	)
 	if metadata.StreamStatus != "streaming" {
 		t.Fatalf("expected streaming metadata, got %#v", metadata)
@@ -944,7 +945,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		Role:       "assistant",
 		StopReason: ai.StopReasonStop,
 	}, 0)
-	edit := client.assistantFinalEditWithProjection(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", finalRun, metadata)
+	edit := client.assistantFinalEditWithProjection(aiid.PortalKey(id.RoomID("!room:example.com"), "login"), "assistant:run", "beeper", "gpt-5", finalRun, metadata, timeNow().Add(time.Millisecond))
 	if edit.Sender.Sender != aiid.AssistantUserID() {
 		t.Fatalf("assistant final edit used sender %q", edit.Sender.Sender)
 	}
@@ -955,6 +956,50 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	profile = converted.ModifiedParts[0].Content.BeeperPerMessageProfile
 	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "gpt-5")) || profile.Displayname != "gpt-5" || !profile.HasFallback {
 		t.Fatalf("assistant final edit missing model profile: %#v", profile)
+	}
+}
+
+func TestAssistantFallbackEventsUseStrictMatrixOrder(t *testing.T) {
+	client := &Client{}
+	userTimestamp := time.Now().Add(10 * time.Second).Truncate(time.Millisecond)
+	active := &activeAIRun{lastConsumedTimestamp: userTimestamp}
+	anchorTimestamp := active.nextAssistantAnchorTimestamp()
+	if !anchorTimestamp.Equal(userTimestamp.Add(time.Millisecond)) {
+		t.Fatalf("anchor timestamp = %s, want %s", anchorTimestamp, userTimestamp.Add(time.Millisecond))
+	}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", anchorTimestamp)
+	run.MessageID = "assistant:run"
+	assistantEvent, metadata := client.assistantEvent(
+		context.Background(),
+		aiid.PortalKey(id.RoomID("!room:example.com"), "login"),
+		"assistant:run",
+		"beeper",
+		"gpt-5",
+		"run",
+		&event.BeeperStreamInfo{Type: "com.beeper.ai.response"},
+		*run,
+		anchorTimestamp,
+	)
+	if !assistantEvent.Timestamp.After(userTimestamp) || assistantEvent.StreamOrder <= userTimestamp.UnixNano() {
+		t.Fatalf("anchor event not after user echo: timestamp=%s stream_order=%d user=%s", assistantEvent.Timestamp, assistantEvent.StreamOrder, userTimestamp)
+	}
+
+	finalTimestamp := afterMatrixTimestamp(anchorTimestamp)
+	if !finalTimestamp.Equal(anchorTimestamp.Add(time.Millisecond)) {
+		t.Fatalf("final timestamp = %s, want %s", finalTimestamp, anchorTimestamp.Add(time.Millisecond))
+	}
+	finalRun := finalizedAssistantRun(*run, ai.Message{Role: "assistant", StopReason: ai.StopReasonStop}, 0)
+	edit := client.assistantFinalEditWithProjection(
+		aiid.PortalKey(id.RoomID("!room:example.com"), "login"),
+		"assistant:run",
+		"beeper",
+		"gpt-5",
+		finalRun,
+		metadata,
+		finalTimestamp,
+	)
+	if !edit.Timestamp.After(assistantEvent.Timestamp) || edit.StreamOrder <= assistantEvent.StreamOrder {
+		t.Fatalf("final edit not after anchor: timestamp=%s stream_order=%d anchor=%s/%d", edit.Timestamp, edit.StreamOrder, assistantEvent.Timestamp, assistantEvent.StreamOrder)
 	}
 }
 
