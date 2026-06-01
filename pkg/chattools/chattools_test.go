@@ -28,16 +28,16 @@ func TestGetSessionSchemaUsesArrayRequired(t *testing.T) {
 
 func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 	tool := GetSessionTool(SessionInfo{
-		ChatID:             "session-1",
-		ChatTitle:          "Markdown Chaos Test",
-		ChatFirstMessageAt: "2026-05-31T22:00:00Z",
-		SelectedModel:      "gpt-5",
-		SelectedReasoning:  "low",
-		DisabledTools:      []string{"web_search"},
-		SearchMode:         "off",
-		FetchMode:          "beeper",
-		LastKnownTimestamp: "2026-05-31T22:34:00Z",
-		LastKnownTimezone:  "Europe/Amsterdam",
+		ChatID:               "session-1",
+		ChatTitle:            "Markdown Chaos Test",
+		ChatFirstMessageAt:   "2026-05-31T22:00:00Z",
+		SelectedModel:        "gpt-5",
+		SelectedReasoning:    "low",
+		DisabledTools:        []string{"web_search"},
+		SearchMode:           "off",
+		FetchMode:            "beeper",
+		LastMessageTimestamp: "2026-05-31T22:34:00Z",
+		LastKnownTimezone:    "Europe/Amsterdam",
 	})
 	result, err := tool.Execute(context.Background(), "call", map[string]any{}, nil)
 	if err != nil {
@@ -47,10 +47,10 @@ func TestGetSessionReturnsFreshMetadata(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].Text), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.CurrentTimestamp == "" || info.LastKnownTimestamp != "2026-05-31T22:34:00Z" || info.LastKnownTimezone != "Europe/Amsterdam" || info.ChatID != "session-1" || info.ChatTitle != "Markdown Chaos Test" || info.SelectedModel != "gpt-5" || len(info.DisabledTools) != 1 || info.DisabledTools[0] != "web_search" || info.SearchMode != "off" || info.FetchMode != "beeper" {
+	if info.CurrentTimestamp == "" || info.LastMessageTimestamp != "2026-05-31T22:34:00Z" || info.LastKnownTimezone != "Europe/Amsterdam" || info.ChatID != "session-1" || info.ChatTitle != "Markdown Chaos Test" || info.SelectedModel != "gpt-5" || len(info.DisabledTools) != 1 || info.DisabledTools[0] != "web_search" || info.SearchMode != "off" || info.FetchMode != "beeper" {
 		t.Fatalf("expected fresh session metadata, got %#v", info)
 	}
-	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "chat_title", "chat_first_message_at", "selected_model", "selected_reasoning", "disabled_tools", "search_mode", "fetch_mode", "last_known_timestamp", "last_known_timezone")
+	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "chat_title", "chat_first_message_at", "selected_model", "selected_reasoning", "disabled_tools", "search_mode", "fetch_mode", "last_message_timestamp", "last_known_timezone")
 }
 
 func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
@@ -73,7 +73,7 @@ func TestGetSessionIncludesProfileOnlyWhenResolverReturnsIt(t *testing.T) {
 	if info.BeeperAccountEmail != "user@example.com" || info.BeeperUsername != "user" || info.BeeperDisplayName != "User Name" || info.GravatarProfile == nil {
 		t.Fatalf("missing approved profile: %#v", info)
 	}
-	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "beeper_username", "beeper_display_name", "beeper_account_email", "gravatar_profile", "last_known_timestamp")
+	assertSessionKeys(t, result.Content[0].Text, "current_timestamp", "chat_id", "beeper_username", "beeper_display_name", "beeper_account_email", "gravatar_profile", "last_message_timestamp")
 
 	baseline := GetSessionToolWithOptions(SessionInfo{ChatID: "session-1"}, SessionOptions{
 		ResolveProfile: func(ctx context.Context, toolCallID string) (*SessionProfile, error) {

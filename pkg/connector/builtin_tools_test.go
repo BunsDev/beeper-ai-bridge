@@ -76,6 +76,27 @@ func TestActiveBuiltInToolPayloadsHonorsNativeSearchMode(t *testing.T) {
 	}
 }
 
+func TestActiveBuiltInToolPayloadsHonorsNativeFetchMode(t *testing.T) {
+	model := ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter, BuiltInTools: []string{"web_fetch", "openrouter:image_generation"}}
+	if got := activeBuiltInToolPayloads(model, RoomConfig{}); len(got) != 1 || got[0]["type"] != "openrouter:image_generation" {
+		t.Fatalf("default beeper fetch should suppress native web_fetch only, got %#v", got)
+	}
+	if got := activeBuiltInToolPayloads(model, RoomConfig{FetchMode: toolModeNative}); len(got) != 2 || got[0]["type"] != "openrouter:web_fetch" || got[1]["type"] != "openrouter:image_generation" {
+		t.Fatalf("native fetch should allow provider web_fetch, got %#v", got)
+	}
+	if got := activeBuiltInToolPayloads(model, RoomConfig{FetchMode: toolModeOff}); len(got) != 1 || got[0]["type"] != "openrouter:image_generation" {
+		t.Fatalf("off fetch should suppress native web_fetch only, got %#v", got)
+	}
+}
+
+func TestActiveBuiltInToolPayloadsInjectsNativeModesWithoutCatalogBuiltIns(t *testing.T) {
+	model := ai.Model{API: ai.ApiGoogleGenerativeAI, Provider: ai.ProviderGoogle}
+	got := activeBuiltInToolPayloads(model, RoomConfig{SearchMode: toolModeNative, FetchMode: toolModeNative})
+	if len(got) != 2 || builtInToolKey(got[0]) != "google_search" || builtInToolKey(got[1]) != "url_context" {
+		t.Fatalf("expected mode-driven native Google tools, got %#v", got)
+	}
+}
+
 func TestNativeWebSearchToolPayloadsAreProviderSpecific(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -117,6 +138,69 @@ func TestNativeWebSearchToolPayloadsAreProviderSpecific(t *testing.T) {
 			if tt.wantKey == "google_search" {
 				if _, ok := got[0]["google_search"].(map[string]any); !ok {
 					t.Fatalf("expected google_search object, got %#v", got[0])
+				}
+				return
+			}
+			if got[0][tt.wantKey] != tt.wantValue {
+				t.Fatalf("unexpected payload %#v", got[0])
+			}
+		})
+	}
+}
+
+func TestNativeWebFetchToolPayloadsAreProviderSpecific(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     ai.Model
+		wantKey   string
+		wantValue any
+	}{
+		{
+			name:      "openai responses unsupported",
+			model:     ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenAI},
+			wantKey:   "",
+			wantValue: nil,
+		},
+		{
+			name:      "openrouter responses",
+			model:     ai.Model{API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter},
+			wantKey:   "type",
+			wantValue: "openrouter:web_fetch",
+		},
+		{
+			name:      "openrouter completions",
+			model:     ai.Model{API: ai.ApiOpenAICompletions, Provider: ai.ProviderOpenRouter},
+			wantKey:   "type",
+			wantValue: "openrouter:web_fetch",
+		},
+		{
+			name:      "anthropic",
+			model:     ai.Model{API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic},
+			wantKey:   "type",
+			wantValue: "web_fetch_20250910",
+		},
+		{
+			name:      "google",
+			model:     ai.Model{API: ai.ApiGoogleGenerativeAI, Provider: ai.ProviderGoogle},
+			wantKey:   "url_context",
+			wantValue: map[string]any{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := activeBuiltInToolPayloads(tt.model, RoomConfig{FetchMode: toolModeNative})
+			if tt.wantKey == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no native fetch payload, got %#v", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("expected one native fetch payload, got %#v", got)
+			}
+			if tt.wantKey == "url_context" {
+				if _, ok := got[0]["url_context"].(map[string]any); !ok {
+					t.Fatalf("expected url_context object, got %#v", got[0])
 				}
 				return
 			}

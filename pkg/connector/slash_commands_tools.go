@@ -30,10 +30,10 @@ func runSearchModeCommand(cl *Client, ctx context.Context, portal *bridgev2.Port
 func runFetchModeCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal, roomConfig RoomConfig, arg string, responder aiCommandResponder) error {
 	arg = strings.ToLower(strings.TrimSpace(arg))
 	if arg == "" {
-		return responder.Reply(ctx, fmt.Sprintf("Current fetch mode is `%s`. Options: `off`, `beeper`.", roomFetchMode(roomConfig)))
+		return responder.Reply(ctx, fmt.Sprintf("Current fetch mode is `%s`. Options: `off`, `beeper`, `native`.", roomFetchMode(roomConfig)))
 	}
 	mode := normalizedToolMode(arg, "")
-	if mode != toolModeOff && mode != toolModeBeeper {
+	if mode != toolModeOff && mode != toolModeBeeper && mode != toolModeNative {
 		return fmt.Errorf("fetch mode %q is invalid", arg)
 	}
 	roomConfig.FetchMode = mode

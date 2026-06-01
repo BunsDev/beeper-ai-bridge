@@ -44,6 +44,9 @@ func TestRoomToolModesDefaultAndLegacyDisabled(t *testing.T) {
 	if got := roomSearchMode(RoomConfig{SearchMode: "native", DisabledTools: []string{"web_search"}}); got != toolModeNative {
 		t.Fatalf("explicit search mode should win over disabled list, got %q", got)
 	}
+	if got := roomFetchMode(RoomConfig{FetchMode: "native", DisabledTools: []string{"fetch"}}); got != toolModeNative {
+		t.Fatalf("explicit fetch mode should win over disabled list, got %q", got)
+	}
 	if got := roomFetchMode(RoomConfig{FetchMode: "bad"}); got != defaultFetchMode {
 		t.Fatalf("invalid fetch mode should fall back, got %q", got)
 	}

@@ -753,10 +753,78 @@ type responsesStreamState struct {
 	currentMessagePartType  string
 	hasReasoningSummaryPart bool
 	toolArgsByIndex         map[int]string
+	nativeToolsByItemID     map[string]ai.ToolCall
 }
 
 func newResponsesStreamState() *responsesStreamState {
-	return &responsesStreamState{currentIndex: -1, toolArgsByIndex: map[int]string{}}
+	return &responsesStreamState{currentIndex: -1, toolArgsByIndex: map[int]string{}, nativeToolsByItemID: map[string]ai.ToolCall{}}
+}
+
+func responsesItemID(item map[string]any) string {
+	return strings.TrimSpace(stringFromAny(item["id"]))
+}
+
+func responsesNativeWebSearchToolCall(item map[string]any, fallbackIndex int) ai.ToolCall {
+	id := responsesItemID(item)
+	if id == "" {
+		id = fmt.Sprintf("native_web_search_%d", fallbackIndex+1)
+	}
+	return ai.ToolCall{
+		Type:      "toolCall",
+		ID:        id,
+		Name:      "web_search",
+		Arguments: responsesNativeWebSearchArguments(item),
+	}
+}
+
+func responsesNativeWebSearchArguments(item map[string]any) map[string]any {
+	args := map[string]any{}
+	addNativeWebSearchQuery(args, item)
+	if action, _ := item["action"].(map[string]any); action != nil {
+		addNativeWebSearchQuery(args, action)
+		if actionType := strings.TrimSpace(stringFromAny(action["type"])); actionType != "" {
+			args["action"] = actionType
+		}
+	}
+	return args
+}
+
+func addNativeWebSearchQuery(args map[string]any, data map[string]any) {
+	if _, ok := args["query"]; ok {
+		return
+	}
+	for _, key := range []string{"query", "search_query", "searchQuery"} {
+		if value := strings.TrimSpace(stringFromAny(data[key])); value != "" {
+			args["query"] = value
+			return
+		}
+	}
+}
+
+func responsesNativeToolResult(item map[string]any) map[string]any {
+	status := strings.TrimSpace(stringFromAny(item["status"]))
+	result := map[string]any{
+		"state":    "complete",
+		"status":   "success",
+		"provider": "openai",
+		"native":   true,
+	}
+	if status != "" {
+		result["providerStatus"] = status
+	}
+	if status == "failed" || status == "incomplete" {
+		result["state"] = "error"
+		result["status"] = "failed"
+		if errorData, _ := item["error"].(map[string]any); errorData != nil {
+			if message := strings.TrimSpace(stringFromAny(errorData["message"])); message != "" {
+				result["reason"] = message
+			}
+		}
+		if result["reason"] == nil {
+			result["reason"] = "Provider-native web search failed"
+		}
+	}
+	return result
 }
 
 func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, output *ai.Message, model ai.Model, options OpenAIResponsesOptions, event map[string]any) {
@@ -805,6 +873,15 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
 			s.currentIndex = len(s.blocks) - 1
 			output.Content = s.blocks
+		case "web_search_call":
+			toolCall := responsesNativeWebSearchToolCall(item, len(s.nativeToolsByItemID))
+			s.nativeToolsByItemID[responsesItemID(item)] = toolCall
+			s.currentIndex = -1
+			output.Content = s.blocks
+			push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: &toolCall, Partial: output})
+			if len(toolCall.Arguments) > 0 {
+				push(ai.AssistantMessageEvent{Type: "toolcall_delta", Delta: mustJSON(toolCall.Arguments), ToolCall: &toolCall, Partial: output})
+			}
 		}
 	case "response.reasoning_summary_part.added":
 		if s.currentItemType == "reasoning" {
@@ -892,6 +969,18 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 	case "response.output_item.done":
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
+		if itemType == "web_search_call" {
+			toolCall := s.nativeToolsByItemID[responsesItemID(item)]
+			if toolCall.ID == "" {
+				toolCall = responsesNativeWebSearchToolCall(item, len(s.nativeToolsByItemID))
+			} else if args := responsesNativeWebSearchArguments(item); len(args) > 0 {
+				toolCall.Arguments = args
+			}
+			output.Content = s.blocks
+			push(ai.AssistantMessageEvent{Type: "toolresult", ToolCall: &toolCall, CustomValue: responsesNativeToolResult(item), Partial: output})
+			s.currentIndex = -1
+			return
+		}
 		if s.currentIndex < 0 && itemType != "image_generation_call" {
 			return
 		}

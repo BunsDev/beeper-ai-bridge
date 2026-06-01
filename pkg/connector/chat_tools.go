@@ -33,19 +33,19 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		chatTitle = msg.Portal.Name
 	}
 	info := chattools.SessionInfo{
-		ChatID:             chatID,
-		ChatTitle:          chatTitle,
-		ChatFirstMessageAt: chatFirstMessageAt,
-		SelectedModel:      model.ID,
-		SelectedReasoning:  cl.reasoningLevelForModel(model, roomConfig),
-		DisabledTools:      roomConfig.DisabledTools,
-		SearchMode:         roomSearchMode(roomConfig),
-		FetchMode:          roomFetchMode(roomConfig),
-		LastKnownTimestamp: formatSessionTimestampUTC(matrixEventTime(nil)),
-		LastKnownTimezone:  cl.lastKnownTimezone(),
+		ChatID:               chatID,
+		ChatTitle:            chatTitle,
+		ChatFirstMessageAt:   chatFirstMessageAt,
+		SelectedModel:        model.ID,
+		SelectedReasoning:    cl.reasoningLevelForModel(model, roomConfig),
+		DisabledTools:        roomConfig.DisabledTools,
+		SearchMode:           roomSearchMode(roomConfig),
+		FetchMode:            roomFetchMode(roomConfig),
+		LastMessageTimestamp: formatSessionTimestampUTC(matrixEventTime(nil)),
+		LastKnownTimezone:    cl.lastKnownTimezone(),
 	}
 	if msg != nil {
-		info.LastKnownTimestamp = formatSessionTimestampUTC(matrixEventTime(msg.Event))
+		info.LastMessageTimestamp = formatSessionTimestampUTC(matrixEventTime(msg.Event))
 	}
 	search := cl.searchOptions(roomConfig, provider)
 	fetch := chattools.FetchOptions{
@@ -116,7 +116,7 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 		Enabled:  true,
 		Endpoint: endpoint,
 		APIKey:   token,
-		Timeout:  10 * time.Second,
+		Timeout:  30 * time.Second,
 	}
 }
 

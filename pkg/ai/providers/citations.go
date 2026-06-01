@@ -12,6 +12,7 @@ func providerCitationsFromAny(value any, provider ai.Provider, contentIndex int)
 	out := []ai.Citation{}
 	if data, ok := value.(map[string]any); ok {
 		out = append(out, googleGroundingCitationsFromMap(data, provider, contentIndex)...)
+		out = append(out, googleURLContextCitationsFromMap(data, provider, contentIndex)...)
 	}
 	walkProviderCitationMaps(value, func(item map[string]any) {
 		if citation, ok := providerCitationFromMap(item, provider, contentIndex); ok {
@@ -98,6 +99,44 @@ func googleGroundingCitationsFromMap(data map[string]any, provider ai.Provider, 
 	return out
 }
 
+func googleURLContextCitationsFromMap(data map[string]any, provider ai.Provider, contentIndex int) []ai.Citation {
+	metadata, _ := data["urlContextMetadata"].(map[string]any)
+	if metadata == nil {
+		metadata, _ = data["url_context_metadata"].(map[string]any)
+	}
+	if metadata == nil {
+		if candidates, _ := data["candidates"].([]any); len(candidates) > 0 {
+			if candidate, _ := candidates[0].(map[string]any); candidate != nil {
+				return googleURLContextCitationsFromMap(candidate, provider, contentIndex)
+			}
+		}
+		return nil
+	}
+	urls, _ := metadata["urlMetadata"].([]any)
+	if urls == nil {
+		urls, _ = metadata["url_metadata"].([]any)
+	}
+	out := []ai.Citation{}
+	for _, rawURL := range urls {
+		item, _ := rawURL.(map[string]any)
+		if item == nil {
+			continue
+		}
+		url := firstCitationString(stringFromAny(item["retrievedUrl"]), stringFromAny(item["retrieved_url"]), stringFromAny(item["url"]))
+		if url == "" {
+			continue
+		}
+		out = append(out, ai.Citation{
+			Type:         "url_citation",
+			URL:          url,
+			ContentIndex: &contentIndex,
+			Provider:     string(provider),
+			RawType:      "url_context",
+		})
+	}
+	return out
+}
+
 func citationIndexList(value any) []int {
 	raw, ok := value.([]any)
 	if !ok {
@@ -141,8 +180,14 @@ func providerCitationFromMap(data map[string]any, provider ai.Provider, contentI
 	}
 	rawType = firstCitationString(rawType, strings.ToLower(stringFromAny(citationData["type"])))
 	url := firstCitationString(stringFromAny(citationData["url"]), stringFromAny(citationData["uri"]))
-	if url == "" || (!strings.Contains(rawType, "citation") && rawType != "web_search_result_location") {
+	if url == "" || (!strings.Contains(rawType, "citation") && rawType != "web_search_result_location" && rawType != "web_fetch_result") {
 		return ai.Citation{}, false
+	}
+	title := stringFromAny(citationData["title"])
+	if title == "" && rawType == "web_fetch_result" {
+		if content, _ := citationData["content"].(map[string]any); content != nil {
+			title = stringFromAny(content["title"])
+		}
 	}
 	resolvedContentIndex := contentIndex
 	if index, ok := intFromCitationAny(firstCitationAny(citationData, "contentIndex", "content_index", "outputIndex", "output_index")); ok {
@@ -151,7 +196,7 @@ func providerCitationFromMap(data map[string]any, provider ai.Provider, contentI
 	citation := ai.Citation{
 		Type:         "url_citation",
 		URL:          url,
-		Title:        stringFromAny(citationData["title"]),
+		Title:        title,
 		Description:  firstCitationString(stringFromAny(citationData["description"]), stringFromAny(citationData["summary"])),
 		SiteName:     firstCitationString(stringFromAny(citationData["siteName"]), stringFromAny(citationData["site_name"])),
 		FaviconURL:   firstCitationString(stringFromAny(citationData["faviconUrl"]), stringFromAny(citationData["favicon_url"])),

@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"strings"
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -44,5 +45,16 @@ func TestAnthropicBeeperProxyUsesBearerAuth(t *testing.T) {
 	}
 	if _, ok := headers["X-Api-Key"]; ok {
 		t.Fatalf("did not expect upstream Anthropic API key header for Beeper proxy: %#v", headers)
+	}
+}
+
+func TestAnthropicHeadersIncludeWebFetchBetaFromMetadata(t *testing.T) {
+	model := ai.Model{ID: "claude-test", API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic}
+	headers := anthropicHeaders(model, ai.Context{}, AnthropicOptions{StreamOptions: ai.StreamOptions{
+		APIKey:   "token",
+		Metadata: map[string]any{webFetchBetaMetadataKey: true},
+	}}, false)
+	if !strings.Contains(headers["Anthropic-Beta"], webFetchBeta) || !strings.Contains(headers["Anthropic-Beta"], interleavedThinkingBeta) {
+		t.Fatalf("expected web fetch beta to compose with generated betas, got %#v", headers)
 	}
 }

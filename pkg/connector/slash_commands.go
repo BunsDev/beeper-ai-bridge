@@ -98,7 +98,7 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 		},
 		{
 			name:            "fetch",
-			usage:           "/fetch [off|beeper]",
+			usage:           "/fetch [off|beeper|native]",
 			description:     "Show or set URL fetch mode for this room.",
 			needsRoomConfig: true,
 			noticeErrors:    true,

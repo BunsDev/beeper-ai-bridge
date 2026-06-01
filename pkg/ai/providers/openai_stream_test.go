@@ -167,6 +167,53 @@ func TestResponsesStreamStateFinalizesReasoningTextToolAndUsage(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamStateMapsNativeWebSearchCallToToolActivity(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{
+			"type":   "web_search_call",
+			"id":     "ws_1",
+			"status": "in_progress",
+			"action": map[string]any{"type": "search", "query": "latest headlines Amsterdam news today"},
+		},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":   "web_search_call",
+			"id":     "ws_1",
+			"status": "completed",
+			"action": map[string]any{"type": "search", "query": "latest headlines Amsterdam news today"},
+		},
+	})
+
+	events := drainAssistantEvents(stream)
+	if len(output.Content.([]ai.ContentBlock)) != 0 {
+		t.Fatalf("native web search must not become an executable tool block, got %#v", output.Content)
+	}
+	var started, result bool
+	for _, event := range events {
+		switch event.Type {
+		case "toolcall_start":
+			started = event.ToolCall != nil && event.ToolCall.ID == "ws_1" && event.ToolCall.Name == "web_search"
+		case "toolresult":
+			result = event.ToolCall != nil && event.ToolCall.ID == "ws_1"
+			if output, _ := event.CustomValue.(map[string]any); output["status"] != "success" || output["native"] != true {
+				t.Fatalf("unexpected native search result payload %#v", event.CustomValue)
+			}
+		}
+	}
+	if !started || !result {
+		t.Fatalf("expected native web search start/result events, got %#v", events)
+	}
+}
+
 func TestResponsesStreamStateStreamsTextDeltasWithoutContentPartPrelude(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()
@@ -216,6 +263,18 @@ func TestResponsesStreamStateStreamsTextDeltasWithoutContentPartPrelude(t *testi
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "summary"})
 	if state.blocks[2].Thinking != "summary" {
 		t.Fatalf("expected summary delta after summary part, got %#v", state.blocks[2])
+	}
+}
+
+func drainAssistantEvents(stream *ai.AssistantMessageEventStream) []ai.AssistantMessageEvent {
+	events := []ai.AssistantMessageEvent{}
+	for {
+		select {
+		case event := <-stream.Events():
+			events = append(events, event)
+		default:
+			return events
+		}
 	}
 }
 

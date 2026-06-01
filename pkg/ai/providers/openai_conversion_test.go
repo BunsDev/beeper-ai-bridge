@@ -177,6 +177,39 @@ func TestProviderCitationsFromAnthropicWebSearchLocation(t *testing.T) {
 	}
 }
 
+func TestProviderCitationsFromAnthropicWebFetchResult(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type": "web_fetch_tool_result",
+		"content": map[string]any{
+			"type": "web_fetch_result",
+			"url":  "https://example.com/article",
+			"content": map[string]any{
+				"type":  "document",
+				"title": "Fetched Article",
+			},
+		},
+	}, ai.ProviderAnthropic, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/article" || citations[0].Title != "Fetched Article" || citations[0].RawType != "web_fetch_result" {
+		t.Fatalf("unexpected web fetch citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsFromGoogleURLContextMetadata(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"candidates": []any{map[string]any{
+			"urlContextMetadata": map[string]any{
+				"urlMetadata": []any{map[string]any{
+					"retrievedUrl":       "https://example.com/url-context",
+					"urlRetrievalStatus": "URL_RETRIEVAL_STATUS_SUCCESS",
+				}},
+			},
+		}},
+	}, ai.ProviderGoogle, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/url-context" || citations[0].RawType != "url_context" {
+		t.Fatalf("unexpected URL context citations %#v", citations)
+	}
+}
+
 func TestConvertResponsesMessagesIncludesNativeAudio(t *testing.T) {
 	model := ai.Model{ID: "gpt-audio", API: ai.ApiOpenAIResponses, Provider: "openai", Input: []string{"text", "audio"}}
 	messages := ConvertResponsesMessages(model, ai.Context{

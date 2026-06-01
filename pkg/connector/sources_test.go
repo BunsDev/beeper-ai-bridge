@@ -87,6 +87,21 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 		t.Fatalf("provider citation ranges were not preserved: %#v", providerSources[0])
 	}
 
+	fetchResultSources := newSourceCollector().addProviderSources(map[string]any{
+		"type": "web_fetch_tool_result",
+		"content": map[string]any{
+			"type": "web_fetch_result",
+			"url":  "https://example.com/provider-fetch",
+			"content": map[string]any{
+				"type":  "document",
+				"title": "Provider Fetch",
+			},
+		},
+	})
+	if len(fetchResultSources) != 1 || fetchResultSources[0]["title"] != "Provider Fetch" {
+		t.Fatalf("provider web fetch result was not mapped: %#v", fetchResultSources)
+	}
+
 	messageSources := newSourceCollector().addProviderSources(ai.Message{
 		Citations: []ai.Citation{{
 			Type:       "url_citation",
@@ -98,6 +113,17 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 	})
 	if len(messageSources) != 1 || messageSources[0]["title"] != "Typed Citation" {
 		t.Fatalf("typed provider citation was not mapped: %#v", messageSources)
+	}
+
+	urlContextSources := newSourceCollector().addProviderSources(ai.Message{
+		Citations: []ai.Citation{{
+			Type:    "url_citation",
+			URL:     "https://example.com/url-context",
+			RawType: "url_context",
+		}},
+	})
+	if len(urlContextSources) != 1 || urlContextSources[0]["url"] != "https://example.com/url-context" {
+		t.Fatalf("Google URL context source was not mapped: %#v", urlContextSources)
 	}
 
 	collector := newSourceCollector()

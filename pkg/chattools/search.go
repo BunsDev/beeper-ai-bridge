@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
@@ -89,6 +90,10 @@ func Search(ctx context.Context, query string, limit int, request SearchRequestO
 	defer resp.Body.Close()
 	logToolHTTPResponse(log, resp, time.Since(started), "Received AI tool HTTP response")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if message := errorMessageFromBody(body); message != "" {
+			return SearchResult{}, fmt.Errorf("search failed with HTTP %d: %s", resp.StatusCode, message)
+		}
 		return SearchResult{}, fmt.Errorf("search failed with HTTP %d", resp.StatusCode)
 	}
 	var body searchResponse
@@ -109,6 +114,32 @@ func Search(ctx context.Context, query string, limit int, request SearchRequestO
 		Int("result_count", len(result.Results)).
 		Msg("Parsed AI tool search result")
 	return result, nil
+}
+
+func errorMessageFromBody(body []byte) string {
+	data := map[string]any{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return strings.TrimSpace(string(body))
+	}
+	if value := stringFromAnyValue(data["error"]); value != "" {
+		return value
+	}
+	if errorData, _ := data["error"].(map[string]any); errorData != nil {
+		if value := stringFromAnyValue(errorData["message"]); value != "" {
+			return value
+		}
+	}
+	if value := stringFromAnyValue(data["message"]); value != "" {
+		return value
+	}
+	return ""
+}
+
+func stringFromAnyValue(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
 }
 
 type searchResponse struct {

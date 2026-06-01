@@ -580,12 +580,18 @@ func providerCitationSource(data map[string]any) (sourceObservation, bool) {
 		sourceType = firstSourceString(sourceType, strings.ToLower(sourceString(nested, "type", "rawType")))
 	}
 	rawURL := sourceString(citation, "url", "uri")
-	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location") {
+	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location" && sourceType != "web_fetch_result" && sourceType != "url_context") {
 		return sourceObservation{}, false
+	}
+	title := sourceString(citation, "title")
+	if title == "" && sourceType == "web_fetch_result" {
+		if content, _ := citation["content"].(map[string]any); content != nil {
+			title = sourceString(content, "title")
+		}
 	}
 	return sourceObservation{
 		URL:         rawURL,
-		Title:       sourceString(citation, "title"),
+		Title:       title,
 		Description: firstSourceString(sourceDescriptionString(citation), sourceString(citation, "cited_text"), sourceString(citation, "text")),
 		SiteName:    sourceString(citation, "siteName", "site_name"),
 		FaviconURL:  sourceFaviconString(citation),

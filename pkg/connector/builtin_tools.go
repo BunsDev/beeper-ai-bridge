@@ -10,10 +10,25 @@ import (
 	"github.com/beeper/ai-bridge/pkg/ai"
 )
 
+const anthropicWebFetchBetaMetadataKey = "anthropic_web_fetch_beta"
+
 func (cl *Client) registerProviderBuiltInToolHooks(agentHarness *harness.AgentHarness, roomConfig RoomConfig) {
 	if agentHarness == nil {
 		return
 	}
+	agentHarness.On("before_provider_request", func(_ context.Context, event harness.AgentHarnessEvent) (any, error) {
+		if event.Model == nil || roomFetchMode(roomConfig) != toolModeNative || event.Model.API != ai.ApiAnthropicMessages {
+			return nil, nil
+		}
+		if _, ok := nativeWebFetchToolPayload(*event.Model); !ok {
+			return nil, nil
+		}
+		return harness.BeforeProviderRequestResult{
+			StreamOptions: harness.AgentHarnessStreamOptions{
+				Metadata: map[string]any{anthropicWebFetchBetaMetadataKey: true},
+			},
+		}, nil
+	})
 	agentHarness.On("before_provider_payload", func(_ context.Context, event harness.AgentHarnessEvent) (any, error) {
 		if event.Model == nil {
 			return nil, nil
@@ -27,13 +42,23 @@ func (cl *Client) registerProviderBuiltInToolHooks(agentHarness *harness.AgentHa
 }
 
 func activeBuiltInToolPayloads(model ai.Model, roomConfig RoomConfig) []map[string]any {
-	out := make([]map[string]any, 0, len(model.BuiltInTools))
+	out := make([]map[string]any, 0, len(model.BuiltInTools)+2)
+	if roomSearchMode(roomConfig) == toolModeNative {
+		if payload, ok := nativeWebSearchToolPayload(model); ok {
+			out = appendBuiltInToolPayload(out, payload)
+		}
+	}
+	if roomFetchMode(roomConfig) == toolModeNative {
+		if payload, ok := nativeWebFetchToolPayload(model); ok {
+			out = appendBuiltInToolPayload(out, payload)
+		}
+	}
 	for _, tool := range model.BuiltInTools {
 		payload, ok := builtInToolPayload(model, roomConfig, tool)
 		if !ok {
 			continue
 		}
-		out = append(out, payload)
+		out = appendBuiltInToolPayload(out, payload)
 	}
 	return out
 }
@@ -45,6 +70,11 @@ func builtInToolPayload(model ai.Model, roomConfig RoomConfig, tool string) (map
 			return nil, false
 		}
 		return nativeWebSearchToolPayload(model)
+	case "web_fetch":
+		if roomFetchMode(roomConfig) != toolModeNative {
+			return nil, false
+		}
+		return nativeWebFetchToolPayload(model)
 	case "image_generation":
 		switch {
 		case strings.HasPrefix(strings.TrimSpace(tool), "openrouter:"):
@@ -64,6 +94,8 @@ func normalizedBuiltInTool(tool string) string {
 	switch tool {
 	case "web_search", "web_search_preview", "openrouter:web_search", "web_search_20250305", "google_search", "google_search_retrieval":
 		return "web_search"
+	case "web_fetch", "openrouter:web_fetch", "web_fetch_20250910", "web_fetch_20260209", "url_context", "urlcontext":
+		return "web_fetch"
 	case "image_generation", "openrouter:image_generation":
 		return "image_generation"
 	default:
@@ -90,6 +122,35 @@ func nativeWebSearchToolPayload(model ai.Model) (map[string]any, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func nativeWebFetchToolPayload(model ai.Model) (map[string]any, bool) {
+	switch model.API {
+	case ai.ApiAnthropicMessages:
+		return map[string]any{"type": "web_fetch_20250910", "name": "web_fetch", "citations": map[string]any{"enabled": true}}, true
+	case ai.ApiGoogleGenerativeAI, ai.ApiGoogleVertex:
+		return map[string]any{"url_context": map[string]any{}}, true
+	case ai.ApiOpenAIResponses, ai.ApiOpenAICompletions:
+		if model.Provider == ai.ProviderOpenRouter {
+			return map[string]any{"type": "openrouter:web_fetch"}, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+func appendBuiltInToolPayload(payloads []map[string]any, payload map[string]any) []map[string]any {
+	key := builtInToolKey(payload)
+	if key == "" {
+		return payloads
+	}
+	for _, existing := range payloads {
+		if builtInToolKey(existing) == key {
+			return payloads
+		}
+	}
+	return append(payloads, payload)
 }
 
 func addBuiltInToolsToPayload(payload any, builtInTools []map[string]any) (any, bool) {
@@ -145,6 +206,12 @@ func builtInToolKey(tool map[string]any) string {
 	}
 	if _, ok := tool["googleSearch"]; ok {
 		return "google_search"
+	}
+	if _, ok := tool["url_context"]; ok {
+		return "url_context"
+	}
+	if _, ok := tool["urlContext"]; ok {
+		return "url_context"
 	}
 	return ""
 }

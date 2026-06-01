@@ -460,6 +460,52 @@ func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
 	}
 }
 
+func TestRunLimitsCommandRawUsesAIResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/limits" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"windows":{"llm":{"day":{"percentage_left":75,"limit":1000,"used":250,"remaining":750,"reset_at":1893456000000}}}}`))
+	}))
+	defer server.Close()
+
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	client := &Client{
+		Main: &Connector{AppServiceToken: "as-token"},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@alice:beeper.test",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				provider.ID: provider,
+			}},
+		}},
+	}
+	responder := &recordingCommandResponder{}
+	if err := runLimitsCommand(client, context.Background(), nil, RoomConfig{}, "raw", responder); err != nil {
+		t.Fatal(err)
+	}
+	if responder.text != "" {
+		t.Fatalf("raw limits should use AI response, got plain text %q", responder.text)
+	}
+	if !strings.Contains(responder.aiText, "## LLM tokens") || !strings.Contains(responder.aiText, "| Day | `75%` | `250` | `1,000` | `750` |") {
+		t.Fatalf("raw limits AI response missing table:\n%s", responder.aiText)
+	}
+}
+
+type recordingCommandResponder struct {
+	text   string
+	aiText string
+}
+
+func (r *recordingCommandResponder) Reply(_ context.Context, text string) error {
+	r.text = text
+	return nil
+}
+
+func (r *recordingCommandResponder) ReplyAI(_ context.Context, text string) error {
+	r.aiText = text
+	return nil
+}
+
 func TestBeeperUsageLimitErrorUsesPlanResetMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/limits" {
@@ -534,24 +580,17 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		},
 	}}, now)
 	for _, want := range []string{
-		"AI limits",
 		"## Models",
 		"| Window | Left | Used | Reset |",
 		"| Daily | `75%` | `250 / 1,000` | in 1 day 2 hours 3 minutes |",
 		"| Weekly | Unlimited | `1,234` used | in 1 day 2 hours 3 minutes |",
 		"| Monthly | **Out** | `30,500 / 30,000` | in 1 day 2 hours 3 minutes |",
-		"## Web Search",
-		"| Daily | `99%` | `1 / 200,000` | in 1 day 2 hours 3 minutes |",
-		"## Transcription",
-		"| Daily | `99%` | `1 minute / 1,440 minutes` | in 1 day 2 hours 3 minutes |",
-		"## Audio Generation",
-		"| Daily | `99%` | `1,234 / 50,000 chars` | in 1 day 2 hours 3 minutes |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"`199,999`", "2030-01-01T00:00:00Z"} {
+	for _, notWant := range []string{"AI limits", "## Web Search", "## Transcription", "## Audio Generation", "`199,999`", "2030-01-01T00:00:00Z"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
 		}
@@ -572,15 +611,15 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 		"| Daily | `75%` | Not reported | in 1 day 1 hour 3 minutes |",
 		"| Weekly | `100%` | Not reported | in 7 days |",
 		"| Monthly | **Out** | Not reported | in 31 days |",
-		"## Web Search",
-		"No limits reported.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "Everything resets") {
-		t.Fatalf("limits info collapsed different reset times:\n%s", text)
+	for _, notWant := range []string{"AI limits", "## Web Search", "No limits reported.", "Everything resets"} {
+		if strings.Contains(text, notWant) {
+			t.Fatalf("limits info exposed %q:\n%s", notWant, text)
+		}
 	}
 }
 
@@ -614,15 +653,22 @@ func TestFormatRawLimitsCommandInfoShowsExactUsage(t *testing.T) {
 		},
 	}}, time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC))
 	for _, want := range []string{
-		"AI limits raw:",
-		"percentage_left=`75`, limit=`1,000`, used=`250`, remaining=`750`, reset_at=`1893456000000` (`2030-01-01T00:00:00Z`, in 1 day)",
-		"percentage_left=`100`, limit=`-1`, used=`1,234`, remaining=`-1`",
-		"Audio transcription seconds:",
-		"percentage_left=`99`, limit=`86,400`, used=`43`, remaining=`86,357`",
+		"## LLM tokens",
+		"| Window | Left | Used | Limit | Remaining | Reset |",
+		"| Day | `75%` | `250` | `1,000` | `750` | `1893456000000` (`2030-01-01T00:00:00Z`, in 1 day) |",
+		"| Week | `100%` | `1,234` | `-1` | `-1` | `1893456000000` (`2030-01-01T00:00:00Z`, in 1 day) |",
+		"## Web tools",
+		"| Day | `0%` | `0` | `0` | `0` | unknown |",
+		"## Audio transcription seconds",
+		"| Day | `99%` | `43` | `86,400` | `86,357` | `1893456000000` (`2030-01-01T00:00:00Z`, in 1 day) |",
+		"## Audio generation characters",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("raw limits info missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "AI limits raw:") {
+		t.Fatalf("raw limits info should render as tables without the old header:\n%s", text)
 	}
 }
 

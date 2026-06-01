@@ -19,6 +19,8 @@ import (
 const (
 	fineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14"
 	interleavedThinkingBeta      = "interleaved-thinking-2025-05-14"
+	webFetchBeta                 = "web-fetch-2025-09-10"
+	webFetchBetaMetadataKey      = "anthropic_web_fetch_beta"
 	claudeCodeVersion            = "2.1.75"
 )
 
@@ -383,6 +385,9 @@ func anthropicHeaders(model ai.Model, llmContext ai.Context, options AnthropicOp
 	}
 	if interleaved && !getAnthropicCompat(model).ForceAdaptiveThinking {
 		betas = append(betas, interleavedThinkingBeta)
+	}
+	if enabled, _ := options.Metadata[webFetchBetaMetadataKey].(bool); enabled {
+		betas = append(betas, webFetchBeta)
 	}
 	if isBeeperAIProxyBaseURL(model.BaseURL) {
 		headers["Authorization"] = "Bearer " + options.APIKey

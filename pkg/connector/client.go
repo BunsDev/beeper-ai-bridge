@@ -1675,6 +1675,14 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 		if toolCall := toolCallFromEvent(); toolCall != nil {
 			writer.ToolInputComplete(toolCall.ID, toolCall.Name, toolCall.Arguments)
 		}
+	case "toolresult":
+		if toolCall := toolCallFromEvent(); toolCall != nil {
+			result := evt.CustomValue
+			if result == nil {
+				result = map[string]any{"state": agui.ToolResultStateComplete, "status": "success"}
+			}
+			writer.ToolEnd(toolCall.ID, toolCall.Name, toolCall.Arguments, result)
+		}
 	case "custom":
 		if evt.CustomName != "" {
 			writer.Custom(evt.CustomName, evt.CustomValue)

@@ -7,21 +7,21 @@ import (
 )
 
 type SessionInfo struct {
-	CurrentTimestamp   string   `json:"current_timestamp"`
-	ChatID             string   `json:"chat_id,omitempty"`
-	ChatTitle          string   `json:"chat_title,omitempty"`
-	ChatFirstMessageAt string   `json:"chat_first_message_at,omitempty"`
-	SelectedModel      string   `json:"selected_model,omitempty"`
-	SelectedReasoning  string   `json:"selected_reasoning,omitempty"`
-	DisabledTools      []string `json:"disabled_tools,omitempty"`
-	SearchMode         string   `json:"search_mode,omitempty"`
-	FetchMode          string   `json:"fetch_mode,omitempty"`
-	BeeperUsername     string   `json:"beeper_username,omitempty"`
-	BeeperDisplayName  string   `json:"beeper_display_name,omitempty"`
-	BeeperAccountEmail string   `json:"beeper_account_email,omitempty"`
-	GravatarProfile    any      `json:"gravatar_profile,omitempty"`
-	LastKnownTimestamp string   `json:"last_known_timestamp"`
-	LastKnownTimezone  string   `json:"last_known_timezone,omitempty"`
+	CurrentTimestamp     string   `json:"current_timestamp"`
+	ChatID               string   `json:"chat_id,omitempty"`
+	ChatTitle            string   `json:"chat_title,omitempty"`
+	ChatFirstMessageAt   string   `json:"chat_first_message_at,omitempty"`
+	SelectedModel        string   `json:"selected_model,omitempty"`
+	SelectedReasoning    string   `json:"selected_reasoning,omitempty"`
+	DisabledTools        []string `json:"disabled_tools,omitempty"`
+	SearchMode           string   `json:"search_mode,omitempty"`
+	FetchMode            string   `json:"fetch_mode,omitempty"`
+	BeeperUsername       string   `json:"beeper_username,omitempty"`
+	BeeperDisplayName    string   `json:"beeper_display_name,omitempty"`
+	BeeperAccountEmail   string   `json:"beeper_account_email,omitempty"`
+	GravatarProfile      any      `json:"gravatar_profile,omitempty"`
+	LastMessageTimestamp string   `json:"last_message_timestamp"`
+	LastKnownTimezone    string   `json:"last_known_timezone,omitempty"`
 }
 
 type SessionProfile struct {
