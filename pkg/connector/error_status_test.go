@@ -98,6 +98,16 @@ func TestMatrixMessageStatusForAIErrorMapsUsageLimitMessage(t *testing.T) {
 	}
 }
 
+func TestMatrixMessageStatusForAIErrorMapsSerializedTimeout(t *testing.T) {
+	status := matrixMessageStatusForAIError(errors.New(`received error while streaming: {"type":"stream_truncated","message":"The stream was interrupted. The response may be incomplete. Reason: cURL error 28: Timeout was reached"}`))
+	if status.Status != event.MessageStatusRetriable || status.ErrorReason != event.MessageStatusNetworkError {
+		t.Fatalf("expected retriable network timeout status, got %#v", status)
+	}
+	if status.Message != "AI provider request timed out" {
+		t.Fatalf("unexpected message %q", status.Message)
+	}
+}
+
 func TestMatrixMessageStatusForAIErrorOverridesWrappedUsageLimit(t *testing.T) {
 	err := bridgev2.WrapErrorInStatus(errors.New("This message exceeds the AI usage limits in your plan. Your limits will reset in 23 hours 17 minutes. You can see details by typing `/limits`")).
 		WithStatus(event.MessageStatusFail).

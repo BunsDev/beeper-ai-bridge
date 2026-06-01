@@ -58,7 +58,7 @@ func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 		status.Status = event.MessageStatusFail
 		status.ErrorReason = event.MessageStatusBridgeUnavailable
 		status.Message = "AI request was cancelled"
-	case errors.Is(err, context.DeadlineExceeded), isNetworkTimeout(err):
+	case errors.Is(err, context.DeadlineExceeded), isNetworkTimeout(err), isSerializedTimeoutError(lower):
 		status.ErrorReason = event.MessageStatusNetworkError
 		status.Message = "AI provider request timed out"
 	case isAIUsageLimitError(lower) || isRateLimitError(httpStatus, lower):
@@ -126,6 +126,12 @@ func isAIUsageLimitError(lower string) bool {
 func isNetworkTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isSerializedTimeoutError(lower string) bool {
+	return strings.Contains(lower, "curl error 28") ||
+		strings.Contains(lower, "timeout was reached") ||
+		strings.Contains(lower, "context deadline exceeded")
 }
 
 func errorHTTPStatus(err error) int {
