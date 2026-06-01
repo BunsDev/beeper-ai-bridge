@@ -580,13 +580,16 @@ func providerCitationSource(data map[string]any) (sourceObservation, bool) {
 		sourceType = firstSourceString(sourceType, strings.ToLower(sourceString(nested, "type", "rawType")))
 	}
 	rawURL := sourceString(citation, "url", "uri")
-	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location" && sourceType != "web_fetch_result" && sourceType != "url_context") {
+	if rawURL == "" || (!strings.Contains(sourceType, "citation") && sourceType != "web_search_result_location" && sourceType != "web_fetch_result" && sourceType != "openrouter:web_fetch" && sourceType != "url_context") {
 		return sourceObservation{}, false
 	}
 	title := sourceString(citation, "title")
-	if title == "" && sourceType == "web_fetch_result" {
+	if title == "" && (sourceType == "web_fetch_result" || sourceType == "openrouter:web_fetch") {
 		if content, _ := citation["content"].(map[string]any); content != nil {
 			title = sourceString(content, "title")
+			if title == "" {
+				title = sourceDocumentTitleFromProviderContent(content)
+			}
 		}
 	}
 	return sourceObservation{
@@ -606,6 +609,18 @@ func providerCitationSource(data map[string]any) (sourceObservation, bool) {
 			Text:         firstSourceString(sourceString(citation, "text"), sourceString(citation, "cited_text")),
 		},
 	}, true
+}
+
+func sourceDocumentTitleFromProviderContent(content map[string]any) string {
+	source, _ := content["source"].(map[string]any)
+	text := firstSourceString(sourceString(content, "text", "data"), sourceString(source, "data"))
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func mergeSourceMaps(first map[string]any, second map[string]any) map[string]any {

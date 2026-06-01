@@ -214,6 +214,138 @@ func TestResponsesStreamStateMapsNativeWebSearchCallToToolActivity(t *testing.T)
 	}
 }
 
+func TestResponsesStreamStateMapsOpenRouterWebSearchToToolActivity(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	model.Provider = ai.ProviderOpenRouter
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{
+			"type":   "openrouter:web_search",
+			"id":     "or_search_1",
+			"status": "in_progress",
+		},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":   "openrouter:web_search",
+			"id":     "or_search_1",
+			"status": "completed",
+			"action": map[string]any{"type": "search", "query": "current Amsterdam headline"},
+		},
+	})
+
+	events := drainAssistantEvents(stream)
+	if len(output.Content.([]ai.ContentBlock)) != 0 {
+		t.Fatalf("OpenRouter native search must not become an executable tool block, got %#v", output.Content)
+	}
+	var started, result bool
+	for _, event := range events {
+		switch event.Type {
+		case "toolcall_start":
+			started = event.ToolCall != nil && event.ToolCall.ID == "or_search_1" && event.ToolCall.Name == "web_search"
+		case "toolresult":
+			result = event.ToolCall != nil && event.ToolCall.ID == "or_search_1" && event.ToolCall.Arguments["query"] == "current Amsterdam headline"
+			output, _ := event.CustomValue.(map[string]any)
+			if output["provider"] != string(ai.ProviderOpenRouter) || output["status"] != "success" || output["query"] != "current Amsterdam headline" {
+				t.Fatalf("unexpected OpenRouter search result payload %#v", event.CustomValue)
+			}
+		}
+	}
+	if !started || !result {
+		t.Fatalf("expected OpenRouter web search start/result events, got %#v", events)
+	}
+}
+
+func TestResponsesStreamStateMapsOpenRouterWebFetchToToolActivity(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	model.Provider = ai.ProviderOpenRouter
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{
+			"type":   "openrouter:web_fetch",
+			"id":     "or_fetch_1",
+			"status": "in_progress",
+		},
+	})
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":       "openrouter:web_fetch",
+			"id":         "or_fetch_1",
+			"status":     "completed",
+			"url":        "https://example.com/article",
+			"title":      "Fetched Article",
+			"httpStatus": float64(200),
+			"content":    "Fetched Article body that should not be copied into the tool output.",
+		},
+	})
+
+	events := drainAssistantEvents(stream)
+	var sawSource, sawResult bool
+	for _, event := range events {
+		switch event.Type {
+		case "source":
+			sawSource = len(output.Citations) == 1 && output.Citations[0].URL == "https://example.com/article"
+		case "toolresult":
+			sawResult = event.ToolCall != nil && event.ToolCall.Name == "fetch"
+			output, _ := event.CustomValue.(map[string]any)
+			if output["provider"] != string(ai.ProviderOpenRouter) || output["url"] != "https://example.com/article" || output["title"] != "Fetched Article" || output["content"] != nil {
+				t.Fatalf("unexpected OpenRouter fetch result payload %#v", event.CustomValue)
+			}
+		}
+	}
+	if !sawSource || !sawResult {
+		t.Fatalf("expected OpenRouter fetch source/result events, got %#v citations=%#v", events, output.Citations)
+	}
+}
+
+func TestResponsesStreamStateMapsOpenRouterWebFetchFailure(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := testStreamModel()
+	model.API = ai.ApiOpenAIResponses
+	model.Provider = ai.ProviderOpenRouter
+	output := newAssistant(model)
+	state := newResponsesStreamState()
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":   "openrouter:web_fetch",
+			"id":     "or_fetch_fail",
+			"status": "incomplete",
+			"url":    "https://nonexistent.invalid/does-not-exist",
+			"error":  "Exa returned no content for this URL.",
+		},
+	})
+
+	events := drainAssistantEvents(stream)
+	var result bool
+	for _, event := range events {
+		if event.Type != "toolresult" {
+			continue
+		}
+		result = event.ToolCall != nil && event.ToolCall.Name == "fetch"
+		output, _ := event.CustomValue.(map[string]any)
+		if output["status"] != "failed" || output["reason"] != "Exa returned no content for this URL." {
+			t.Fatalf("unexpected OpenRouter fetch failure payload %#v", event.CustomValue)
+		}
+	}
+	if !result {
+		t.Fatalf("expected OpenRouter fetch failure result, got %#v", events)
+	}
+}
+
 func TestResponsesStreamStateStreamsTextDeltasWithoutContentPartPrelude(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()

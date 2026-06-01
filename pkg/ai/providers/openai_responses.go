@@ -186,6 +186,8 @@ func applyCompleteOpenAIResponses(output *ai.Message, model ai.Model, options Op
 				blocks = append(blocks, ai.ContentBlock{Type: "toolCall", ID: id, Name: fmt.Sprint(item["name"]), Arguments: parseJSONMap(args)})
 			case "image_generation_call":
 				blocks = append(blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
+			case "web_search_call", "openrouter:web_search", "openrouter:web_fetch":
+				output.Citations = append(output.Citations, providerCitationsFromAny(item, model.Provider, len(blocks))...)
 			}
 		}
 	}

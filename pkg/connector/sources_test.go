@@ -102,6 +102,21 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 		t.Fatalf("provider web fetch result was not mapped: %#v", fetchResultSources)
 	}
 
+	openRouterFetchSources := newSourceCollector().addProviderSources(map[string]any{
+		"type": "openrouter:web_fetch",
+		"url":  "https://example.com/openrouter-fetch",
+		"content": map[string]any{
+			"type": "document",
+			"source": map[string]any{
+				"type": "text",
+				"data": "\nOpenRouter Fetch Title\nBody text",
+			},
+		},
+	})
+	if len(openRouterFetchSources) != 1 || openRouterFetchSources[0]["title"] != "OpenRouter Fetch Title" {
+		t.Fatalf("OpenRouter web fetch source was not mapped: %#v", openRouterFetchSources)
+	}
+
 	messageSources := newSourceCollector().addProviderSources(ai.Message{
 		Citations: []ai.Citation{{
 			Type:       "url_citation",

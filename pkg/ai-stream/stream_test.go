@@ -324,7 +324,7 @@ func TestFinalBeeperAIMessagePreservesTextChunksAfterToolCalls(t *testing.T) {
 	}
 }
 
-func TestFinalBeeperAIMessageShowsHiddenReasoningInOrder(t *testing.T) {
+func TestFinalBeeperAIMessageSuppressesEmptyHiddenReasoningInOrder(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
@@ -354,11 +354,73 @@ func TestFinalBeeperAIMessageShowsHiddenReasoningInOrder(t *testing.T) {
 	want := []string{
 		"text:first text",
 		"tool-call:tool-1",
-		"thinking:Thinking...",
 		"text:second text",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("final hidden reasoning order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessageKeepsStreamingThinkingPartEmptyUntilTokensArrive(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.ReasoningMessageStart(0)
+
+	streamingEmpty := run.FinalBeeperAIMessage(0, true)
+	if len(streamingEmpty.Parts) != 1 || streamingEmpty.Parts[0]["type"] != "thinking" || streamingEmpty.Parts[0]["content"] != "" || streamingEmpty.Parts[0]["state"] != agui.PartStateStreaming {
+		t.Fatalf("streaming empty reasoning should render as an empty in-progress part, got %#v", streamingEmpty.Parts)
+	}
+
+	writer.ReasoningDelta(0, "reading sources")
+	streamingContent := run.FinalBeeperAIMessage(0, true)
+	if len(streamingContent.Parts) != 1 || streamingContent.Parts[0]["type"] != "thinking" || streamingContent.Parts[0]["content"] != "reading sources" || streamingContent.Parts[0]["state"] != agui.PartStateStreaming {
+		t.Fatalf("streaming reasoning tokens should update the same thinking part, got %#v", streamingContent.Parts)
+	}
+
+	writer.ReasoningMessageEnd(0)
+	writer.Finish(agui.FinishReasonStop)
+	finalContent := run.FinalBeeperAIMessage(0, true)
+	if len(finalContent.Parts) != 1 || finalContent.Parts[0]["type"] != "thinking" || finalContent.Parts[0]["content"] != "reading sources" || finalContent.Parts[0]["state"] != agui.PartStateDone {
+		t.Fatalf("final reasoning tokens should remain in order as a done thinking part, got %#v", finalContent.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessageDedupesNativeOpenAIWebSearchRows(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	query := "pop culture latest Oscars Grammys Wikipedia"
+	writer.ToolStart("ws_aggregate", "web_search", 0, nil)
+	writer.ToolEnd("ws_aggregate", "web_search", map[string]any{
+		"query":   query,
+		"queries": []any{query, "latest entertainment news film music television"},
+	}, map[string]any{
+		"state":    "complete",
+		"status":   "success",
+		"provider": "openai",
+		"native":   true,
+		"query":    query,
+		"queries":  []any{query, "latest entertainment news film music television"},
+	})
+	writer.ToolStart("ws_single", "web_search", 0, nil)
+	writer.ToolEnd("ws_single", "web_search", map[string]any{"query": query}, map[string]any{
+		"state":    "complete",
+		"status":   "success",
+		"provider": "openai",
+		"native":   true,
+		"query":    query,
+	})
+	writer.Finish(agui.FinishReasonStop)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	var webSearchIDs []string
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "tool-call" && part["name"] == "web_search" {
+			webSearchIDs = append(webSearchIDs, firstString(part["toolCallId"]))
+		}
+	}
+	if !reflect.DeepEqual(webSearchIDs, []string{"ws_single"}) {
+		t.Fatalf("expected only the final native OpenAI web_search row, got IDs=%#v parts=%#v", webSearchIDs, uiMessage.Parts)
 	}
 }
 

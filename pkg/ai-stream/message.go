@@ -632,15 +632,56 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 		projected.part["content"] = projected.content.String()
 		compactTextPart(projected.part, textBudget)
 	}
+	emptyThinkingPartIDs := map[string]struct{}{}
 	for _, projected := range thinkingParts {
 		content := projected.content.String()
 		if content == "" {
-			content = "Thinking..."
+			if t.Status.State != "" && t.Status.State != "streaming" {
+				if id := firstString(projected.part["id"]); id != "" {
+					emptyThinkingPartIDs[id] = struct{}{}
+				}
+				continue
+			}
 		}
 		projected.part["content"] = content
 		compactTextPart(projected.part, textBudget)
 	}
+	message.Parts = filterFinalMessageParts(message.Parts, emptyThinkingPartIDs)
 	return message
+}
+
+func filterFinalMessageParts(parts []MessagePart, emptyThinkingPartIDs map[string]struct{}) []MessagePart {
+	lastNativeOpenAIWebSearchByQuery := map[string]int{}
+	for index, part := range parts {
+		if query := nativeOpenAIWebSearchQuery(part); query != "" {
+			lastNativeOpenAIWebSearchByQuery[query] = index
+		}
+	}
+	out := parts[:0]
+	for index, part := range parts {
+		if part["type"] == "thinking" {
+			if _, ok := emptyThinkingPartIDs[firstString(part["id"])]; ok {
+				continue
+			}
+		}
+		if query := nativeOpenAIWebSearchQuery(part); query != "" && lastNativeOpenAIWebSearchByQuery[query] != index {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func nativeOpenAIWebSearchQuery(part MessagePart) string {
+	if part["type"] != "tool-call" || firstString(part["name"]) != "web_search" {
+		return ""
+	}
+	output, _ := part["output"].(map[string]any)
+	if output == nil || output["native"] != true || firstString(output["provider"]) != "openai" {
+		return ""
+	}
+	input, _ := part["input"].(map[string]any)
+	return firstString(output["query"], input["query"])
 }
 
 func toolResultOutput(content string, state string, err any) any {

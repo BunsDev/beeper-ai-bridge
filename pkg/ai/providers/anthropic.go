@@ -114,6 +114,8 @@ func StreamAnthropic(ctx context.Context, model ai.Model, llmContext ai.Context,
 		}
 		stream.Push(ai.AssistantMessageEvent{Type: "start", Partial: &output})
 		state := newAnthropicStreamState()
+		sawMessageStart := false
+		sawMessageStop := false
 		err = iterateSSE(response.Body, func(sse serverSentEvent) error {
 			if sse.Event == "error" {
 				return errors.New(sse.Data)
@@ -129,6 +131,12 @@ func StreamAnthropic(ctx context.Context, model ai.Model, llmContext ai.Context,
 					return fmt.Errorf("could not parse Anthropic SSE event %s: %w; data=%s; raw=%s", sse.Event, err, sse.Data, strings.Join(sse.Raw, "\n"))
 				}
 			}
+			switch event["type"] {
+			case "message_start":
+				sawMessageStart = true
+			case "message_stop":
+				sawMessageStop = true
+			}
 			citations := providerCitationsFromAny(event, model.Provider, max(0, len(contentBlocks(output.Content))-1))
 			if len(citations) > 0 {
 				output.Citations = append(output.Citations, citations...)
@@ -139,6 +147,10 @@ func StreamAnthropic(ctx context.Context, model ai.Model, llmContext ai.Context,
 		})
 		if err != nil {
 			pushFinalError(stream, &output, err.Error())
+			return
+		}
+		if sawMessageStart && !sawMessageStop {
+			pushFinalError(stream, &output, "Anthropic stream ended before message_stop")
 			return
 		}
 		stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: output.StopReason, Message: &output})
@@ -368,9 +380,40 @@ func doAnthropicRequest(ctx context.Context, model ai.Model, llmContext ai.Conte
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return nil, fmt.Errorf("Anthropic API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		return nil, errors.New(formatAnthropicAPIError(resp.StatusCode, payload))
 	}
 	return resp, nil
+}
+
+func formatAnthropicAPIError(statusCode int, payload []byte) string {
+	detail := strings.TrimSpace(string(payload))
+	if parsed := providerErrorMessage(payload); parsed != "" {
+		detail = parsed
+	}
+	if detail == "" {
+		statusText := strings.TrimSpace(fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)))
+		if statusText == "" {
+			statusText = fmt.Sprintf("upstream status %d", statusCode)
+		}
+		detail = statusText + " (no body)"
+	}
+	return fmt.Sprintf("Anthropic API error (%d): %s", statusCode, detail)
+}
+
+func providerErrorMessage(payload []byte) string {
+	var parsed struct {
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, &parsed) != nil {
+		return ""
+	}
+	if parsed.Error.Message != "" {
+		return parsed.Error.Message
+	}
+	return parsed.Message
 }
 
 func anthropicHeaders(model ai.Model, llmContext ai.Context, options AnthropicOptions, isOAuth bool) map[string]string {
@@ -793,6 +836,11 @@ func anthropicNativeToolResult(block map[string]any) map[string]any {
 			if url := stringFromAny(data["url"]); url != "" {
 				result["url"] = url
 				result["final_url"] = url
+			}
+			if nested, _ := data["content"].(map[string]any); nested != nil {
+				if title := firstCitationString(stringFromAny(nested["title"]), documentTitleFromProviderContent(nested)); title != "" {
+					result["title"] = title
+				}
 			}
 			if retrievedAt := stringFromAny(data["retrieved_at"]); retrievedAt != "" {
 				result["retrieved_at"] = retrievedAt

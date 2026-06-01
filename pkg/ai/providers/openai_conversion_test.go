@@ -98,6 +98,32 @@ func TestCompleteOpenAIResponsesUsesNonStreamingPayload(t *testing.T) {
 	}
 }
 
+func TestCompleteOpenAIResponsesExtractsOpenRouterWebFetchSources(t *testing.T) {
+	model := ai.Model{ID: "x-ai/grok-4.20", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter}
+	output := newAssistant(model)
+	applyCompleteOpenAIResponses(&output, model, OpenAIResponsesOptions{}, map[string]any{
+		"id":     "resp_1",
+		"status": "completed",
+		"output": []any{map[string]any{
+			"type":   "openrouter:web_fetch",
+			"id":     "st_1",
+			"status": "completed",
+			"url":    "https://example.com/fetched",
+			"title":  "Fetched Page",
+		}, map[string]any{
+			"type": "message",
+			"id":   "msg_1",
+			"content": []any{map[string]any{
+				"type": "output_text",
+				"text": "ok",
+			}},
+		}},
+	})
+	if len(output.Citations) != 1 || output.Citations[0].URL != "https://example.com/fetched" || output.Citations[0].Title != "Fetched Page" {
+		t.Fatalf("expected OpenRouter fetch source from non-stream response, got %#v", output.Citations)
+	}
+}
+
 func TestConvertCompletionsMessagesIncludesNativeAudio(t *testing.T) {
 	model := ai.Model{ID: "gpt-audio", API: ai.ApiOpenAICompletions, Provider: "openai", Input: []string{"text", "audio"}}
 	messages := ConvertCompletionsMessages(model, ai.Context{
@@ -191,6 +217,20 @@ func TestProviderCitationsFromAnthropicWebFetchResult(t *testing.T) {
 	}, ai.ProviderAnthropic, 0)
 	if len(citations) != 1 || citations[0].URL != "https://example.com/article" || citations[0].Title != "Fetched Article" || citations[0].RawType != "web_fetch_result" {
 		t.Fatalf("unexpected web fetch citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsFromOpenRouterWebFetchItem(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type":       "openrouter:web_fetch",
+		"status":     "completed",
+		"url":        "https://example.com/openrouter-fetch",
+		"title":      "OpenRouter Fetch",
+		"httpStatus": float64(200),
+		"content":    "Fetched page text",
+	}, ai.ProviderOpenRouter, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/openrouter-fetch" || citations[0].Title != "OpenRouter Fetch" || citations[0].RawType != "openrouter:web_fetch" {
+		t.Fatalf("unexpected OpenRouter web fetch citations %#v", citations)
 	}
 }
 

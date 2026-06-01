@@ -15,6 +15,10 @@ func TestIsContextOverflowFromErrorMessage(t *testing.T) {
 	if IsContextOverflow(nonOverflow) {
 		t.Fatal("expected rate limit to be excluded")
 	}
+	anthropicNoBody := ai.Message{StopReason: ai.StopReasonError, ErrorMessage: "Anthropic API error (400): 400 Bad Request (no body)"}
+	if !IsContextOverflow(anthropicNoBody) {
+		t.Fatal("expected provider-prefixed no-body 400 to be detected")
+	}
 }
 
 func TestIsContextOverflowFromUsage(t *testing.T) {

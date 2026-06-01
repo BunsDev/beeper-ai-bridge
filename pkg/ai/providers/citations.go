@@ -180,13 +180,16 @@ func providerCitationFromMap(data map[string]any, provider ai.Provider, contentI
 	}
 	rawType = firstCitationString(rawType, strings.ToLower(stringFromAny(citationData["type"])))
 	url := firstCitationString(stringFromAny(citationData["url"]), stringFromAny(citationData["uri"]))
-	if url == "" || (!strings.Contains(rawType, "citation") && rawType != "web_search_result_location" && rawType != "web_fetch_result") {
+	if url == "" || (!strings.Contains(rawType, "citation") && rawType != "web_search_result_location" && rawType != "web_fetch_result" && rawType != "openrouter:web_fetch") {
 		return ai.Citation{}, false
 	}
 	title := stringFromAny(citationData["title"])
-	if title == "" && rawType == "web_fetch_result" {
+	if title == "" && (rawType == "web_fetch_result" || rawType == "openrouter:web_fetch") {
 		if content, _ := citationData["content"].(map[string]any); content != nil {
 			title = stringFromAny(content["title"])
+			if title == "" {
+				title = documentTitleFromProviderContent(content)
+			}
 		}
 	}
 	resolvedContentIndex := contentIndex
@@ -214,6 +217,18 @@ func providerCitationFromMap(data map[string]any, provider ai.Provider, contentI
 		citation.EndIndex = &end
 	}
 	return citation, true
+}
+
+func documentTitleFromProviderContent(content map[string]any) string {
+	source, _ := content["source"].(map[string]any)
+	text := firstCitationString(stringFromAny(content["text"]), stringFromAny(content["data"]), stringFromAny(source["data"]))
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func mergeCitationMaps(first map[string]any, second map[string]any) map[string]any {

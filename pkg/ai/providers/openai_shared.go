@@ -764,26 +764,54 @@ func responsesItemID(item map[string]any) string {
 	return strings.TrimSpace(stringFromAny(item["id"]))
 }
 
-func responsesNativeWebSearchToolCall(item map[string]any, fallbackIndex int) ai.ToolCall {
+func responsesNativeToolCall(item map[string]any, fallbackIndex int, provider ai.Provider) (ai.ToolCall, bool) {
+	name, _, ok := responsesNativeToolInfo(item, provider)
+	if !ok {
+		return ai.ToolCall{}, false
+	}
 	id := responsesItemID(item)
 	if id == "" {
-		id = fmt.Sprintf("native_web_search_%d", fallbackIndex+1)
+		id = fmt.Sprintf("native_%s_%d", strings.ReplaceAll(name, "_", "-"), fallbackIndex+1)
 	}
 	return ai.ToolCall{
 		Type:      "toolCall",
 		ID:        id,
-		Name:      "web_search",
-		Arguments: responsesNativeWebSearchArguments(item),
+		Name:      name,
+		Arguments: responsesNativeToolArguments(item, name),
+	}, true
+}
+
+func responsesNativeToolInfo(item map[string]any, provider ai.Provider) (toolName string, resultProvider string, ok bool) {
+	itemType := strings.TrimSpace(stringFromAny(item["type"]))
+	switch itemType {
+	case "web_search_call":
+		return "web_search", string(provider), true
+	case "openrouter:web_search":
+		return "web_search", string(ai.ProviderOpenRouter), true
+	case "openrouter:web_fetch":
+		return "fetch", string(ai.ProviderOpenRouter), true
+	default:
+		return "", "", false
 	}
 }
 
-func responsesNativeWebSearchArguments(item map[string]any) map[string]any {
+func responsesNativeToolArguments(item map[string]any, toolName string) map[string]any {
 	args := map[string]any{}
-	addNativeWebSearchQuery(args, item)
-	if action, _ := item["action"].(map[string]any); action != nil {
-		addNativeWebSearchQuery(args, action)
-		if actionType := strings.TrimSpace(stringFromAny(action["type"])); actionType != "" {
-			args["action"] = actionType
+	switch toolName {
+	case "web_search":
+		addNativeWebSearchQuery(args, item)
+		if action, _ := item["action"].(map[string]any); action != nil {
+			addNativeWebSearchQuery(args, action)
+			if queries, ok := action["queries"].([]any); ok && len(queries) > 0 {
+				args["queries"] = queries
+			}
+			if actionType := strings.TrimSpace(stringFromAny(action["type"])); actionType != "" {
+				args["action"] = actionType
+			}
+		}
+	case "fetch":
+		if url := strings.TrimSpace(stringFromAny(item["url"])); url != "" {
+			args["url"] = url
 		}
 	}
 	return args
@@ -801,16 +829,32 @@ func addNativeWebSearchQuery(args map[string]any, data map[string]any) {
 	}
 }
 
-func responsesNativeToolResult(item map[string]any) map[string]any {
+func responsesNativeToolResult(item map[string]any, provider ai.Provider) map[string]any {
+	toolName, resultProvider, _ := responsesNativeToolInfo(item, provider)
 	status := strings.TrimSpace(stringFromAny(item["status"]))
 	result := map[string]any{
 		"state":    "complete",
 		"status":   "success",
-		"provider": "openai",
+		"provider": resultProvider,
 		"native":   true,
 	}
 	if status != "" {
 		result["providerStatus"] = status
+	}
+	for _, key := range []string{"url", "title", "httpStatus", "http_status"} {
+		if value := item[key]; value != nil {
+			result[key] = value
+		}
+	}
+	if toolName == "fetch" {
+		if url := stringFromAny(item["url"]); url != "" {
+			result["final_url"] = url
+		}
+	}
+	if args := responsesNativeToolArguments(item, toolName); len(args) > 0 {
+		for key, value := range args {
+			result[key] = value
+		}
 	}
 	if status == "failed" || status == "incomplete" {
 		result["state"] = "error"
@@ -820,8 +864,11 @@ func responsesNativeToolResult(item map[string]any) map[string]any {
 				result["reason"] = message
 			}
 		}
+		if message := strings.TrimSpace(stringFromAny(item["error"])); message != "" {
+			result["reason"] = message
+		}
 		if result["reason"] == nil {
-			result["reason"] = "Provider-native web search failed"
+			result["reason"] = "Provider-native web tool failed"
 		}
 	}
 	return result
@@ -873,8 +920,11 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
 			s.currentIndex = len(s.blocks) - 1
 			output.Content = s.blocks
-		case "web_search_call":
-			toolCall := responsesNativeWebSearchToolCall(item, len(s.nativeToolsByItemID))
+		case "web_search_call", "openrouter:web_search", "openrouter:web_fetch":
+			toolCall, ok := responsesNativeToolCall(item, len(s.nativeToolsByItemID), model.Provider)
+			if !ok {
+				return
+			}
 			s.nativeToolsByItemID[responsesItemID(item)] = toolCall
 			s.currentIndex = -1
 			output.Content = s.blocks
@@ -969,15 +1019,19 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 	case "response.output_item.done":
 		item, _ := event["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
-		if itemType == "web_search_call" {
+		if _, _, ok := responsesNativeToolInfo(item, model.Provider); ok {
 			toolCall := s.nativeToolsByItemID[responsesItemID(item)]
 			if toolCall.ID == "" {
-				toolCall = responsesNativeWebSearchToolCall(item, len(s.nativeToolsByItemID))
-			} else if args := responsesNativeWebSearchArguments(item); len(args) > 0 {
+				toolCall, _ = responsesNativeToolCall(item, len(s.nativeToolsByItemID), model.Provider)
+			} else if args := responsesNativeToolArguments(item, toolCall.Name); len(args) > 0 {
 				toolCall.Arguments = args
 			}
 			output.Content = s.blocks
-			push(ai.AssistantMessageEvent{Type: "toolresult", ToolCall: &toolCall, CustomValue: responsesNativeToolResult(item), Partial: output})
+			if citations := providerCitationsFromAny(item, model.Provider, max(0, s.currentIndex)); len(citations) > 0 {
+				output.Citations = append(output.Citations, citations...)
+				push(ai.AssistantMessageEvent{Type: "source", Partial: output})
+			}
+			push(ai.AssistantMessageEvent{Type: "toolresult", ToolCall: &toolCall, CustomValue: responsesNativeToolResult(item, model.Provider), Partial: output})
 			s.currentIndex = -1
 			return
 		}
