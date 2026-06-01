@@ -85,7 +85,8 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 		return nil, err
 	}
 	reasoning := cl.reasoningLevelForModel(model, roomConfig)
-	if _, err = cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, applyRoomModelStateOptions{ForceAvatar: created}); err != nil {
+	reasoningMode := cl.reasoningModeForModel(model, roomConfig)
+	if _, err = cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, reasoningMode, applyRoomModelStateOptions{ForceAvatar: created}); err != nil {
 		return nil, err
 	}
 	cl.refreshRoomCapabilities(ctx, portal)

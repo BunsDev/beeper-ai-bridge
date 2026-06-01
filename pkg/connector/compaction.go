@@ -71,6 +71,9 @@ func (cl *Client) compactPortalSession(ctx context.Context, portal *bridgev2.Por
 	if err := cl.validateReasoningLevel(model, roomConfig); err != nil {
 		return harness.CompactResult{}, err
 	}
+	if err := cl.validateReasoningMode(model, roomConfig); err != nil {
+		return harness.CompactResult{}, err
+	}
 	agentHarness, err := harness.NewAgentHarness(harness.AgentHarnessOptions{
 		Session:             agentSession,
 		Model:               model,

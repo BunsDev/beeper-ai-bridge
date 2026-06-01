@@ -850,6 +850,31 @@ func TestDefaultReasoningLevelClampsForMandatoryReasoningModel(t *testing.T) {
 	}
 }
 
+func TestValidateReasoningModeRejectsUnsupportedPair(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model := ai.Model{ID: "plain", Input: []string{"text"}}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "adaptive"}); err == nil {
+		t.Fatalf("expected unsupported reasoning mode to fail")
+	}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "default"}); err != nil {
+		t.Fatalf("expected default reasoning mode to be accepted: %v", err)
+	}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "bad"}); err == nil {
+		t.Fatalf("expected invalid reasoning mode to fail")
+	}
+}
+
+func TestReasoningModeDefaultsFromModelCatalog(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model := ai.Model{ID: "anthropic/claude-opus-4.8", ReasoningMode: ai.ModelReasoningModeAdaptive}
+	if got := client.reasoningModeForModel(model, RoomConfig{}); got != "adaptive" {
+		t.Fatalf("expected catalog reasoning mode, got %q", got)
+	}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "adaptive"}); err != nil {
+		t.Fatalf("expected adaptive reasoning mode to be accepted: %v", err)
+	}
+}
+
 func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *testing.T) {
 	model := normalizeProviderModel(ai.Model{
 		ID:       "minimax/minimax-m2.7",

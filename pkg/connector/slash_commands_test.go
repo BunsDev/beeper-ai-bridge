@@ -32,6 +32,8 @@ func TestParseAISlashCommand(t *testing.T) {
 		{body: "/model", name: "model", ok: true},
 		{body: " /reasoning high ", name: "reasoning", arg: "high", ok: true},
 		{body: "/reasoning", name: "reasoning", ok: true},
+		{body: "/reasoning-mode adaptive", name: "reasoning-mode", arg: "adaptive", ok: true},
+		{body: "/reasoning-mode", name: "reasoning-mode", ok: true},
 		{body: "/reasoniing low", ok: false},
 		{body: "/system-prompt be terse", name: "system-prompt", arg: "be terse", ok: true},
 		{body: "/system-prompt", name: "system-prompt", ok: true},
@@ -193,7 +195,14 @@ func TestCurrentCommandResponseText(t *testing.T) {
 	if !strings.Contains(status, "Options: `off`, `minimal`, `low`, `medium`, `high`.") {
 		t.Fatalf("reasoning status is missing supported options:\n%s", status)
 	}
-	modelStatus := canonicalTestClient().modelStatusText("beeper/gpt-5.5", "off", aiid.ProviderConfig{
+	modeStatus := reasoningModeStatusText("adaptive", "beeper/anthropic/claude-opus-4.8", ai.Model{ID: "anthropic/claude-opus-4.8", ReasoningMode: ai.ModelReasoningModeAdaptive})
+	if !strings.Contains(modeStatus, "Current reasoning mode is `adaptive` for `beeper/anthropic/claude-opus-4.8`.") {
+		t.Fatalf("reasoning mode status is missing current value:\n%s", modeStatus)
+	}
+	if !strings.Contains(modeStatus, "Options: `default`, `adaptive`.") {
+		t.Fatalf("reasoning mode status is missing supported options:\n%s", modeStatus)
+	}
+	modelStatus := canonicalTestClient().modelStatusText("beeper/gpt-5.5", "off", "", aiid.ProviderConfig{
 		ID:     "beeper",
 		Models: []ai.Model{{ID: "gpt-5.5"}, {ID: "openai/gpt-5.5"}},
 	})

@@ -303,6 +303,9 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	if err := cl.validateReasoningLevel(model, roomConfig); err != nil {
 		return nil, err
 	}
+	if err := cl.validateReasoningMode(model, roomConfig); err != nil {
+		return nil, err
+	}
 	prompt, err := msgconv.FromMatrix(ctx, cl.Main.Bridge.Matrix.BotIntent(), msg)
 	if err != nil {
 		return nil, err

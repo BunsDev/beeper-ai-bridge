@@ -139,6 +139,9 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 			if model.DefaultThinkingLevel == "" {
 				model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
 			}
+			if model.ReasoningMode == "" {
+				model.ReasoningMode = catalogModel.ReasoningMode
+			}
 		} else if len(model.Input) == 0 {
 			model.Input = catalogInputForProviderModel(model)
 		}

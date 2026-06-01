@@ -82,6 +82,14 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 			run:             runReasoningCommand,
 		},
 		{
+			name:            "reasoning-mode",
+			usage:           "/reasoning-mode [default|adaptive]",
+			description:     "Show or set the reasoning mode for this room when the selected model supports it.",
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runReasoningModeCommand,
+		},
+		{
 			name:            "system-prompt",
 			usage:           "/system-prompt [prompt|clear]",
 			description:     "Show, set, or clear this room's additional system prompt.",

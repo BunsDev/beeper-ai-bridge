@@ -180,10 +180,11 @@ func (cl *Client) validateReasoningLevel(model ai.Model, roomConfig RoomConfig) 
 }
 
 func (cl *Client) configuredReasoningMode(model ai.Model, roomConfig RoomConfig) string {
-	if roomConfig.ReasoningMode != "" && roomConfig.ReasoningMode != "default" {
-		return roomConfig.ReasoningMode
+	mode := strings.ToLower(strings.TrimSpace(roomConfig.ReasoningMode))
+	if mode != "" && mode != "default" {
+		return mode
 	}
-	return string(model.ReasoningMode)
+	return strings.ToLower(strings.TrimSpace(string(model.ReasoningMode)))
 }
 
 func (cl *Client) reasoningModeForModel(model ai.Model, roomConfig RoomConfig) string {
@@ -196,7 +197,7 @@ func (cl *Client) validateReasoningMode(model ai.Model, roomConfig RoomConfig) e
 	case "", "default":
 		return nil
 	case string(ai.ModelReasoningModeAdaptive):
-		if model.ReasoningMode == ai.ModelReasoningModeAdaptive {
+		if strings.EqualFold(string(model.ReasoningMode), string(ai.ModelReasoningModeAdaptive)) {
 			return nil
 		}
 		return fmt.Errorf("model %s does not support reasoning mode %q", model.ID, mode)

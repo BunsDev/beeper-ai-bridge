@@ -8,16 +8,23 @@ import (
 
 func TestApplyRoomModelConfigUsesProviderModelRefAndReasoning(t *testing.T) {
 	config := RoomConfig{}
-	applyRoomModelConfig(&config, map[string]any{"model": "openrouter/openai/gpt-5", "reasoning": "high"})
-	if config.ProviderID != "openrouter" || config.ModelID != "openai/gpt-5" || config.ThinkingLevel != "high" {
+	applyRoomModelConfig(&config, map[string]any{"model": "openrouter/openai/gpt-5", "reasoning": "high", "reasoning_mode": "adaptive"})
+	if config.ProviderID != "openrouter" || config.ModelID != "openai/gpt-5" || config.ThinkingLevel != "high" || config.ReasoningMode != "adaptive" {
 		t.Fatalf("unexpected model config %#v", config)
 	}
 }
 
 func TestRoomModelStateContentIncludesCatalogName(t *testing.T) {
-	content := roomModelStateContent(ai.Model{ID: "openai/gpt-5.5", Name: "GPT-5.5"}, "beeper/openai/gpt-5.5", "medium")
-	if content["model"] != "beeper/openai/gpt-5.5" || content["name"] != "GPT-5.5" || content["reasoning"] != "medium" {
+	content := roomModelStateContent(ai.Model{ID: "openai/gpt-5.5", Name: "GPT-5.5"}, "beeper/openai/gpt-5.5", "medium", "adaptive")
+	if content["model"] != "beeper/openai/gpt-5.5" || content["name"] != "GPT-5.5" || content["reasoning"] != "medium" || content["reasoning_mode"] != "adaptive" {
 		t.Fatalf("unexpected room model content %#v", content)
+	}
+}
+
+func TestRoomModelStateContentOmitsEmptyReasoningMode(t *testing.T) {
+	content := roomModelStateContent(ai.Model{ID: "openai/gpt-5.5"}, "beeper/openai/gpt-5.5", "medium", "")
+	if _, ok := content["reasoning_mode"]; ok {
+		t.Fatalf("unexpected empty reasoning mode in room model content %#v", content)
 	}
 }
 

@@ -468,7 +468,7 @@ func getAnthropicCompat(model ai.Model) resolvedAnthropicCompat {
 		SupportsLongCacheRetention:      compatBool(model, "supportsLongCacheRetention", !isFireworks),
 		SendSessionAffinityHeaders:      compatBool(model, "sendSessionAffinityHeaders", isFireworks || isCloudflareGatewayAnthropic),
 		SupportsCacheControlOnTools:     compatBool(model, "supportsCacheControlOnTools", !isFireworks),
-		ForceAdaptiveThinking:           model.ReasoningMode == "adaptive" || compatBool(model, "forceAdaptiveThinking", false),
+		ForceAdaptiveThinking:           model.ReasoningMode == ai.ModelReasoningModeAdaptive || compatBool(model, "forceAdaptiveThinking", false),
 		AllowEmptySignature:             compatBool(model, "allowEmptySignature", false),
 	}
 }
