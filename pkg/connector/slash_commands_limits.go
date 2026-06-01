@@ -132,7 +132,7 @@ func aiServicesLimitsURL(baseURL string) (string, error) {
 func formatLimitsCommandInfo(limits aiServicesLimitsResponse, now time.Time) string {
 	var text strings.Builder
 	text.WriteString("# AI limits\n\n")
-	appendLimitPercentageSection(&text, limits.Windows.LLM)
+	appendLimitPercentageSection(&text, limits.Windows.LLM, now)
 	if strings.TrimSpace(text.String()) == "# AI limits" {
 		text.WriteString("No limits reported.\n")
 	}
@@ -168,19 +168,19 @@ func appendLimitSection(text *strings.Builder, label string, windows aiServicesL
 	appendLimitSectionWithUsedFormatter(text, label, windows, now, formatLimitUsed)
 }
 
-func appendLimitPercentageSection(text *strings.Builder, windows aiServicesLimitWindows) {
+func appendLimitPercentageSection(text *strings.Builder, windows aiServicesLimitWindows, now time.Time) {
 	if emptyLimitWindows(windows) {
 		return
 	}
-	text.WriteString("| Window | Left |\n")
-	text.WriteString("| --- | ---: |\n")
-	appendLimitWindowPercentage(text, "Daily", windows.Day)
-	appendLimitWindowPercentage(text, "Weekly", windows.Week)
-	appendLimitWindowPercentage(text, "Monthly", windows.Month)
+	text.WriteString("| Window | Left | Reset |\n")
+	text.WriteString("| --- | ---: | --- |\n")
+	appendLimitWindowPercentage(text, "Daily", windows.Day, now)
+	appendLimitWindowPercentage(text, "Weekly", windows.Week, now)
+	appendLimitWindowPercentage(text, "Monthly", windows.Month, now)
 }
 
-func appendLimitWindowPercentage(text *strings.Builder, windowName string, window aiServicesLimitWindow) {
-	fmt.Fprintf(text, "| %s | %s |\n", windowName, formatLimitLeft(window))
+func appendLimitWindowPercentage(text *strings.Builder, windowName string, window aiServicesLimitWindow, now time.Time) {
+	fmt.Fprintf(text, "| %s | %s | %s |\n", windowName, formatLimitLeft(window), formatLimitReset(window, now))
 }
 
 func appendLimitSectionIfReported(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {

@@ -619,16 +619,16 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 	}}, now)
 	for _, want := range []string{
 		"# AI limits",
-		"| Window | Left |",
-		"| Daily | `75%` |",
-		"| Weekly | Unlimited |",
-		"| Monthly | **Out** |",
+		"| Window | Left | Reset |",
+		"| Daily | `75%` | in 1 day 2 hours 3 minutes |",
+		"| Weekly | Unlimited | in 1 day 2 hours 3 minutes |",
+		"| Monthly | **Out** | in 1 day 2 hours 3 minutes |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"## Models", "## Web Search", "## Transcription", "## Audio Generation", "Used", "Reset", "250 / 1,000", "2030-01-01T00:00:00Z"} {
+	for _, notWant := range []string{"## Models", "## Web Search", "## Transcription", "## Audio Generation", "Used", "250 / 1,000", "2030-01-01T00:00:00Z"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
 		}
@@ -646,15 +646,15 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 	}}, now)
 	for _, want := range []string{
 		"# AI limits",
-		"| Daily | `75%` |",
-		"| Weekly | `100%` |",
-		"| Monthly | **Out** |",
+		"| Daily | `75%` | in 1 day 1 hour 3 minutes |",
+		"| Weekly | `100%` | in 7 days |",
+		"| Monthly | **Out** | in 31 days |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"## Models", "## Web Search", "No limits reported.", "Everything resets", "Not reported", "in 7 days"} {
+	for _, notWant := range []string{"## Models", "## Web Search", "No limits reported.", "Everything resets", "Not reported"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed %q:\n%s", notWant, text)
 		}
