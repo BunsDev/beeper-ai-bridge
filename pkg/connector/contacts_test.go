@@ -221,6 +221,9 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	if supported, ok := models[0].Compat["tools_supported"].(bool); !ok || !supported {
 		t.Fatalf("expected AI Services tool support metadata, got %#v", models[0].Compat)
 	}
+	if supported, ok := models[1].Compat["tools_supported"].(bool); !ok || supported {
+		t.Fatalf("expected missing AI Services tools capability to disable agent tools, got %#v", models[1].Compat)
+	}
 	if models[1].DefaultThinkingLevel != ai.ModelThinkingLevelLow || roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelOff) {
 		t.Fatalf("expected MiniMax reasoning to default to low and reject off, got %#v", models[1])
 	}
