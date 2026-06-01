@@ -52,8 +52,8 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 	}
 	if provider.ID == aiid.DefaultProvider && provider.BaseURL != "" {
 		if token, err := cl.defaultProviderBearerToken(); err == nil {
-			if endpoint, err := aiServicesExaContentsURL(provider.BaseURL); err == nil {
-				fetch.ExaEndpoint = endpoint
+			if endpoint, err := aiServicesToolURL(provider.BaseURL, "fetch"); err == nil {
+				fetch.ToolEndpoint = endpoint
 				fetch.APIKey = token
 			}
 		}
@@ -104,7 +104,7 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 	if err != nil {
 		return chattools.SearchOptions{}
 	}
-	endpoint, err := aiServicesExaSearchURL(provider.BaseURL)
+	endpoint, err := aiServicesToolURL(provider.BaseURL, "web_search")
 	if err != nil {
 		return chattools.SearchOptions{}
 	}
@@ -116,20 +116,12 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 	}
 }
 
-func aiServicesExaSearchURL(proxyBaseURL string) (string, error) {
-	return aiServicesExaURL(proxyBaseURL, "search")
-}
-
-func aiServicesExaContentsURL(proxyBaseURL string) (string, error) {
-	return aiServicesExaURL(proxyBaseURL, "contents")
-}
-
-func aiServicesExaURL(proxyBaseURL string, route string) (string, error) {
+func aiServicesToolURL(proxyBaseURL string, tool string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/exa/v1/" + route
+	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/tools/" + tool
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil

@@ -33,3 +33,13 @@ func TestModelSupportsAgentToolsDefaultsToTrue(t *testing.T) {
 		t.Fatal("models without catalog tool metadata should keep default tool behavior")
 	}
 }
+
+func TestAIServicesToolURL(t *testing.T) {
+	got, err := aiServicesToolURL("https://ai-services.example/dev/proxy/openai/v1/responses", "web_search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://ai-services.example/dev/tools/web_search"; got != want {
+		t.Fatalf("unexpected tool URL %q, want %q", got, want)
+	}
+}

@@ -64,7 +64,7 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 	if options.MaxChars == 0 {
 		options.MaxChars = 20000
 	}
-	if options.ExaEndpoint != "" && !shouldDirectFetch(parsed) {
+	if options.ToolEndpoint != "" && !shouldDirectFetch(parsed) {
 		result, err := FetchContents(ctx, parsed.String(), options)
 		if err == nil {
 			return result, nil
@@ -73,10 +73,10 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 			Err(err).
 			Str("action", "ai_tool_http").
 			Str("tool", "fetch").
-			Str("fetch_method", "exa").
+			Str("fetch_method", "web_tool").
 			Str("target_url", parsed.Redacted()).
 			Str("target_host", parsed.Host).
-			Msg("Falling back to direct fetch after Exa fetch failed")
+			Msg("Falling back to direct fetch after web tool fetch failed")
 	}
 	return fetchDirect(ctx, rawURL, parsed, options)
 }
@@ -138,12 +138,12 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 }
 
 func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
-	if options.ExaEndpoint == "" {
+	if options.ToolEndpoint == "" {
 		return FetchResult{}, errors.New("fetch contents is not configured")
 	}
 	textMaxChars := options.MaxChars
-	if textMaxChars <= 0 || textMaxChars > 10000 {
-		textMaxChars = 10000
+	if textMaxChars <= 0 || textMaxChars > 50000 {
+		textMaxChars = 20000
 	}
 	client := options.Client
 	if client == nil {
@@ -153,21 +153,18 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	if err != nil || target == nil || target.Scheme == "" || target.Host == "" {
 		return FetchResult{}, fmt.Errorf("invalid URL")
 	}
-	log := toolHTTPLog(ctx, "fetch", http.MethodPost, options.ExaEndpoint).
+	log := toolHTTPLog(ctx, "fetch", http.MethodPost, options.ToolEndpoint).
 		With().
-		Str("fetch_method", "exa").
+		Str("fetch_method", "web_tool").
 		Str("target_url", target.Redacted()).
 		Str("target_host", target.Host).
 		Logger()
 	ctx = log.WithContext(ctx)
 	payload, _ := json.Marshal(map[string]any{
-		"urls": []string{rawURL},
-		"text": map[string]any{
-			"maxCharacters": textMaxChars,
-			"verbosity":     "standard",
-		},
+		"url":       rawURL,
+		"max_chars": textMaxChars,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.ExaEndpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.ToolEndpoint, bytes.NewReader(payload))
 	if err != nil {
 		return FetchResult{}, err
 	}
@@ -193,57 +190,34 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 		return FetchResult{}, err
 	}
 	result := FetchResult{
-		URL:         rawURL,
-		FinalURL:    rawURL,
-		Status:      200,
-		Truncated:   false,
-		RequestID:   body.RequestID,
-		Context:     body.Context,
-		FetchMethod: "exa",
+		URL:            firstNonEmpty(body.URL, rawURL),
+		FinalURL:       firstNonEmpty(body.FinalURL, body.URL, rawURL),
+		Status:         200,
+		Title:          body.Title,
+		Description:    body.Description,
+		SiteName:       body.SiteName,
+		Text:           firstNonEmpty(body.Markdown, body.Text),
+		Markdown:       firstNonEmpty(body.Markdown, body.Text),
+		Truncated:      body.Truncated,
+		RequestID:      firstNonEmpty(body.RequestID, body.RequestIDSnake),
+		RequestIDSnake: firstNonEmpty(body.RequestIDSnake, body.RequestID),
+		Published:      firstNonEmpty(body.Published, body.PublishedAt, body.PublishedDate),
+		Author:         body.Author,
+		Image:          firstNonEmpty(body.Image, body.ImageURL),
+		ImageURL:       firstNonEmpty(body.ImageURL, body.Image),
+		Favicon:        firstNonEmpty(body.Favicon, body.FaviconURL),
+		FaviconURL:     firstNonEmpty(body.FaviconURL, body.Favicon),
+		Extras:         body.Metadata,
+		FetchMethod:    "web_tool",
 	}
-	if len(body.Statuses) > 0 {
-		status := body.Statuses[0]
-		result.Source = status.Source
-		if status.Status == "error" {
-			result.Status = status.Error.HTTPStatusCode
-			if result.Status == 0 {
-				result.Status = 502
-			}
-			result.Error = status.Error.Tag
-			log.Error().
-				Int("status_code", result.Status).
-				Str("request_id", body.RequestID).
-				Str("error_tag", status.Error.Tag).
-				Msg("AI tool fetch provider returned item error")
-			return result, fmt.Errorf("fetch contents failed: %s", firstNonEmpty(status.Error.Tag, status.Status))
-		}
-	}
-	if len(body.Results) == 0 {
-		return result, nil
-	}
-	item := body.Results[0]
-	result.FinalURL = firstNonEmpty(item.URL, rawURL)
-	result.ID = item.ID
-	result.Title = item.Title
-	result.Description = item.Description
-	result.Text = item.Text
-	result.Published = firstNonEmpty(item.Published, item.PublishedDate)
-	result.Author = item.Author
-	result.Image = item.Image
-	result.Favicon = item.Favicon
-	result.Highlights = item.Highlights
-	result.HighlightScores = item.HighlightScores
-	result.Summary = item.Summary
-	result.Subpages = item.Subpages
-	result.Entities = item.Entities
-	result.Extras = item.Extras
 	if len([]rune(result.Text)) > textMaxChars {
 		runes := []rune(result.Text)
 		result.Text = string(runes[:textMaxChars])
+		result.Markdown = result.Text
 		result.Truncated = true
 	}
 	log.Debug().
-		Str("request_id", body.RequestID).
+		Str("request_id", result.RequestID).
 		Bool("truncated", result.Truncated).
 		Msg("Parsed AI tool fetch result")
 	return result, nil
@@ -285,42 +259,25 @@ func shouldDirectFetch(parsed *url.URL) bool {
 }
 
 type contentsResponse struct {
-	RequestID   string                `json:"requestId"`
-	Context     string                `json:"context"`
-	CostDollars map[string]any        `json:"costDollars"`
-	Results     []contentsResultItem  `json:"results"`
-	Statuses    []contentsStatusEntry `json:"statuses"`
-}
-
-type contentsResultItem struct {
-	ID              string          `json:"id"`
-	Title           string          `json:"title"`
-	Description     string          `json:"description"`
-	URL             string          `json:"url"`
-	Text            string          `json:"text"`
-	Highlights      []string        `json:"highlights"`
-	HighlightScores []float64       `json:"highlightScores"`
-	Summary         any             `json:"summary"`
-	Published       string          `json:"published"`
-	PublishedDate   string          `json:"publishedDate"`
-	Author          string          `json:"author"`
-	Image           string          `json:"image"`
-	Favicon         string          `json:"favicon"`
-	Subpages        []SearchSubpage `json:"subpages"`
-	Entities        []any           `json:"entities"`
-	Extras          map[string]any  `json:"extras"`
-}
-
-type contentsStatusEntry struct {
-	ID     string              `json:"id"`
-	Status string              `json:"status"`
-	Source string              `json:"source"`
-	Error  contentsStatusError `json:"error"`
-}
-
-type contentsStatusError struct {
-	Tag            string `json:"tag"`
-	HTTPStatusCode int    `json:"httpStatusCode"`
+	URL            string         `json:"url"`
+	FinalURL       string         `json:"final_url"`
+	Title          string         `json:"title"`
+	Description    string         `json:"description"`
+	SiteName       string         `json:"site_name"`
+	Published      string         `json:"published"`
+	PublishedAt    string         `json:"published_at"`
+	PublishedDate  string         `json:"publishedDate"`
+	Author         string         `json:"author"`
+	Image          string         `json:"image"`
+	ImageURL       string         `json:"image_url"`
+	Favicon        string         `json:"favicon"`
+	FaviconURL     string         `json:"favicon_url"`
+	Text           string         `json:"text"`
+	Markdown       string         `json:"markdown"`
+	Truncated      bool           `json:"truncated"`
+	Metadata       map[string]any `json:"metadata"`
+	RequestID      string         `json:"requestId"`
+	RequestIDSnake string         `json:"request_id"`
 }
 
 func toolHTTPLog(ctx context.Context, tool string, method string, rawURL string) zerolog.Logger {

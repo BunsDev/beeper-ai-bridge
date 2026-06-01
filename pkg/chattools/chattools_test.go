@@ -131,7 +131,7 @@ func TestFetch(t *testing.T) {
 	}
 }
 
-func TestFetchUsesDirectFetchForAssetsWhenExaConfigured(t *testing.T) {
+func TestFetchUsesDirectFetchForAssetsWhenToolEndpointConfigured(t *testing.T) {
 	exaHit := false
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host == "exa.test" {
@@ -141,7 +141,7 @@ func TestFetchUsesDirectFetchForAssetsWhenExaConfigured(t *testing.T) {
 		return testResponse(req, http.StatusOK, "text/markdown", "# Title\n\nBody"), nil
 	})}
 
-	result, err := Fetch(context.Background(), "https://example.com/doc.md", FetchOptions{Timeout: time.Second, ExaEndpoint: "https://exa.test/contents", Client: client, MaxBytes: 1024, MaxChars: 100})
+	result, err := Fetch(context.Background(), "https://example.com/doc.md", FetchOptions{Timeout: time.Second, ToolEndpoint: "https://exa.test/contents", Client: client, MaxBytes: 1024, MaxChars: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestFetchUsesDirectFetchForAssetsWhenExaConfigured(t *testing.T) {
 	}
 }
 
-func TestFetchUsesExaContentsForPages(t *testing.T) {
+func TestFetchUsesToolEndpointForPages(t *testing.T) {
 	exa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer key" {
 			t.Fatalf("unexpected request method/header")
@@ -159,34 +159,29 @@ func TestFetchUsesExaContentsForPages(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		urls, ok := payload["urls"].([]any)
-		if !ok || len(urls) != 1 || urls[0] != "https://example.com/page" {
-			t.Fatalf("unexpected contents payload %#v", payload)
+		if payload["url"] != "https://example.com/page" || payload["max_chars"] != float64(100) {
+			t.Fatalf("unexpected fetch payload %#v", payload)
 		}
-		text, ok := payload["text"].(map[string]any)
-		if !ok || text["maxCharacters"] != float64(100) || text["verbosity"] != "standard" {
-			t.Fatalf("unexpected text payload %#v", payload)
-		}
-		_, _ = w.Write([]byte(`{"requestId":"req_1","costDollars":{"total":0.001},"statuses":[{"id":"https://example.com/page","status":"success","source":"crawled"}],"results":[{"id":"doc_1","title":"Page","description":"Page description","url":"https://example.com/page","text":"Extracted page text","publishedDate":"2026-01-01","author":"A","favicon":"https://example.com/favicon.ico","highlights":["hit"],"summary":"sum","extras":{"links":["https://example.com/next"]}}]}`))
+		_, _ = w.Write([]byte(`{"request_id":"req_1","title":"Page","description":"Page description","url":"https://example.com/page","final_url":"https://example.com/page","markdown":"Extracted page text","published_at":"2026-01-01","author":"A","favicon_url":"https://example.com/favicon.ico","metadata":{"links":["https://example.com/next"]}}`))
 	}))
 	defer exa.Close()
 
-	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ExaEndpoint: exa.URL, APIKey: "key", MaxChars: 100})
+	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ToolEndpoint: exa.URL, APIKey: "key", MaxChars: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.FetchMethod != "exa" || result.RequestID != "req_1" || result.Source != "crawled" || result.ID != "doc_1" || result.Title != "Page" || result.Text != "Extracted page text" {
-		t.Fatalf("unexpected Exa fetch result %#v", result)
+	if result.FetchMethod != "web_tool" || result.RequestID != "req_1" || result.Title != "Page" || result.Text != "Extracted page text" || result.Markdown != "Extracted page text" {
+		t.Fatalf("unexpected fetch result %#v", result)
 	}
-	if result.Description != "Page description" || result.Favicon != "https://example.com/favicon.ico" || result.Published != "2026-01-01" || result.Author != "A" || len(result.Highlights) != 1 || result.Summary != "sum" || result.Extras["links"] == nil {
-		t.Fatalf("missing Exa fetch metadata %#v", result)
+	if result.Description != "Page description" || result.Favicon != "https://example.com/favicon.ico" || result.FaviconURL != "https://example.com/favicon.ico" || result.Published != "2026-01-01" || result.Author != "A" || result.Extras["links"] == nil {
+		t.Fatalf("missing fetch metadata %#v", result)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(raw), "costDollars") || strings.Contains(string(raw), "fetch_method") {
-		t.Fatalf("Exa internal metadata leaked into fetch JSON: %s", string(raw))
+		t.Fatalf("internal metadata leaked into fetch JSON: %s", string(raw))
 	}
 }
 
@@ -209,7 +204,7 @@ func TestFetchDirectExtractsHTMLSourceMetadata(t *testing.T) {
 	}
 }
 
-func TestFetchFallsBackToDirectWhenExaFails(t *testing.T) {
+func TestFetchFallsBackToDirectWhenToolEndpointFails(t *testing.T) {
 	exaHit := false
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host == "exa.test" {
@@ -219,7 +214,7 @@ func TestFetchFallsBackToDirectWhenExaFails(t *testing.T) {
 		return testResponse(req, http.StatusOK, "text/html", "<html><title>Fallback</title><body>Direct page</body></html>"), nil
 	})}
 
-	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ExaEndpoint: "https://exa.test/contents", Client: client, MaxBytes: 1024, MaxChars: 100})
+	result, err := Fetch(context.Background(), "https://example.com/page", FetchOptions{Timeout: time.Second, ToolEndpoint: "https://exa.test/contents", Client: client, MaxBytes: 1024, MaxChars: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,13 +238,10 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload["query"] != "query" || payload["numResults"] != float64(5) {
+		if payload["query"] != "query" || payload["limit"] != float64(5) {
 			t.Fatalf("unexpected search payload %#v", payload)
 		}
-		if payload["useAutoprompt"] != false {
-			t.Fatalf("unexpected search payload %#v", payload)
-		}
-		_, _ = w.Write([]byte(`{"requestId":"req_1","resolvedSearchType":"auto","costDollars":{"total":0.001},"output":{"content":"synth"},"results":[{"id":"doc_1","title":"One","url":"https://example.com","text":"ok","highlights":["hit"],"highlightScores":[0.5],"summary":"sum","publishedDate":"2026-01-01","siteName":"Example","author":"A","image":"https://example.com/image.png","favicon":"https://example.com/favicon.ico","subpages":[{"id":"sub_1","title":"Sub","url":"https://example.com/sub","text":"sub text","highlights":["sub hit"],"highlightScores":[0.4],"summary":"sub sum","publishedDate":"2026-01-02","author":"Sub A","image":"https://example.com/sub.png","favicon":"https://example.com/sub.ico","extras":{"links":["https://example.com/sub-link"]}}],"entities":[{"type":"company"}],"extras":{"links":["https://example.com/link"]}}]}`))
+		_, _ = w.Write([]byte(`{"request_id":"req_1","search_context_size":"medium","results":[{"id":"doc_1","title":"One","url":"https://example.com","text":"ok","highlights":["hit"],"summary":"sum","published_at":"2026-01-01","site_name":"Example","author":"A","image_url":"https://example.com/image.png","favicon_url":"https://example.com/favicon.ico","metadata":{"links":["https://example.com/link"]}}]}`))
 	}))
 	defer server.Close()
 
@@ -257,56 +249,45 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Query != "query" || result.RequestID != "req_1" || result.ResolvedSearchType != "auto" || result.Output["content"] != "synth" {
-		t.Fatalf("missing top-level Exa metadata: %#v", result)
+	if result.Query != "query" || result.RequestID != "req_1" || result.SearchContextSize != "medium" {
+		t.Fatalf("missing top-level search metadata: %#v", result)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(raw), "costDollars") {
-		t.Fatalf("Exa cost metadata leaked into search JSON: %s", string(raw))
+		t.Fatalf("provider cost metadata leaked into search JSON: %s", string(raw))
 	}
 	if len(result.Results) != 1 || result.Results[0].ID != "doc_1" || result.Results[0].Title != "One" || result.Results[0].Snippet != "hit" || result.Results[0].Text != "ok" {
 		t.Fatalf("unexpected search result %#v", result)
 	}
-	if result.Results[0].Published != "2026-01-01" || result.Results[0].SiteName != "Example" || result.Results[0].Author != "A" {
-		t.Fatalf("missing Exa metadata: %#v", result.Results[0])
+	if result.Results[0].Published != "2026-01-01" || result.Results[0].PublishedAt != "2026-01-01" || result.Results[0].SiteName != "Example" || result.Results[0].SiteNameSnake != "Example" || result.Results[0].Author != "A" {
+		t.Fatalf("missing search metadata: %#v", result.Results[0])
 	}
-	if len(result.Results[0].Highlights) != 1 || result.Results[0].HighlightScores[0] != 0.5 || result.Results[0].Summary != "sum" {
-		t.Fatalf("missing Exa content fields: %#v", result.Results[0])
+	if len(result.Results[0].Highlights) != 1 || result.Results[0].Summary != "sum" || result.Results[0].ImageURL == "" || result.Results[0].FaviconURL == "" {
+		t.Fatalf("missing search content fields: %#v", result.Results[0])
 	}
-	if len(result.Results[0].Subpages) != 1 || len(result.Results[0].Entities) != 1 || result.Results[0].Extras["links"] == nil {
-		t.Fatalf("missing Exa nested fields: %#v", result.Results[0])
-	}
-	subpage := result.Results[0].Subpages[0]
-	if subpage.Text != "sub text" || subpage.Summary != "sub sum" || len(subpage.Highlights) != 1 || subpage.HighlightScores[0] != 0.4 || subpage.Image == "" || subpage.Favicon == "" || subpage.Extras["links"] == nil {
-		t.Fatalf("missing Exa subpage content fields: %#v", subpage)
+	if result.Results[0].Metadata["links"] == nil {
+		t.Fatalf("missing search metadata fields: %#v", result.Results[0])
 	}
 }
 
-func TestSearchMapsToolOptionsToExaPayload(t *testing.T) {
+func TestSearchMapsToolOptionsToPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload["type"] != "deep" || payload["category"] != "news" || payload["userLocation"] != "US" || payload["systemPrompt"] != "prefer official sources" {
+		if payload["category"] != "news" || payload["search_context_size"] != "high" {
 			t.Fatalf("missing scalar options %#v", payload)
 		}
-		if domains, ok := payload["includeDomains"].([]any); !ok || len(domains) != 1 || domains[0] != "example.com" {
-			t.Fatalf("missing includeDomains %#v", payload)
+		if domains, ok := payload["allowed_domains"].([]any); !ok || len(domains) != 1 || domains[0] != "example.com" {
+			t.Fatalf("missing allowed_domains %#v", payload)
 		}
-		if moderation, ok := payload["moderation"].(bool); !ok || !moderation {
-			t.Fatalf("missing moderation %#v", payload)
-		}
-		contents, ok := payload["contents"].(map[string]any)
-		if !ok || contents["highlights"] != true {
-			t.Fatalf("missing contents %#v", payload)
-		}
-		outputSchema, ok := payload["outputSchema"].(map[string]any)
-		if !ok || outputSchema["type"] != "text" {
-			t.Fatalf("missing outputSchema %#v", payload)
+		freshness, ok := payload["freshness"].(map[string]any)
+		if !ok || freshness["days"] != float64(7) || freshness["published_before"] != "2026-06-01T00:00:00Z" {
+			t.Fatalf("missing freshness %#v", payload)
 		}
 		_, _ = w.Write([]byte(`{"results":[]}`))
 	}))
@@ -314,16 +295,12 @@ func TestSearchMapsToolOptionsToExaPayload(t *testing.T) {
 
 	tool := WebSearchTool(SearchOptions{Enabled: true, Endpoint: server.URL, Timeout: time.Second})
 	_, err := tool.Execute(context.Background(), "call", map[string]any{
-		"query":          "query",
-		"limit":          3,
-		"includeDomains": []any{"example.com"},
-		"type":           "deep",
-		"category":       "news",
-		"userLocation":   "US",
-		"moderation":     true,
-		"contents":       map[string]any{"highlights": true},
-		"outputSchema":   map[string]any{"type": "text"},
-		"systemPrompt":   "prefer official sources",
+		"query":               "query",
+		"limit":               3,
+		"allowed_domains":     []any{"example.com"},
+		"search_context_size": "high",
+		"category":            "news",
+		"freshness":           map[string]any{"days": float64(7), "published_before": "2026-06-01T00:00:00Z"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

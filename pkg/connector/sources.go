@@ -108,7 +108,7 @@ func (c *sourceCollector) addSearchResultSource(output toolOutputEvent, query st
 		SiteName:    sourceString(item, "siteName", "site_name", "source"),
 		FaviconURL:  sourceFaviconString(item),
 		ImageURL:    sourceImageString(item),
-		PublishedAt: sourceString(item, "published", "publishedAt", "publishedDate", "datePublished", "date"),
+		PublishedAt: sourceString(item, "published", "publishedAt", "published_at", "publishedDate", "datePublished", "date"),
 		Priority:    priority,
 		Appearance: sourceAppearance{
 			Kind:       "web_search",
@@ -125,7 +125,7 @@ func (c *sourceCollector) addSearchResultSource(output toolOutputEvent, query st
 		source.SiteName = firstSourceString(source.SiteName, sourceString(nested, "siteName", "site_name", "ogSiteName"))
 		source.FaviconURL = firstSourceString(source.FaviconURL, sourceFaviconString(nested))
 		source.ImageURL = firstSourceString(source.ImageURL, sourceImageString(nested))
-		source.PublishedAt = firstSourceString(source.PublishedAt, sourceString(nested, "published", "publishedAt", "publishedDate", "datePublished", "date"))
+		source.PublishedAt = firstSourceString(source.PublishedAt, sourceString(nested, "published", "publishedAt", "published_at", "publishedDate", "datePublished", "date"))
 	}
 	return c.add(source)
 }
@@ -167,7 +167,7 @@ func (c *sourceCollector) addFetchOutput(output toolOutputEvent, result any) []m
 		SiteName:    sourceString(data, "siteName", "site_name", "source"),
 		FaviconURL:  sourceFaviconString(data),
 		ImageURL:    sourceString(data, "image", "imageUrl", "image_url"),
-		PublishedAt: sourceString(data, "published", "publishedAt", "publishedDate", "datePublished", "date"),
+		PublishedAt: sourceString(data, "published", "publishedAt", "published_at", "publishedDate", "datePublished", "date"),
 		Priority:    100,
 		Appearance: sourceAppearance{
 			Kind:       "fetch",
