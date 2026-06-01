@@ -448,6 +448,28 @@ func TestFinalBeeperAIMessagePreservesStepsAsThinking(t *testing.T) {
 	}
 }
 
+func TestFinalBeeperAIMessagePreservesActivitySnapshots(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Events = append(run.Events,
+		builder.ActivitySnapshot(run.MessageID, "web_search", map[string]any{"title": "Searching web", "text": "Looking up docs"}, nil),
+		builder.ActivityDelta(run.MessageID, "web_search", []any{map[string]any{"op": "replace", "path": "/text", "value": "Found docs"}}),
+		builder.ActivityDelta(run.MessageID, "web_search", []any{map[string]any{"op": "replace", "path": "/status", "value": "completed"}}),
+	)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			got = append(got, fmt.Sprintf("thinking:%s:%s:%s", part["title"], part["content"], part["state"]))
+		}
+	}
+	want := []string{"thinking:Searching web:Found docs:done"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage activity mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
 func TestPackRunPreservesLargeCustomEvent(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
