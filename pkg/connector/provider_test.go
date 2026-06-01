@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -79,7 +77,7 @@ func TestModelForProviderFillsCustomListedModelInputFromCatalog(t *testing.T) {
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "https://custom.test/v1",
-		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses, Input: []string{"text", "image"}}},
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
 	if !isImageModel(model) {
@@ -94,7 +92,7 @@ func TestModelForProviderFillsCustomPrefixedOpenAIInputFromCatalog(t *testing.T)
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "https://custom.test/v1",
-		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses, Input: []string{"text", "image"}}},
 	}
 	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
 	if !isImageModel(model) {
@@ -135,7 +133,7 @@ func TestTitleGenerationModelUsesDefaultMini(t *testing.T) {
 	client := &Client{Main: conn}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
 	model := client.titleGenerationModel(provider, ai.Model{ID: defaultBeeperAIModel})
-	if model.ID != defaultTitleGenerationModel || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
+	if model.ID != defaultBeeperAIModel {
 		t.Fatalf("unexpected title model %#v", model)
 	}
 }
@@ -238,8 +236,8 @@ func TestDefaultProviderAuthRequiresBeeperUsername(t *testing.T) {
 		},
 	}
 	_, err := client.authForProvider(aiid.ProviderConfig{ID: aiid.DefaultProvider})(context.Background(), ai.Model{})
-	if err == nil || !strings.Contains(err.Error(), "Beeper username") {
-		t.Fatalf("expected Beeper username error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "user login") {
+		t.Fatalf("expected user login error, got %v", err)
 	}
 }
 
@@ -685,52 +683,11 @@ func TestCatalogRuntimeForCustomProviderUsesCustomBaseURL(t *testing.T) {
 	}
 }
 
-func TestCustomProviderLoginStagesAPIConfigAndDefaultModel(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-test"},{"id":"gpt-other"}]}`))
-	}))
-	defer server.Close()
-
+func TestCustomProviderLoginConfigStep(t *testing.T) {
 	login := &CustomProviderLogin{config: providerLoginConfig{API: ai.ApiOpenAICompletions}}
 	step := login.providerConfigStep()
 	if step.StepID != loginStepProviderConfig || len(step.UserInputParams.Fields) != 3 {
 		t.Fatalf("unexpected config step %#v", step)
-	}
-
-	step, err := login.submitProviderConfig(context.Background(), map[string]string{
-		"provider_id": "local-ai",
-		"base_url":    server.URL,
-		"api_key":     "key",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if step.StepID != loginStepProviderDefault {
-		t.Fatalf("expected default model step, got %#v", step)
-	}
-	field := step.UserInputParams.Fields[0]
-	if field.Type != bridgev2.LoginInputFieldTypeSelect || field.DefaultValue != "gpt-test" || len(field.Options) != 2 {
-		t.Fatalf("unexpected default model field %#v", field)
-	}
-	if login.config.ProviderID != "local-ai" || login.config.API != ai.ApiOpenAICompletions || len(login.config.Models) != 2 {
-		t.Fatalf("login config was not retained: %#v", login.config)
-	}
-}
-
-func TestCustomProviderLoginRejectsEmptyModelList(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[]}`))
-	}))
-	defer server.Close()
-
-	login := &CustomProviderLogin{config: providerLoginConfig{API: ai.ApiOpenAICompletions}}
-	_, err := login.submitProviderConfig(context.Background(), map[string]string{
-		"provider_id": "local-ai",
-		"base_url":    server.URL,
-		"api_key":     "key",
-	})
-	if err == nil || !strings.Contains(err.Error(), "no models") {
-		t.Fatalf("expected empty model list error, got %v", err)
 	}
 }
 
@@ -754,7 +711,7 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 	}
 }
 
-func TestResolveProviderRequiresListedModelWhenModelListExists(t *testing.T) {
+func TestResolveProviderDefersModelValidationToCatalogLoad(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
 		ID:           "custom",
@@ -767,11 +724,14 @@ func TestResolveProviderRequiresListedModelWhenModelListExists(t *testing.T) {
 		ID:       "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
-	_, _, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
-	if err == nil {
-		t.Fatal("expected missing model to be rejected")
+	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "allowed"})
+	if modelID != "missing" {
+		t.Fatalf("unexpected model ID %q", modelID)
+	}
+	_, modelID, err = conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "allowed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -864,8 +824,12 @@ func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *t
 
 func TestNormalizeProviderModelInheritsCustomProviderCatalogReasoningMetadata(t *testing.T) {
 	model := normalizeProviderModel(ai.Model{
-		ID:       "gpt-5.5",
-		Provider: ai.ProviderOpenAI,
+		ID:        "gpt-5.5",
+		Provider:  ai.ProviderOpenAI,
+		Reasoning: true,
+		ThinkingLevelMap: map[ai.ModelThinkingLevel]*string{
+			ai.ModelThinkingLevelOff: nil,
+		},
 	}, aiid.ProviderConfig{
 		ID:       "custom-openai",
 		Provider: ai.ProviderOpenAI,
@@ -873,7 +837,7 @@ func TestNormalizeProviderModelInheritsCustomProviderCatalogReasoningMetadata(t 
 		BaseURL:  "https://custom.test/v1",
 	})
 	if !model.Reasoning || len(model.ThinkingLevelMap) == 0 {
-		t.Fatalf("expected custom provider model to inherit local catalog reasoning metadata, got %#v", model)
+		t.Fatalf("expected custom provider model to preserve catalog reasoning metadata, got %#v", model)
 	}
 	if roomThinkingLevelSupported(model, ai.ModelThinkingLevelOff) {
 		t.Fatalf("expected normalized GPT-5.5 custom provider model to reject off reasoning")

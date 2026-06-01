@@ -402,20 +402,18 @@ func TestResolveModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
 	}
 }
 
-func TestResolveModelForProviderAcceptsArbitraryCustomModelID(t *testing.T) {
+func TestResolveModelForProviderRejectsUnlistedCustomModelID(t *testing.T) {
 	provider := aiid.ProviderConfig{
 		ID:       "custom-openai",
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
 		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
 	}
-	model, ok := resolveModelForProvider(provider, "custom-openai/openai/gpt-5.5")
-	if !ok || model.ID != "openai/gpt-5.5" {
-		t.Fatalf("expected arbitrary model ID to resolve, got ok=%v model=%#v", ok, model)
+	if model, ok := resolveModelForProvider(provider, "custom-openai/openai/gpt-5.5"); ok {
+		t.Fatalf("expected unlisted model ID to be rejected, got %#v", model)
 	}
-	model, ok = resolveModelForProvider(provider, "whateveristyped")
-	if !ok || model.ID != "whateveristyped" {
-		t.Fatalf("expected bare arbitrary model ID to resolve, got ok=%v model=%#v", ok, model)
+	if model, ok := resolveModelForProvider(provider, "whateveristyped"); ok {
+		t.Fatalf("expected arbitrary model ID to be rejected, got %#v", model)
 	}
 }
 
@@ -515,7 +513,7 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 	}
 }
 
-func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
+func TestSearchUsersRejectsArbitraryModelContact(t *testing.T) {
 	provider := aiid.ProviderConfig{
 		ID:          "local",
 		DisplayName: "Local",
@@ -531,12 +529,8 @@ func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected arbitrary model contact, got %#v", results)
-	}
-	name := results[0].UserInfo.Name
-	if name == nil || *name != "Local: whateveristyped" {
-		t.Fatalf("unexpected arbitrary model contact name %#v", results[0].UserInfo)
+	if len(results) != 0 {
+		t.Fatalf("expected no arbitrary model contact, got %#v", results)
 	}
 }
 

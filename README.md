@@ -317,9 +317,9 @@ Provider-specific behaviors worth knowing live in `pkg/ai/providers`: OpenAI *Co
 
 ## The model catalog
 
-The Beeper AI model catalog is owned by ai-services. The bridge loads `/models?feature=bridge:ai`, applies each model's runtime metadata, and fails the default Beeper provider if ai-services does not return a catalog. There is no bridge-generated fallback catalog.
+The model catalog is owned by ai-services. The bridge loads `/models?feature=bridge:ai`, applies each model's runtime metadata, and fails provider resolution if ai-services does not return a catalog. There is no bridge-generated fallback catalog.
 
-Custom providers are intentionally simpler: the bridge uses the provider's `/models` response or the user's configured `ai.Model` entries. If a custom provider does not advertise detailed metadata, the bridge uses a conservative text-only model shape instead of consulting Beeper's catalog by model ID.
+Custom providers use the same ai-services catalog for model metadata. The bridge filters that catalog to the supported provider runtime (`openai`, `openrouter`, `anthropic`, or `google-vertex`) and then uses the user's configured base URL and API key for execution. Arbitrary model IDs and generic OpenAI-compatible providers are not accepted.
 
 Reasoning levels form a ladder `off < minimal < low < medium < high < xhigh`; `ClampThinkingLevel` snaps a request to the nearest supported level from the model metadata the bridge was given.
 
@@ -413,7 +413,7 @@ The bridge advertises five login flows (`pkg/connector/login.go`):
 | Flow | What it does |
 |------|--------------|
 | `beeper` | The default **Beeper AI** login. Loads its catalog and runtime proxy metadata from `ai-services.<domain>` derived from the user's homeserver; uses an appservice bearer token, no stored key. Read-only/managed. |
-| `openai-responses` / `openai-completions` / `openai-codex-responses` | **Custom provider**: enter base URL + API key, the bridge fetches `/models`, you pick a default model. |
+| `openai-responses` / `openai-completions` / `openai-codex-responses` / `anthropic-messages` / `google-vertex` | **Custom provider**: enter base URL + API key, the bridge loads matching model metadata from ai-services, then you pick a default model. |
 | `chatgpt-device` | **ChatGPT** OAuth device-code flow (PKCE). Stores access + refresh tokens, auto-refreshes within 2 min of expiry. |
 
 One Matrix user can hold multiple AI logins; there's a canonical "AI Chats" login per user. Provider configs (with secrets) live in `UserLoginMetadata.Providers`. API keys support `env:NAME` indirection. The `beeper` provider is special and **read-only** — it can't be added/updated/deleted.
