@@ -178,8 +178,8 @@ func TestAISlashCommandHelpForSpecificCommand(t *testing.T) {
 	}
 
 	help = aiSlashCommandHelp("/limits")
-	if strings.Contains(strings.ToLower(help), "raw") {
-		t.Fatalf("limits help advertised raw debugging mode:\n%s", help)
+	if strings.Contains(strings.ToLower(help), "full") {
+		t.Fatalf("limits help advertised full debugging mode:\n%s", help)
 	}
 }
 
@@ -491,7 +491,7 @@ func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
 	}
 }
 
-func TestRunLimitsCommandRawUsesAIResponse(t *testing.T) {
+func TestRunLimitsCommandFullUsesAIResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/limits" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
@@ -511,14 +511,21 @@ func TestRunLimitsCommandRawUsesAIResponse(t *testing.T) {
 		}},
 	}
 	responder := &recordingCommandResponder{}
-	if err := runLimitsCommand(client, context.Background(), nil, RoomConfig{}, "raw", responder); err != nil {
+	if err := runLimitsCommand(client, context.Background(), nil, RoomConfig{}, "full", responder); err != nil {
 		t.Fatal(err)
 	}
 	if responder.text != "" {
-		t.Fatalf("raw limits should use AI response, got plain text %q", responder.text)
+		t.Fatalf("full limits should use AI response, got plain text %q", responder.text)
 	}
 	if !strings.Contains(responder.aiText, "## LLM tokens") || !strings.Contains(responder.aiText, "| Day | `75%` | `250` | `1,000` | `750` |") {
-		t.Fatalf("raw limits AI response missing table:\n%s", responder.aiText)
+		t.Fatalf("full limits AI response missing table:\n%s", responder.aiText)
+	}
+}
+
+func TestRunLimitsCommandRejectsRawArgument(t *testing.T) {
+	err := runLimitsCommand(nil, context.Background(), nil, RoomConfig{}, "raw", &recordingCommandResponder{})
+	if err == nil || err.Error() != "Usage: /limits" {
+		t.Fatalf("raw argument error = %v, want Usage: /limits", err)
 	}
 }
 
@@ -612,21 +619,16 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 	}}, now)
 	for _, want := range []string{
 		"# AI limits",
-		"## Models",
-		"## Web Search",
-		"## Transcription",
-		"## Audio Generation",
-		"| Window | Left | Used | Reset |",
-		"| Daily | `75%` | `250 / 1,000` | in 1 day 2 hours 3 minutes |",
-		"| Weekly | Unlimited | `1,234` used | in 1 day 2 hours 3 minutes |",
-		"| Monthly | **Out** | `30,500 / 30,000` | in 1 day 2 hours 3 minutes |",
-		"`1 / 200,000`",
+		"| Window | Left |",
+		"| Daily | `75%` |",
+		"| Weekly | Unlimited |",
+		"| Monthly | **Out** |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"2030-01-01T00:00:00Z"} {
+	for _, notWant := range []string{"## Models", "## Web Search", "## Transcription", "## Audio Generation", "Used", "Reset", "250 / 1,000", "2030-01-01T00:00:00Z"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
 		}
@@ -644,16 +646,15 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 	}}, now)
 	for _, want := range []string{
 		"# AI limits",
-		"## Models",
-		"| Daily | `75%` | Not reported | in 1 day 1 hour 3 minutes |",
-		"| Weekly | `100%` | Not reported | in 7 days |",
-		"| Monthly | **Out** | Not reported | in 31 days |",
+		"| Daily | `75%` |",
+		"| Weekly | `100%` |",
+		"| Monthly | **Out** |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"## Web Search", "No limits reported.", "Everything resets"} {
+	for _, notWant := range []string{"## Models", "## Web Search", "No limits reported.", "Everything resets", "Not reported", "in 7 days"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed %q:\n%s", notWant, text)
 		}
@@ -675,9 +676,9 @@ func TestFormatResetInDoesNotRoundUp(t *testing.T) {
 	}
 }
 
-func TestFormatRawLimitsCommandInfoShowsExactUsage(t *testing.T) {
+func TestFormatFullLimitsCommandInfoShowsExactUsage(t *testing.T) {
 	resetAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	text := formatRawLimitsCommandInfo(aiServicesLimitsResponse{Windows: aiServicesLimitCategories{
+	text := formatFullLimitsCommandInfo(aiServicesLimitsResponse{Windows: aiServicesLimitCategories{
 		LLM: aiServicesLimitWindows{
 			Day:   aiServicesLimitWindow{PercentageLeft: 75, Limit: 1000, Used: 250, Remaining: 750, ResetAtMS: resetAt.UnixMilli()},
 			Week:  aiServicesLimitWindow{PercentageLeft: 100, Limit: -1, Used: 1234, Remaining: -1, ResetAtMS: resetAt.UnixMilli()},
@@ -701,11 +702,11 @@ func TestFormatRawLimitsCommandInfoShowsExactUsage(t *testing.T) {
 		"## Audio generation characters",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("raw limits info missing %q:\n%s", want, text)
+			t.Fatalf("full limits info missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "AI limits raw:") {
-		t.Fatalf("raw limits info should render as tables without the old header:\n%s", text)
+	if strings.Contains(text, "AI limits full:") {
+		t.Fatalf("full limits info should render as tables without the old header:\n%s", text)
 	}
 }
 
