@@ -155,7 +155,7 @@ func (l *CustomProviderLogin) providerConfigStep() *bridgev2.LoginStep {
 		Instructions: "Enter provider connection details",
 		UserInputParams: &bridgev2.LoginUserInputParams{Fields: []bridgev2.LoginInputDataField{
 			{Type: bridgev2.LoginInputFieldTypeUsername, ID: "provider_id", Name: "ID", Description: "Stable provider ID"},
-			{Type: bridgev2.LoginInputFieldTypeURL, ID: "base_url", Name: "Base URL", Description: "OpenAI-compatible API base URL", DefaultValue: defaultBaseURLForAPI(l.config.API)},
+			{Type: bridgev2.LoginInputFieldTypeURL, ID: "base_url", Name: "Base URL", Description: "Provider API base URL", DefaultValue: defaultBaseURLForAPI(l.config.API)},
 			{Type: bridgev2.LoginInputFieldTypeToken, ID: "api_key", Name: "API key", Description: "Provider API key"},
 		}},
 	}
