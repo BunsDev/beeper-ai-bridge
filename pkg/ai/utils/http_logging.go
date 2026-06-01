@@ -65,7 +65,7 @@ func aiServicesRequestLogger(req *http.Request) zerolog.Logger {
 	if contentType := req.Header.Get("Content-Type"); contentType != "" {
 		logCtx = logCtx.Str("content_type", contentType)
 	}
-	if requestID := requestHeader(req.Header, "x-client-request-id", "x-request-id", "session_id"); requestID != "" {
+	if requestID := requestHeader(req.Header, "x-client-request-id", "x-request-id", "session-id", "session_id"); requestID != "" {
 		logCtx = logCtx.Str("request_id", requestID)
 	}
 	return logCtx.Logger()

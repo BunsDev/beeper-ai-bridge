@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -44,28 +45,30 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 	}
 	log := logCtx.Logger()
 	ctx = log.WithContext(ctx)
-	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
-	if err != nil {
+	providerID := roomConfig.ProviderID
+	if providerID == "" {
+		providerID = aiid.DefaultProvider
+	}
+	provider, ok := cl.Main.providersForLogin(cl.UserLogin)[providerID]
+	if !ok {
+		err := fmt.Errorf("provider %s is not available for login %s", providerID, cl.UserLogin.ID)
 		log.Err(err).Msg("Failed to resolve AI provider")
 		return aiid.ProviderConfig{}, "", err
 	}
-	if provider.ID != aiid.DefaultProvider {
-		log.Debug().
-			Str("provider_id", provider.ID).
-			Str("provider", string(provider.Provider)).
-			Str("model_id", modelID).
-			Msg("Resolved AI provider")
-		return provider, modelID, nil
-	}
+	var err error
 	provider, err = cl.providerWithCatalogModelsStrict(ctx, provider)
 	if err != nil {
-		log.Err(err).Str("provider_id", provider.ID).Msg("Failed to load default AI provider model catalog")
+		log.Err(err).Str("provider_id", provider.ID).Msg("Failed to load AI provider model catalog")
 		return aiid.ProviderConfig{}, "", err
 	}
 	if len(provider.Models) == 0 {
-		err := fmt.Errorf("Beeper AI model catalog is unavailable")
-		log.Err(err).Str("provider_id", provider.ID).Msg("Default AI provider model catalog is empty")
+		err := fmt.Errorf("AI model catalog is unavailable for provider %s", provider.ID)
+		log.Err(err).Str("provider_id", provider.ID).Msg("AI provider model catalog is empty")
 		return aiid.ProviderConfig{}, "", err
+	}
+	modelID := roomConfig.ModelID
+	if modelID == "" {
+		modelID = provider.DefaultModel
 	}
 	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
 		log.Debug().
@@ -125,41 +128,11 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if model.Name == "" {
 		model.Name = model.ID
 	}
-	if provider.ID != aiid.DefaultProvider {
-		if catalogModel, ok := ai.GetModel(model.Provider, model.ID); ok {
-			if len(model.Input) == 0 && len(catalogModel.Input) > 0 {
-				model.Input = append([]string(nil), catalogModel.Input...)
-			}
-			if !model.Reasoning {
-				model.Reasoning = catalogModel.Reasoning
-			}
-			if len(model.ThinkingLevelMap) == 0 && len(catalogModel.ThinkingLevelMap) > 0 {
-				model.ThinkingLevelMap = catalogModel.ThinkingLevelMap
-			}
-			if model.DefaultThinkingLevel == "" {
-				model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
-			}
-		} else if len(model.Input) == 0 {
-			model.Input = catalogInputForProviderModel(model)
-		}
-	}
 	if len(model.Input) == 0 {
 		model.Input = []string{"text"}
 	}
 	model.BaseURL = normalizeResponsesBaseURL(model.BaseURL)
 	return model
-}
-
-func catalogInputForProviderModel(model ai.Model) []string {
-	prefix := string(model.Provider) + "/"
-	if !strings.HasPrefix(model.ID, prefix) {
-		return nil
-	}
-	catalogModel, ok := ai.GetModel(model.Provider, strings.TrimPrefix(model.ID, prefix))
-	if !ok || len(catalogModel.Input) == 0 {
-		return nil
-	}
-	return append([]string(nil), catalogModel.Input...)
 }
 
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {
@@ -205,28 +178,28 @@ func (cl *Client) defaultProviderBearerToken() (string, error) {
 	if cl == nil || cl.Main == nil {
 		return "", fmt.Errorf("missing connector for default provider")
 	}
-	if cl.Main.AppServiceToken == "" {
+	if cl.UserLogin == nil {
+		return "", fmt.Errorf("missing user login for default provider")
+	}
+	return cl.Main.defaultProviderBearerToken(cl.UserLogin.UserMXID)
+}
+
+func (c *Connector) defaultProviderBearerToken(userMXID id.UserID) (string, error) {
+	if c == nil || c.AppServiceToken == "" {
 		return "", fmt.Errorf("missing appservice token for default provider")
 	}
-	username := cl.defaultProviderUsername()
+	username := userMXID.Localpart()
 	if username == "" {
 		return "", fmt.Errorf("missing Beeper username for default provider")
 	}
 	payload, err := json.Marshal(aiServicesAppserviceToken{
-		ASToken:  cl.Main.AppServiceToken,
+		ASToken:  c.AppServiceToken,
 		Username: username,
 	})
 	if err != nil {
 		return "", err
 	}
 	return aiServicesAppserviceTokenPrefix + base64.RawURLEncoding.EncodeToString(payload), nil
-}
-
-func (cl *Client) defaultProviderUsername() string {
-	if cl == nil || cl.UserLogin == nil || cl.UserLogin.UserLogin == nil {
-		return ""
-	}
-	return cl.UserLogin.UserMXID.Localpart()
 }
 
 func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {

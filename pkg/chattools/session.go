@@ -16,15 +16,15 @@ func GetSessionToolWithOptions(info SessionInfo, options SessionOptions) agent.A
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "get_session",
-			Description: "Get fresh metadata for this Beeper AI chat, including current UTC timestamp, chat ID/title, selected model, selected reasoning, disabled tools, approved profile fields, and last known UTC timestamp.",
+			Description: "Get fresh metadata for this Beeper AI chat, including current UTC timestamp, chat ID/title, selected model, selected reasoning, disabled tools, approved profile fields, last message UTC timestamp, and last known timezone.",
 			Parameters:  objectSchema(nil, nil),
 		},
 		Execute: func(ctx context.Context, toolCallID string, params any, onUpdate agent.AgentToolUpdateCallback[any]) (agent.AgentToolResult[any], error) {
 			now := time.Now().UTC()
 			current := info
 			current.CurrentTimestamp = now.Format(time.RFC3339)
-			if current.LastKnownTimestamp == "" {
-				current.LastKnownTimestamp = current.CurrentTimestamp
+			if current.LastMessageTimestamp == "" {
+				current.LastMessageTimestamp = current.CurrentTimestamp
 			}
 			if options.ResolveProfile != nil {
 				profile, err := options.ResolveProfile(ctx, toolCallID)

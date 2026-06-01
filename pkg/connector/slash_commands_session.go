@@ -40,6 +40,7 @@ type sessionCommandInfo struct {
 	Responding        bool
 	ActiveRunID       string
 	ActiveModel       string
+	LastKnownTimezone string
 	Stats             sessionCommandStats
 	ContextMessages   int
 	EstimatedTokens   int
@@ -60,6 +61,7 @@ func runSessionCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal,
 		SystemPrompt:      strings.TrimSpace(roomConfig.AdditionalPrompt) != "",
 		SystemPromptChars: len([]rune(strings.TrimSpace(roomConfig.AdditionalPrompt))),
 		Responding:        active != nil,
+		LastKnownTimezone: cl.lastKnownTimezone(),
 	}
 	if active != nil {
 		info.ActiveRunID = active.runID
@@ -183,6 +185,9 @@ func formatSessionCommandInfo(info sessionCommandInfo) string {
 	}
 	if info.ActiveModel != "" {
 		fmt.Fprintf(&text, "\n- Active model: `%s`", info.ActiveModel)
+	}
+	if info.LastKnownTimezone != "" {
+		fmt.Fprintf(&text, "\n- Last known timezone: `%s`", info.LastKnownTimezone)
 	}
 	systemPrompt := "no"
 	if info.SystemPrompt {

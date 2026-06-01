@@ -595,7 +595,14 @@ func hasSequentialToolCall(currentContext *AgentContext, toolCalls []AgentToolCa
 }
 
 func createErrorToolResult(message string) AgentToolResult[any] {
-	return AgentToolResult[any]{Content: []ai.ContentBlock{{Type: "text", Text: message}}, Details: map[string]any{}}
+	return AgentToolResult[any]{
+		Content: []ai.ContentBlock{{Type: "text", Text: message}},
+		Details: map[string]any{
+			"state":  "error",
+			"status": "failed",
+			"reason": message,
+		},
+	}
 }
 
 func shouldTerminateToolBatch(results []AgentToolResult[any]) bool {

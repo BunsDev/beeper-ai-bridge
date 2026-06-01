@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/id"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
@@ -40,7 +42,14 @@ type ProviderResponse struct {
 	ReadOnly     bool        `json:"read_only,omitempty"`
 }
 
-func (c *Connector) VerifyProviderConfig(ctx context.Context, input ProviderInput) (aiid.ProviderConfig, error) {
+func (c *Connector) VerifyProviderConfig(ctx context.Context, login *bridgev2.UserLogin, input ProviderInput) (aiid.ProviderConfig, error) {
+	if login == nil {
+		return aiid.ProviderConfig{}, fmt.Errorf("login is required")
+	}
+	return c.providerConfigFromInput(ctx, login.UserMXID, input)
+}
+
+func (c *Connector) providerConfigFromInput(ctx context.Context, userMXID id.UserID, input ProviderInput) (aiid.ProviderConfig, error) {
 	input.ID = strings.TrimSpace(input.ID)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.BaseURL = normalizeResponsesBaseURL(strings.TrimSpace(input.BaseURL))
@@ -52,30 +61,23 @@ func (c *Connector) VerifyProviderConfig(ctx context.Context, input ProviderInpu
 	if input.ID == aiid.DefaultProvider {
 		return aiid.ProviderConfig{}, fmt.Errorf("provider %q is managed by Beeper AI", aiid.DefaultProvider)
 	}
+	provider, inferredAPI := inferProviderRoute(input.ID, input.BaseURL)
 	if input.API == "" {
-		provider, api := inferProviderRoute(input.ID, input.BaseURL)
-		input.API = api
+		input.API = inferredAPI
 		if input.DisplayName == "" {
 			input.DisplayName = providerDisplayName(string(provider))
 		}
 	}
+	if !supportedProviderLoginAPI(input.API) || !providerAPIAllowed(provider, input.API) {
+		return aiid.ProviderConfig{}, fmt.Errorf("provider %s with API %s is not supported", input.ID, input.API)
+	}
 	if input.BaseURL == "" || input.APIKey == "" {
 		return aiid.ProviderConfig{}, fmt.Errorf("base_url and api_key are required")
 	}
-	models, err := fetchProviderModels(ctx, input.API, input.ID, input.BaseURL, input.APIKey)
-	if err != nil {
-		return aiid.ProviderConfig{}, err
-	}
-	if input.DefaultModel == "" {
-		input.DefaultModel = models[0].ID
-	} else if !providerHasModel(aiid.ProviderConfig{Models: models}, input.DefaultModel) {
-		return aiid.ProviderConfig{}, fmt.Errorf("model %s was not returned by provider %s", input.DefaultModel, input.ID)
-	}
-	provider, _ := inferProviderRoute(input.ID, input.BaseURL)
 	if input.DisplayName == "" {
 		input.DisplayName = providerDisplayName(input.ID)
 	}
-	return aiid.ProviderConfig{
+	providerConfig := aiid.ProviderConfig{
 		ID:           input.ID,
 		DisplayName:  input.DisplayName,
 		API:          input.API,
@@ -83,8 +85,48 @@ func (c *Connector) VerifyProviderConfig(ctx context.Context, input ProviderInpu
 		BaseURL:      input.BaseURL,
 		APIKey:       input.APIKey,
 		DefaultModel: input.DefaultModel,
-		Models:       models,
-	}, nil
+	}
+	models, err := c.aiServicesCatalogModelsForUserProvider(ctx, userMXID, providerConfig)
+	if err != nil {
+		return aiid.ProviderConfig{}, err
+	}
+	if len(models) == 0 {
+		return aiid.ProviderConfig{}, fmt.Errorf("AI Services catalog has no models for provider %s", providerConfig.Provider)
+	}
+	providerConfig.Models = models
+	if providerConfig.DefaultModel == "" {
+		providerConfig.DefaultModel = models[0].ID
+	} else if resolved, ok := resolveProviderModelID(aiid.ProviderConfig{Models: models}, providerConfig.DefaultModel); ok {
+		providerConfig.DefaultModel = resolved
+	} else {
+		return aiid.ProviderConfig{}, fmt.Errorf("model %s was not returned by AI Services for provider %s", providerConfig.DefaultModel, input.ID)
+	}
+	return providerConfig, nil
+}
+
+func (c *Connector) aiServicesCatalogModelsForUserProvider(ctx context.Context, userMXID id.UserID, provider aiid.ProviderConfig) ([]ai.Model, error) {
+	client := &Client{
+		Main: c,
+		UserLogin: &bridgev2.UserLogin{
+			UserLogin: &database.UserLogin{UserMXID: userMXID},
+		},
+	}
+	return client.aiServicesCatalogModels(ctx, provider)
+}
+
+func providerAPIAllowed(provider ai.Provider, api ai.Api) bool {
+	switch provider {
+	case ai.ProviderOpenAI:
+		return api == ai.ApiOpenAIResponses || api == ai.ApiOpenAICompletions || api == ai.ApiOpenAICodexResponses
+	case ai.ProviderOpenRouter:
+		return api == ai.ApiOpenAICompletions
+	case ai.ProviderAnthropic:
+		return api == ai.ApiAnthropicMessages
+	case ai.ProviderGoogleVertex:
+		return api == ai.ApiGoogleVertex
+	default:
+		return false
+	}
 }
 
 func (c *Connector) SaveProviderConfig(ctx context.Context, login *bridgev2.UserLogin, provider aiid.ProviderConfig) error {

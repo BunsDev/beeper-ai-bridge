@@ -33,27 +33,31 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		chatTitle = msg.Portal.Name
 	}
 	info := chattools.SessionInfo{
-		ChatID:             chatID,
-		ChatTitle:          chatTitle,
-		ChatFirstMessageAt: chatFirstMessageAt,
-		SelectedModel:      model.ID,
-		SelectedReasoning:  cl.reasoningLevelForModel(model, roomConfig),
-		DisabledTools:      roomConfig.DisabledTools,
-		LastKnownTimestamp: formatSessionTimestampUTC(matrixEventTime(nil)),
+		ChatID:               chatID,
+		ChatTitle:            chatTitle,
+		ChatFirstMessageAt:   chatFirstMessageAt,
+		SelectedModel:        model.ID,
+		SelectedReasoning:    cl.reasoningLevelForModel(model, roomConfig),
+		DisabledTools:        roomConfig.DisabledTools,
+		SearchMode:           roomSearchMode(roomConfig),
+		FetchMode:            roomFetchMode(roomConfig),
+		LastMessageTimestamp: formatSessionTimestampUTC(matrixEventTime(nil)),
+		LastKnownTimezone:    cl.lastKnownTimezone(),
 	}
 	if msg != nil {
-		info.LastKnownTimestamp = formatSessionTimestampUTC(matrixEventTime(msg.Event))
+		info.LastMessageTimestamp = formatSessionTimestampUTC(matrixEventTime(msg.Event))
 	}
 	search := cl.searchOptions(roomConfig, provider)
 	fetch := chattools.FetchOptions{
+		Disabled: roomFetchMode(roomConfig) != toolModeBeeper,
 		Timeout:  time.Duration(cl.Main.Config.Fetch.TimeoutMS) * time.Millisecond,
 		MaxBytes: cl.Main.Config.Fetch.MaxBytes,
 		MaxChars: cl.Main.Config.Fetch.MaxChars,
 	}
 	if provider.ID == aiid.DefaultProvider && provider.BaseURL != "" {
 		if token, err := cl.defaultProviderBearerToken(); err == nil {
-			if endpoint, err := aiServicesExaContentsURL(provider.BaseURL); err == nil {
-				fetch.ExaEndpoint = endpoint
+			if endpoint, err := aiServicesToolURL(provider.BaseURL, "fetch"); err == nil {
+				fetch.ToolEndpoint = endpoint
 				fetch.APIKey = token
 			}
 		}
@@ -81,10 +85,10 @@ func modelSupportsAgentTools(model ai.Model) bool {
 		return false
 	}
 	if model.Compat == nil {
-		return true
+		return false
 	}
 	supported, ok := model.Compat["tools_supported"].(bool)
-	return !ok || supported
+	return ok && supported
 }
 
 func modelHasOutputModality(model ai.Model, modality string) bool {
@@ -97,14 +101,14 @@ func modelHasOutputModality(model ai.Model, modality string) bool {
 }
 
 func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderConfig) chattools.SearchOptions {
-	if toolDisabled(roomConfig.DisabledTools, "web_search") || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" {
+	if roomSearchMode(roomConfig) != toolModeBeeper || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" {
 		return chattools.SearchOptions{}
 	}
 	token, err := cl.defaultProviderBearerToken()
 	if err != nil {
 		return chattools.SearchOptions{}
 	}
-	endpoint, err := aiServicesExaSearchURL(provider.BaseURL)
+	endpoint, err := aiServicesToolURL(provider.BaseURL, "web_search")
 	if err != nil {
 		return chattools.SearchOptions{}
 	}
@@ -112,24 +116,16 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 		Enabled:  true,
 		Endpoint: endpoint,
 		APIKey:   token,
-		Timeout:  10 * time.Second,
+		Timeout:  30 * time.Second,
 	}
 }
 
-func aiServicesExaSearchURL(proxyBaseURL string) (string, error) {
-	return aiServicesExaURL(proxyBaseURL, "search")
-}
-
-func aiServicesExaContentsURL(proxyBaseURL string) (string, error) {
-	return aiServicesExaURL(proxyBaseURL, "contents")
-}
-
-func aiServicesExaURL(proxyBaseURL string, route string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesToolURL(baseURL string, tool string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/exa/v1/" + route
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/tools/" + tool
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
@@ -181,6 +177,33 @@ func (cl *Client) validateReasoningLevel(model ai.Model, roomConfig RoomConfig) 
 		}
 	}
 	return fmt.Errorf("model %s does not support reasoning level %q", model.ID, level)
+}
+
+func (cl *Client) configuredReasoningMode(model ai.Model, roomConfig RoomConfig) string {
+	mode := strings.ToLower(strings.TrimSpace(roomConfig.ReasoningMode))
+	if mode != "" && mode != "default" {
+		return mode
+	}
+	return strings.ToLower(strings.TrimSpace(string(model.ReasoningMode)))
+}
+
+func (cl *Client) reasoningModeForModel(model ai.Model, roomConfig RoomConfig) string {
+	return cl.configuredReasoningMode(model, roomConfig)
+}
+
+func (cl *Client) validateReasoningMode(model ai.Model, roomConfig RoomConfig) error {
+	mode := strings.ToLower(strings.TrimSpace(roomConfig.ReasoningMode))
+	switch mode {
+	case "", "default":
+		return nil
+	case string(ai.ModelReasoningModeAdaptive):
+		if strings.EqualFold(string(model.ReasoningMode), string(ai.ModelReasoningModeAdaptive)) {
+			return nil
+		}
+		return fmt.Errorf("model %s does not support reasoning mode %q", model.ID, mode)
+	default:
+		return fmt.Errorf("reasoning mode %q is invalid", roomConfig.ReasoningMode)
+	}
 }
 
 func clampRoomReasoningLevel(model ai.Model, level ai.ModelThinkingLevel) ai.ModelThinkingLevel {

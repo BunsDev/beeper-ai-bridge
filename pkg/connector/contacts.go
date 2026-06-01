@@ -85,7 +85,8 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 		return nil, err
 	}
 	reasoning := cl.reasoningLevelForModel(model, roomConfig)
-	if _, err = cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, applyRoomModelStateOptions{ForceAvatar: created}); err != nil {
+	reasoningMode := cl.reasoningModeForModel(model, roomConfig)
+	if _, err = cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, reasoningMode, applyRoomModelStateOptions{ForceAvatar: created}); err != nil {
 		return nil, err
 	}
 	cl.refreshRoomCapabilities(ctx, portal)
@@ -166,22 +167,6 @@ func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.R
 		}
 		seen[contact.UserID] = true
 		filtered = append(filtered, contact)
-	}
-	providers := cl.providers()
-	for _, provider := range providers {
-		if !providerAllowsArbitraryModels(provider) {
-			continue
-		}
-		model, ok := arbitraryModelForProvider(provider, query)
-		if !ok {
-			continue
-		}
-		userID := aiid.ModelContactID(provider.ID, model.ID)
-		if seen[userID] {
-			continue
-		}
-		seen[userID] = true
-		filtered = append(filtered, modelContactWithGhost(ctx, cl.bridge(), provider, model))
 	}
 	return filtered
 }
@@ -308,9 +293,6 @@ func (cl *Client) providerWithCatalogModels(ctx context.Context, provider aiid.P
 }
 
 func (cl *Client) providerForModelContacts(ctx context.Context, provider aiid.ProviderConfig, refresh bool) (aiid.ProviderConfig, bool) {
-	if provider.ID != aiid.DefaultProvider {
-		return provider, true
-	}
 	refreshed, err := cl.providerWithCatalogModelsStrictWithRefresh(ctx, provider, refresh)
 	if err != nil {
 		zerolog.Ctx(ctx).Warn().
@@ -335,18 +317,12 @@ func (cl *Client) providerWithCatalogModelsStrict(ctx context.Context, provider 
 }
 
 func (cl *Client) providerWithCatalogModelsStrictWithRefresh(ctx context.Context, provider aiid.ProviderConfig, refresh bool) (aiid.ProviderConfig, error) {
-	if provider.ID != aiid.DefaultProvider {
-		return provider, nil
-	}
-	if len(provider.Models) > 0 && !refresh {
-		return provider, nil
-	}
 	models, err := cl.cachedAIServicesCatalogModels(ctx, provider, refresh)
 	if err != nil {
 		return provider, err
 	}
 	if len(models) > 0 {
-		provider.Models = models
+		provider.Models = mergeProviderCatalogModels(provider, models)
 		zerolog.Ctx(ctx).Debug().
 			Str("action", "ai_model_catalog").
 			Str("provider_id", provider.ID).
@@ -354,6 +330,58 @@ func (cl *Client) providerWithCatalogModelsStrictWithRefresh(ctx context.Context
 			Msg("Loaded AI Services model catalog")
 	}
 	return provider, nil
+}
+
+func mergeProviderCatalogModels(provider aiid.ProviderConfig, catalog []ai.Model) []ai.Model {
+	if provider.ID == aiid.DefaultProvider || len(provider.Models) == 0 {
+		return cloneModels(catalog)
+	}
+	byID := make(map[string]ai.Model, len(catalog))
+	for _, model := range catalog {
+		byID[model.ID] = model
+	}
+	models := make([]ai.Model, 0, len(provider.Models))
+	for _, configured := range provider.Models {
+		model := normalizeProviderModel(configured, provider)
+		if catalogModel, ok := byID[model.ID]; ok {
+			model = mergeProviderCatalogModel(model, catalogModel)
+		}
+		models = append(models, model)
+	}
+	return models
+}
+
+func mergeProviderCatalogModel(configured ai.Model, catalog ai.Model) ai.Model {
+	model := catalog
+	if configured.Name != "" && configured.Name != configured.ID {
+		model.Name = configured.Name
+	}
+	if len(configured.Input) > 0 {
+		model.Input = slices.Clone(configured.Input)
+	}
+	if len(configured.Output) > 0 {
+		model.Output = slices.Clone(configured.Output)
+	}
+	if len(configured.BuiltInTools) > 0 {
+		model.BuiltInTools = slices.Clone(configured.BuiltInTools)
+	}
+	if configured.ContextWindow != 0 {
+		model.ContextWindow = configured.ContextWindow
+	}
+	if configured.MaxTokens != 0 {
+		model.MaxTokens = configured.MaxTokens
+	}
+	if configured.Headers != nil {
+		model.Headers = maps.Clone(configured.Headers)
+	}
+	if configured.Compat != nil {
+		compat := maps.Clone(model.Compat)
+		for key, value := range configured.Compat {
+			compat[key] = value
+		}
+		model.Compat = compat
+	}
+	return model
 }
 
 func (cl *Client) cachedAIServicesCatalogModels(ctx context.Context, provider aiid.ProviderConfig, refresh bool) ([]ai.Model, error) {
@@ -401,10 +429,17 @@ func listedProviderModelContacts(ctx context.Context, br *bridgev2.Bridge, provi
 }
 
 func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.ProviderConfig) ([]ai.Model, error) {
-	if cl == nil || cl.Main == nil || provider.ID != aiid.DefaultProvider || provider.BaseURL == "" || cl.Main.AppServiceToken == "" {
+	if cl == nil || cl.Main == nil || cl.UserLogin == nil || cl.Main.AppServiceToken == "" {
 		return nil, nil
 	}
-	modelsURL, err := aiServicesModelsURL(provider.BaseURL)
+	catalogProvider := provider
+	if provider.ID != aiid.DefaultProvider {
+		catalogProvider = cl.Main.defaultProviderConfig(cl.UserLogin.UserMXID)
+		if catalogProvider.BaseURL == "" {
+			return nil, fmt.Errorf("AI Services is not available for %s", cl.UserLogin.UserMXID.Homeserver())
+		}
+	}
+	modelsURL, err := aiServicesModelsURL(catalogProvider.BaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -432,6 +467,9 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 	}
 	models := make([]ai.Model, 0, len(body.Data))
 	for _, item := range body.Data {
+		if provider.ID != aiid.DefaultProvider && !item.matchesProvider(provider.Provider) {
+			continue
+		}
 		modelID := strings.TrimSpace(item.ID)
 		if modelID == "" {
 			continue
@@ -445,6 +483,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			Reasoning:            item.reasoning(),
 			ThinkingLevelMap:     item.thinkingLevelMap(),
 			DefaultThinkingLevel: item.defaultThinkingLevel(),
+			ReasoningMode:        item.reasoningMode(),
 			Input:                item.inputModalities(),
 			Output:               item.outputModalities(),
 			ContextWindow:        item.contextWindow(),
@@ -452,42 +491,21 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			BuiltInTools:         item.builtInTools(),
 			Compat:               item.compat(),
 		}
-		model = item.applyProviderRoute(model, provider)
+		model = item.applyRuntime(model, provider, provider.ID == aiid.DefaultProvider)
 		models = append(models, normalizeProviderModel(model, provider))
 	}
 	return models, nil
 }
 
-func aiServicesModelsURL(proxyBaseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesModelsURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = trimAIProxyProviderPath(parsed.Path)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
-	parsed.RawQuery = url.Values{"feature": {"bridge:ai"}, "route": {"responses"}}.Encode()
+	parsed.RawQuery = url.Values{"feature": {"bridge:ai"}}.Encode()
 	parsed.Fragment = ""
 	return parsed.String(), nil
-}
-
-func trimAIProxyProviderPath(path string) string {
-	for _, suffix := range []string{
-		"/proxy/openai/v1",
-		"/proxy/openai",
-		"/proxy/openrouter/v1",
-		"/proxy/openrouter",
-		"/proxy/anthropic/v1",
-		"/proxy/anthropic",
-		"/proxy/vertex/v1",
-		"/proxy/vertex",
-		"/proxy/a8c/v1",
-		"/proxy/a8c",
-		"/proxy/_/v1",
-		"/proxy/_",
-	} {
-		path = strings.TrimSuffix(path, suffix)
-	}
-	return path
 }
 
 type aiServicesModelListResponse struct {
@@ -509,11 +527,14 @@ type aiServicesModelEntry struct {
 	TopProvider *struct {
 		MaxCompletionTokens int `json:"max_completion_tokens"`
 	} `json:"top_provider"`
-	Provider *struct {
-		ID      string `json:"id"`
-		ModelID string `json:"model_id"`
-		API     string `json:"api"`
-	} `json:"provider"`
+	Runtime *struct {
+		API      string                 `json:"api"`
+		Provider string                 `json:"provider"`
+		BaseURL  string                 `json:"base_url"`
+		Model    string                 `json:"model"`
+		Endpoint string                 `json:"endpoint"`
+		Compat   *aiServicesModelCompat `json:"compat"`
+	} `json:"runtime"`
 	Capabilities *struct {
 		Input struct {
 			Modalities []string `json:"modalities"`
@@ -526,6 +547,7 @@ type aiServicesModelEntry struct {
 			Levels       []string           `json:"levels"`
 			LevelMap     map[string]*string `json:"level_map"`
 			DefaultLevel string             `json:"default_level"`
+			Mode         string             `json:"mode"`
 		} `json:"reasoning"`
 		Tools *struct {
 			Supported bool     `json:"supported"`
@@ -538,53 +560,98 @@ type aiServicesModelEntry struct {
 	} `json:"capabilities"`
 }
 
-func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider aiid.ProviderConfig) ai.Model {
-	if entry.Provider == nil || entry.Provider.ID == "" {
+type aiServicesModelCompat struct {
+	SupportsStore                               *bool  `json:"supports_store,omitempty"`
+	SupportsDeveloperRole                       *bool  `json:"supports_developer_role,omitempty"`
+	SupportsReasoningEffort                     *bool  `json:"supports_reasoning_effort,omitempty"`
+	SupportsUsageInStreaming                    *bool  `json:"supports_usage_in_streaming,omitempty"`
+	MaxTokensField                              string `json:"max_tokens_field,omitempty"`
+	RequiresToolResultName                      *bool  `json:"requires_tool_result_name,omitempty"`
+	RequiresAssistantAfterToolResult            *bool  `json:"requires_assistant_after_tool_result,omitempty"`
+	RequiresThinkingAsText                      *bool  `json:"requires_thinking_as_text,omitempty"`
+	RequiresReasoningContentOnAssistantMessages *bool  `json:"requires_reasoning_content_on_assistant_messages,omitempty"`
+	ThinkingFormat                              string `json:"thinking_format,omitempty"`
+	ZaiToolStream                               *bool  `json:"zai_tool_stream,omitempty"`
+	SupportsStrictMode                          *bool  `json:"supports_strict_mode,omitempty"`
+	CacheControlFormat                          string `json:"cache_control_format,omitempty"`
+	SendSessionAffinityHeaders                  *bool  `json:"send_session_affinity_headers,omitempty"`
+	SupportsLongCacheRetention                  *bool  `json:"supports_long_cache_retention,omitempty"`
+	SendSessionIDHeader                         *bool  `json:"send_session_id_header,omitempty"`
+	SupportsEagerToolInputStreaming             *bool  `json:"supports_eager_tool_input_streaming,omitempty"`
+	SupportsCacheControlOnTools                 *bool  `json:"supports_cache_control_on_tools,omitempty"`
+	SupportsTemperature                         *bool  `json:"supports_temperature,omitempty"`
+	ForceAdaptiveThinking                       *bool  `json:"force_adaptive_thinking,omitempty"`
+	AllowEmptySignature                         *bool  `json:"allow_empty_signature,omitempty"`
+}
+
+func (entry aiServicesModelEntry) matchesProvider(provider ai.Provider) bool {
+	if entry.Runtime == nil || entry.Runtime.Provider == "" {
+		return provider == ""
+	}
+	return ai.Provider(entry.Runtime.Provider) == provider
+}
+
+func (entry aiServicesModelEntry) applyRuntime(model ai.Model, provider aiid.ProviderConfig, useRuntimeBaseURL bool) ai.Model {
+	if entry.Runtime == nil {
 		return model
 	}
 	if model.Compat == nil {
 		model.Compat = map[string]any{}
 	}
-	model.Compat["provider_id"] = entry.Provider.ID
-	model.Compat["provider_model_id"] = entry.Provider.ModelID
-	switch entry.Provider.ID {
-	case "wpcom_anthropic":
-		model.API = ai.ApiAnthropicMessages
-		model.Provider = ai.ProviderAnthropic
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "anthropic", false)
-	case "wpcom_vertex":
-		model.API = ai.ApiGoogleVertex
-		model.Provider = ai.ProviderGoogleVertex
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "vertex", false)
-	case "wpcom_openai":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderOpenAI
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openai", true)
-	case "wpcom_google":
-		model.API = ai.ApiGoogleVertex
-		model.Provider = ai.ProviderGoogleVertex
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "vertex", false)
-	case "wpcom_xai":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderXAI
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "xai", true)
-	case "wpcom_groq":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderGroq
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "groq", true)
-	case "wpcom_a8c":
-		model.API = ai.ApiOpenAICompletions
-		if entry.Provider.API == string(ai.ApiOpenAIResponses) {
-			model.API = ai.ApiOpenAIResponses
-		}
-		model.Provider = ai.Provider("a8c")
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "a8c", true)
-	case "openrouter":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderOpenRouter
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openrouter", true)
+	if entry.Runtime.Model != "" {
+		model.Compat["runtime_model"] = entry.Runtime.Model
 	}
+	if entry.Runtime.API != "" {
+		model.API = ai.Api(entry.Runtime.API)
+	}
+	if entry.Runtime.Provider != "" {
+		model.Provider = ai.Provider(entry.Runtime.Provider)
+		model.Compat["runtime_provider"] = entry.Runtime.Provider
+	}
+	if useRuntimeBaseURL && entry.Runtime.BaseURL != "" {
+		model.BaseURL = aiServicesRuntimeBaseURL(provider.BaseURL, entry.Runtime.BaseURL)
+	}
+	entry.Runtime.Compat.applyTo(model.Compat)
 	return model
+}
+
+func (compat *aiServicesModelCompat) applyTo(dst map[string]any) {
+	if compat == nil {
+		return
+	}
+	setBoolCompat(dst, "supportsStore", compat.SupportsStore)
+	setBoolCompat(dst, "supportsDeveloperRole", compat.SupportsDeveloperRole)
+	setBoolCompat(dst, "supportsReasoningEffort", compat.SupportsReasoningEffort)
+	setBoolCompat(dst, "supportsUsageInStreaming", compat.SupportsUsageInStreaming)
+	setStringCompat(dst, "maxTokensField", compat.MaxTokensField)
+	setBoolCompat(dst, "requiresToolResultName", compat.RequiresToolResultName)
+	setBoolCompat(dst, "requiresAssistantAfterToolResult", compat.RequiresAssistantAfterToolResult)
+	setBoolCompat(dst, "requiresThinkingAsText", compat.RequiresThinkingAsText)
+	setBoolCompat(dst, "requiresReasoningContentOnAssistantMessages", compat.RequiresReasoningContentOnAssistantMessages)
+	setStringCompat(dst, "thinkingFormat", compat.ThinkingFormat)
+	setBoolCompat(dst, "zaiToolStream", compat.ZaiToolStream)
+	setBoolCompat(dst, "supportsStrictMode", compat.SupportsStrictMode)
+	setStringCompat(dst, "cacheControlFormat", compat.CacheControlFormat)
+	setBoolCompat(dst, "sendSessionAffinityHeaders", compat.SendSessionAffinityHeaders)
+	setBoolCompat(dst, "supportsLongCacheRetention", compat.SupportsLongCacheRetention)
+	setBoolCompat(dst, "sendSessionIdHeader", compat.SendSessionIDHeader)
+	setBoolCompat(dst, "supportsEagerToolInputStreaming", compat.SupportsEagerToolInputStreaming)
+	setBoolCompat(dst, "supportsCacheControlOnTools", compat.SupportsCacheControlOnTools)
+	setBoolCompat(dst, "supportsTemperature", compat.SupportsTemperature)
+	setBoolCompat(dst, "forceAdaptiveThinking", compat.ForceAdaptiveThinking)
+	setBoolCompat(dst, "allowEmptySignature", compat.AllowEmptySignature)
+}
+
+func setBoolCompat(dst map[string]any, key string, value *bool) {
+	if value != nil {
+		dst[key] = *value
+	}
+}
+
+func setStringCompat(dst map[string]any, key string, value string) {
+	if value != "" {
+		dst[key] = value
+	}
 }
 
 func (entry aiServicesModelEntry) compat() map[string]any {
@@ -606,15 +673,12 @@ func (entry aiServicesModelEntry) compat() map[string]any {
 	return compat
 }
 
-func aiServicesProxyBaseURL(baseURL string, providerPath string, includeV1 bool) string {
+func aiServicesRuntimeBaseURL(baseURL string, runtimeBaseURL string) string {
 	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return baseURL
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/" + providerPath
-	if includeV1 {
-		parsed.Path += "/v1"
-	}
+	parsed.Path = joinURLPath(parsed.Path, runtimeBaseURL)
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()
@@ -656,6 +720,13 @@ func (entry aiServicesModelEntry) maxTokens() int {
 
 func (entry aiServicesModelEntry) reasoning() bool {
 	return entry.Capabilities != nil && entry.Capabilities.Reasoning != nil && entry.Capabilities.Reasoning.Supported
+}
+
+func (entry aiServicesModelEntry) reasoningMode() ai.ModelReasoningMode {
+	if entry.Capabilities == nil || entry.Capabilities.Reasoning == nil {
+		return ""
+	}
+	return ai.ModelReasoningMode(strings.ToLower(strings.TrimSpace(entry.Capabilities.Reasoning.Mode)))
 }
 
 func (entry aiServicesModelEntry) builtInTools() []string {
@@ -794,16 +865,6 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 			return model, true
 		}
 	}
-	if modelID, ok := strings.CutPrefix(identifier, provider.ID+"/"); ok {
-		if model, ok := arbitraryModelForProvider(provider, modelID); ok && providerAllowsArbitraryModels(provider) {
-			return model, true
-		}
-	}
-	if !strings.Contains(identifier, "/") && providerAllowsArbitraryModels(provider) {
-		if model, ok := arbitraryModelForProvider(provider, identifier); ok {
-			return model, true
-		}
-	}
 	return ai.Model{}, false
 }
 
@@ -855,30 +916,6 @@ func contactModels(provider aiid.ProviderConfig) []ai.Model {
 		return nil
 	}
 	return []ai.Model{normalizeProviderModel(modelForProviderConfig(provider, provider.DefaultModel), provider)}
-}
-
-func arbitraryModelForProvider(provider aiid.ProviderConfig, query string) (ai.Model, bool) {
-	modelID := strings.TrimSpace(query)
-	if modelID == "" {
-		return ai.Model{}, false
-	}
-	if stripped, ok := strings.CutPrefix(modelID, provider.ID+"/"); ok {
-		modelID = strings.TrimSpace(stripped)
-	}
-	if modelID == "" {
-		return ai.Model{}, false
-	}
-	model := normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
-	displayName := provider.DisplayName
-	if displayName == "" {
-		displayName = providerDisplayName(provider.ID)
-	}
-	model.Name = displayName + ": " + modelID
-	return model, true
-}
-
-func providerAllowsArbitraryModels(provider aiid.ProviderConfig) bool {
-	return provider.ID != aiid.DefaultProvider
 }
 
 func cloneModelContacts(contacts []*bridgev2.ResolveIdentifierResponse) []*bridgev2.ResolveIdentifierResponse {

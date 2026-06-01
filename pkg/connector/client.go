@@ -277,6 +277,7 @@ func (cl *Client) handleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixM
 	if err := cl.ensureUsablePortal(msg.Portal); err != nil {
 		return nil, err
 	}
+	cl.updateLastKnownTimezoneFromMessage(ctx, msg)
 	if resp, handled, err := cl.handleAISlashCommand(ctx, msg); handled {
 		return resp, err
 	}
@@ -300,6 +301,9 @@ func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridge
 	}
 	model := cl.Main.ModelForProvider(provider, modelID)
 	if err := cl.validateReasoningLevel(model, roomConfig); err != nil {
+		return nil, err
+	}
+	if err := cl.validateReasoningMode(model, roomConfig); err != nil {
 		return nil, err
 	}
 	prompt, err := msgconv.FromMatrix(ctx, cl.Main.Bridge.Matrix.BotIntent(), msg)
@@ -387,7 +391,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 		cl.markPendingFailed(ctx, pending, err)
 		return
 	}
-	cl.registerProviderBuiltInToolHooks(agentHarness)
+	cl.registerProviderBuiltInToolHooks(agentHarness, roomConfig)
 	active.harness = agentHarness
 	active.addPending(pending)
 	cl.setActiveHarness(msg.Portal.PortalKey, agentHarness)
@@ -1196,6 +1200,7 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 			downstream.End()
 			return stream
 		}
+		streamSources := newSourceCollector()
 		go func() {
 			defer cancelStream()
 			if onEnd != nil {
@@ -1248,6 +1253,17 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 					cursor.mu.Lock()
 					beforeEvents := len(run.Events)
 					applyAIStreamEvent(writer, evt, model.ContextWindow)
+					if evt.Partial != nil {
+						for _, source := range streamSources.addProviderSources(*evt.Partial) {
+							writer.Custom("com.beeper.source", source)
+						}
+					}
+					if evt.Type == "toolresult" && evt.ToolCall != nil && !hasPriorToolResult(run.Events, beforeEvents, evt.ToolCall.ID) {
+						output := toolOutputEvent{ID: evt.ToolCall.ID, Name: evt.ToolCall.Name, Input: evt.ToolCall.Arguments}
+						for _, source := range streamSources.addToolOutput(output, evt.CustomValue) {
+							writer.Custom("com.beeper.source", source)
+						}
+					}
 					afterEvents := len(run.Events)
 					maybeSecondVisibleChunk(evt)
 					if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
@@ -1655,6 +1671,7 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 	case "thinking_delta":
 		writer.ReasoningDelta(evt.ContentIndex, evt.Delta)
 	case "thinking_end":
+		writer.ReasoningContentSnapshot(evt.ContentIndex, evt.Content)
 		writer.ReasoningMessageEnd(evt.ContentIndex)
 	case "toolcall_start":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
@@ -1667,6 +1684,14 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 	case "toolcall_end":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
 			writer.ToolInputComplete(toolCall.ID, toolCall.Name, toolCall.Arguments)
+		}
+	case "toolresult":
+		if toolCall := toolCallFromEvent(); toolCall != nil {
+			result := evt.CustomValue
+			if result == nil {
+				result = map[string]any{"state": agui.ToolResultStateComplete, "status": "success"}
+			}
+			writer.ToolEnd(toolCall.ID, toolCall.Name, toolCall.Arguments, result)
 		}
 	case "custom":
 		if evt.CustomName != "" {
@@ -1696,7 +1721,7 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent, c
 }
 
 func writeFinalTextFallback(writer *aistream.Writer, message ai.Message) {
-	if writer == nil || writer.Run == nil || writer.Run.Text() != "" || runHasStreamedText(*writer.Run) {
+	if writer == nil || writer.Run == nil || writer.HasTextContent() {
 		return
 	}
 	if text := msgconv.AssistantText(message); text != "" {
@@ -1705,24 +1730,27 @@ func writeFinalTextFallback(writer *aistream.Writer, message ai.Message) {
 	}
 }
 
-func runHasStreamedText(run aistream.Run) bool {
-	for _, evt := range run.Events {
-		switch evt.Type() {
-		case agui.EventTextMessageContent, agui.EventTextMessageChunk:
-			if delta, _ := evt.Get("delta").(string); delta != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 type toolOutputEvent struct {
 	ID      string
 	Name    string
 	Input   any
 	Result  agent.AgentToolResult[any]
 	IsError bool
+}
+
+func hasPriorToolResult(events []agui.Event, before int, toolCallID string) bool {
+	if toolCallID == "" {
+		return false
+	}
+	if before > len(events) {
+		before = len(events)
+	}
+	for _, evt := range events[:before] {
+		if evt.Type() == agui.EventToolCallResult && evt.Get("toolCallId") == toolCallID {
+			return true
+		}
+	}
+	return false
 }
 
 func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent, messages ...ai.Message) {
@@ -1738,6 +1766,7 @@ func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent, messages ..
 	}
 	for _, message := range messages {
 		sources.addProviderSources(message)
+		sources.addAnswerURLSources(message)
 	}
 	for _, source := range sources.sources() {
 		writer.Custom("com.beeper.source", source)
@@ -2414,6 +2443,7 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, cl *Client, publish
 		return fmt.Errorf("no active assistant stream for tool output")
 	}
 	stream := r.streams[0]
+	stream.tools = append(stream.tools, output)
 	r.mu.Unlock()
 
 	stream.publish.mu.Lock()

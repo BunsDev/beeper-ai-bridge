@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -183,8 +184,13 @@ type Writer struct {
 	builder                   agui.EventBuilder
 	textMessages              map[int]string
 	textOpen                  map[int]bool
+	textContentWritten        bool
+	textIndexOffset           int
+	currentAssistantMessageID string
 	reasoningMessages         map[int]string
 	reasoningOpen             map[int]bool
+	reasoningContent          map[int]string
+	reasoningIndexOffset      int
 	reasoningPhaseID          string
 	reasoningPhaseOpen        bool
 	nextSyntheticReasoningIdx int
@@ -226,17 +232,24 @@ func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *R
 }
 
 func NewWriter(run *Run, now func() time.Time) *Writer {
-	return &Writer{
-		Run:                run,
-		builder:            agui.NewEventBuilder(run.Model, now),
-		textMessages:       map[int]string{},
-		textOpen:           map[int]bool{},
-		reasoningMessages:  map[int]string{},
-		reasoningOpen:      map[int]bool{},
-		reasoningPhaseID:   "reasoning-" + run.RunID,
-		lastAccountedChars: utf8.RuneCountInString(run.Text()),
-		previewText:        run.Text(),
+	textIndexOffset := nextMessageOrdinal(run, messageOrdinalText)
+	reasoningIndexOffset := nextMessageOrdinal(run, messageOrdinalReasoning)
+	writer := &Writer{
+		Run:                  run,
+		builder:              agui.NewEventBuilder(run.Model, now),
+		textMessages:         map[int]string{},
+		textOpen:             map[int]bool{},
+		textIndexOffset:      textIndexOffset,
+		reasoningMessages:    map[int]string{},
+		reasoningOpen:        map[int]bool{},
+		reasoningContent:     map[int]string{},
+		reasoningIndexOffset: reasoningIndexOffset,
+		reasoningPhaseID:     "reasoning-" + run.RunID,
+		lastAccountedChars:   utf8.RuneCountInString(run.Text()),
+		previewText:          run.Text(),
 	}
+	writer.currentAssistantMessageID = writer.textMessageID(0)
+	return writer
 }
 
 func (w *Writer) Add(evt agui.Event) {
@@ -264,7 +277,12 @@ func (w *Writer) TextDelta(index int, delta string) {
 		return
 	}
 	messageID := w.ensureTextMessage(index)
+	w.textContentWritten = true
 	w.Add(w.builder.TextMessageContent(messageID, delta))
+}
+
+func (w *Writer) HasTextContent() bool {
+	return w != nil && w.textContentWritten
 }
 
 func (w *Writer) TextEnd(index int) {
@@ -288,6 +306,7 @@ func (w *Writer) Thinking(delta string) {
 }
 
 func (w *Writer) ReasoningMessageStart(index int) string {
+	w.ensureCurrentAssistantMessage()
 	w.ensureReasoningPhase()
 	return w.ensureReasoningMessage(index)
 }
@@ -297,7 +316,26 @@ func (w *Writer) ReasoningDelta(index int, delta string) {
 		return
 	}
 	messageID := w.ReasoningMessageStart(index)
+	w.reasoningContent[index] += delta
 	w.Add(w.builder.ReasoningMessageContent(messageID, delta))
+}
+
+func (w *Writer) ReasoningContentSnapshot(index int, content string) {
+	if content == "" {
+		return
+	}
+	w.initState()
+	previous := w.reasoningContent[index]
+	if content == previous {
+		return
+	}
+	if previous == "" {
+		w.ReasoningDelta(index, content)
+		return
+	}
+	if strings.HasPrefix(content, previous) {
+		w.ReasoningDelta(index, content[len(previous):])
+	}
 }
 
 func (w *Writer) ReasoningMessageEnd(index int) {
@@ -311,11 +349,13 @@ func (w *Writer) ReasoningMessageEnd(index int) {
 }
 
 func (w *Writer) StepStart(stepID string) {
-	w.Add(w.builder.StepStarted(w.Run.MessageID, stepID))
+	messageID := w.ensureCurrentAssistantMessage()
+	w.Add(w.builder.StepStarted(messageID, stepID))
 }
 
 func (w *Writer) StepFinish(stepID string) {
-	w.Add(w.builder.StepFinished(w.Run.MessageID, stepID))
+	messageID := w.ensureCurrentAssistantMessage()
+	w.Add(w.builder.StepFinished(messageID, stepID))
 }
 
 func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApproval) {
@@ -324,7 +364,7 @@ func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApp
 
 func (w *Writer) ToolStartWithMetadata(toolCallID, name string, index int, approval *ToolApproval, metadata map[string]any) {
 	idx := index
-	w.Add(w.builder.ToolCallStartWithMetadata(w.Run.MessageID, toolCallID, name, &idx, metadata))
+	w.Add(w.builder.ToolCallStartWithMetadata(w.currentAssistantMessage(), toolCallID, name, &idx, metadata))
 	if approval != nil {
 		w.recordApprovalRequest(toolCallID, name, approval)
 	}
@@ -627,6 +667,7 @@ func (w *Writer) finishText() {
 func (w *Writer) ensureTextMessage(index int) string {
 	w.initState()
 	if messageID := w.textMessages[index]; messageID != "" {
+		w.currentAssistantMessageID = messageID
 		if !w.textOpen[index] {
 			w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
 			w.textOpen[index] = true
@@ -634,6 +675,34 @@ func (w *Writer) ensureTextMessage(index int) string {
 		return messageID
 	}
 	messageID := w.textMessageID(index)
+	w.textMessages[index] = messageID
+	w.currentAssistantMessageID = messageID
+	w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
+	w.textOpen[index] = true
+	return messageID
+}
+
+func (w *Writer) currentAssistantMessage() string {
+	w.initState()
+	if w.currentAssistantMessageID == "" {
+		w.currentAssistantMessageID = w.textMessageID(0)
+	}
+	return w.currentAssistantMessageID
+}
+
+func (w *Writer) ensureCurrentAssistantMessage() string {
+	messageID := w.currentAssistantMessage()
+	for index, existingID := range w.textMessages {
+		if existingID != messageID {
+			continue
+		}
+		if !w.textOpen[index] {
+			w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
+			w.textOpen[index] = true
+		}
+		return messageID
+	}
+	index := w.textIndexForMessageID(messageID)
 	w.textMessages[index] = messageID
 	w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
 	w.textOpen[index] = true
@@ -668,10 +737,11 @@ func (w *Writer) ensureReasoningMessage(index int) string {
 }
 
 func (w *Writer) textMessageID(index int) string {
-	if index <= 0 {
+	ordinal := w.textIndexOffset + max(index, 0)
+	if ordinal == 0 {
 		return w.Run.MessageID
 	}
-	return fmt.Sprintf("%s-text-%d", w.Run.MessageID, index)
+	return fmt.Sprintf("%s-text-%d", w.Run.MessageID, ordinal)
 }
 
 func (w *Writer) reasoningMessageID(index int) string {
@@ -679,7 +749,19 @@ func (w *Writer) reasoningMessageID(index int) string {
 		index = w.nextSyntheticReasoningIdx
 		w.nextSyntheticReasoningIdx++
 	}
-	return fmt.Sprintf("%s-reasoning-%d", w.Run.MessageID, index)
+	return fmt.Sprintf("%s-reasoning-%d", w.Run.MessageID, w.reasoningIndexOffset+max(index, 0))
+}
+
+func (w *Writer) textIndexForMessageID(messageID string) int {
+	ordinal, ok := messageOrdinal(w.Run.MessageID, messageID, messageOrdinalText)
+	if !ok {
+		return 0
+	}
+	index := ordinal - w.textIndexOffset
+	if index < 0 {
+		return 0
+	}
+	return index
 }
 
 func (w *Writer) toolResultMessageID(toolCallID string) string {
@@ -730,6 +812,9 @@ func (w *Writer) initState() {
 	if w.reasoningOpen == nil {
 		w.reasoningOpen = map[int]bool{}
 	}
+	if w.reasoningContent == nil {
+		w.reasoningContent = map[int]string{}
+	}
 	if w.reasoningPhaseID == "" && w.Run != nil {
 		w.reasoningPhaseID = "reasoning-" + w.Run.RunID
 	}
@@ -743,6 +828,82 @@ func sortedOpenIndexes(open map[int]bool) []int {
 		}
 	}
 	return slices.Sorted(maps.Keys(indexes))
+}
+
+type messageOrdinalKind int
+
+const (
+	messageOrdinalText messageOrdinalKind = iota
+	messageOrdinalReasoning
+)
+
+func nextMessageOrdinal(run *Run, kind messageOrdinalKind) int {
+	if run == nil {
+		return 0
+	}
+	maxOrdinal := -1
+	for _, evt := range run.Events {
+		if !messageOrdinalEvent(evt.Type(), kind) {
+			continue
+		}
+		messageID, _ := evt.Get("messageId").(string)
+		if messageID == "" {
+			continue
+		}
+		ordinal, ok := messageOrdinal(run.MessageID, messageID, kind)
+		if ok && ordinal > maxOrdinal {
+			maxOrdinal = ordinal
+		}
+	}
+	if maxOrdinal < 0 {
+		return 0
+	}
+	return maxOrdinal + 1
+}
+
+func messageOrdinalEvent(eventType string, kind messageOrdinalKind) bool {
+	switch kind {
+	case messageOrdinalText:
+		switch eventType {
+		case agui.EventTextMessageStart, agui.EventTextMessageContent, agui.EventTextMessageChunk, agui.EventTextMessageEnd:
+			return true
+		default:
+			return false
+		}
+	case messageOrdinalReasoning:
+		switch eventType {
+		case agui.EventReasoningMsgStart, agui.EventReasoningMsgCont, agui.EventReasoningMsgChunk, agui.EventReasoningMsgEnd:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func messageOrdinal(baseID, messageID string, kind messageOrdinalKind) (int, bool) {
+	switch kind {
+	case messageOrdinalText:
+		if messageID == baseID {
+			return 0, true
+		}
+		prefix := baseID + "-text-"
+		if !strings.HasPrefix(messageID, prefix) {
+			return 0, false
+		}
+		ordinal, err := strconv.Atoi(strings.TrimPrefix(messageID, prefix))
+		return ordinal, err == nil && ordinal > 0
+	case messageOrdinalReasoning:
+		prefix := baseID + "-reasoning-"
+		if !strings.HasPrefix(messageID, prefix) {
+			return 0, false
+		}
+		ordinal, err := strconv.Atoi(strings.TrimPrefix(messageID, prefix))
+		return ordinal, err == nil && ordinal >= 0
+	default:
+		return 0, false
+	}
 }
 
 func toolResultState(result any) string {

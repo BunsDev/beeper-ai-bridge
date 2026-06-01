@@ -13,7 +13,6 @@ import (
 //go:embed example-config.yaml
 var ExampleConfig string
 
-const defaultAIServicesProxyPath = "/proxy/openai/v1"
 const defaultBeeperAIModel = "beeper/default"
 const defaultTitleGenerationModel = "gpt-4.1-mini"
 const fallbackTitleGenerationModel = "gpt-5-mini"

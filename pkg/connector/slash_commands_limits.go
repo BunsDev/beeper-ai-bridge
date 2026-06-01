@@ -56,10 +56,10 @@ func runLimitsCommand(cl *Client, ctx context.Context, _ *bridgev2.Portal, _ Roo
 		return err
 	}
 	now := time.Now()
-	if raw {
-		return responder.Reply(ctx, formatRawLimitsCommandInfo(limits, now))
-	}
 	text := formatLimitsCommandInfo(limits, now)
+	if raw {
+		text = formatRawLimitsCommandInfo(limits, now)
+	}
 	if aiResponder, ok := responder.(aiCommandAIResponder); ok {
 		return aiResponder.ReplyAI(ctx, text)
 	}
@@ -118,12 +118,11 @@ func (cl *Client) defaultAIProviderForLimits() (aiid.ProviderConfig, error) {
 	return provider, nil
 }
 
-func aiServicesLimitsURL(proxyBaseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesLimitsURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = trimAIProxyProviderPath(parsed.Path)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/limits"
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
@@ -132,25 +131,23 @@ func aiServicesLimitsURL(proxyBaseURL string) (string, error) {
 
 func formatLimitsCommandInfo(limits aiServicesLimitsResponse, now time.Time) string {
 	var text strings.Builder
-	text.WriteString("AI limits\n\n")
-	appendLimitSection(&text, "Models", limits.Windows.LLM, now)
-	text.WriteString("\n")
-	appendLimitSection(&text, "Web Search", limits.Windows.WebTools, now)
-	if !emptyLimitWindows(limits.Windows.AudioTranscriptions) {
-		text.WriteString("\n")
-		appendLimitSectionWithUsedFormatter(&text, "Transcription", limits.Windows.AudioTranscriptions, now, formatLimitUsedMinutes)
-	}
-	if !emptyLimitWindows(limits.Windows.AudioGeneration) {
-		text.WriteString("\n")
-		appendLimitSectionWithUsedFormatter(&text, "Audio Generation", limits.Windows.AudioGeneration, now, formatLimitUsedCharacters)
+	text.WriteString("# AI limits\n\n")
+	appendLimitSectionIfReported(&text, "Models", limits.Windows.LLM, now)
+	appendLimitSectionIfReported(&text, "Web Search", limits.Windows.WebTools, now)
+	appendLimitSectionIfReported(&text, "Transcription", limits.Windows.AudioTranscriptions, now)
+	appendLimitSectionIfReported(&text, "Audio Generation", limits.Windows.AudioGeneration, now)
+	if strings.TrimSpace(text.String()) == "# AI limits" {
+		text.WriteString("No limits reported.\n")
 	}
 	return text.String()
 }
 
 func formatRawLimitsCommandInfo(limits aiServicesLimitsResponse, now time.Time) string {
 	var text strings.Builder
-	text.WriteString("AI limits raw:")
-	for _, category := range limitCategories(limits) {
+	for idx, category := range limitCategories(limits) {
+		if idx > 0 {
+			text.WriteString("\n")
+		}
 		appendRawLimitCategory(&text, category.label, category.windows, now)
 	}
 	return text.String()
@@ -162,21 +159,27 @@ type limitCategory struct {
 }
 
 func limitCategories(limits aiServicesLimitsResponse) []limitCategory {
-	categories := []limitCategory{{label: "LLM tokens", windows: limits.Windows.LLM}}
-	if !emptyLimitWindows(limits.Windows.WebTools) {
-		categories = append(categories, limitCategory{label: "Web tools", windows: limits.Windows.WebTools})
+	return []limitCategory{
+		{label: "LLM tokens", windows: limits.Windows.LLM},
+		{label: "Web tools", windows: limits.Windows.WebTools},
+		{label: "Audio transcription seconds", windows: limits.Windows.AudioTranscriptions},
+		{label: "Audio generation characters", windows: limits.Windows.AudioGeneration},
 	}
-	if !emptyLimitWindows(limits.Windows.AudioTranscriptions) {
-		categories = append(categories, limitCategory{label: "Audio transcription seconds", windows: limits.Windows.AudioTranscriptions})
-	}
-	if !emptyLimitWindows(limits.Windows.AudioGeneration) {
-		categories = append(categories, limitCategory{label: "Audio generation characters", windows: limits.Windows.AudioGeneration})
-	}
-	return categories
 }
 
 func appendLimitSection(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {
 	appendLimitSectionWithUsedFormatter(text, label, windows, now, formatLimitUsed)
+}
+
+func appendLimitSectionIfReported(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {
+	if emptyLimitWindows(windows) {
+		return
+	}
+	if text.Len() > 0 && !strings.HasSuffix(text.String(), "\n\n") {
+		text.WriteString("\n")
+	}
+	appendLimitSection(text, label, windows, now)
+	text.WriteString("\n")
 }
 
 func appendLimitSectionWithUsedFormatter(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time, formatUsed func(aiServicesLimitWindow) string) {
@@ -227,31 +230,6 @@ func formatLimitUsed(window aiServicesLimitWindow) string {
 	return fmt.Sprintf("`%s / %s`", formatInt(window.Used), formatInt(window.Limit))
 }
 
-func formatLimitUsedMinutes(window aiServicesLimitWindow) string {
-	if window.Limit == 0 && window.Used == 0 && window.Remaining == 0 {
-		return "Not reported"
-	}
-	if window.Limit < 0 {
-		return fmt.Sprintf("`%s` used", formatSecondsAsMinutes(window.Used))
-	}
-	return fmt.Sprintf("`%s / %s`", formatSecondsAsMinutes(window.Used), formatSecondsAsMinutes(window.Limit))
-}
-
-func formatLimitUsedCharacters(window aiServicesLimitWindow) string {
-	if window.Limit == 0 && window.Used == 0 && window.Remaining == 0 {
-		return "Not reported"
-	}
-	if window.Limit < 0 {
-		return fmt.Sprintf("`%s chars` used", formatInt(window.Used))
-	}
-	return fmt.Sprintf("`%s / %s chars`", formatInt(window.Used), formatInt(window.Limit))
-}
-
-func formatSecondsAsMinutes(seconds int64) string {
-	minutes := (seconds + 59) / 60
-	return fmt.Sprintf("%s %s", formatInt(minutes), pluralize("minute", int(minutes)))
-}
-
 func formatLimitReset(window aiServicesLimitWindow, now time.Time) string {
 	if window.ResetAtMS <= 0 {
 		return "unknown"
@@ -260,7 +238,9 @@ func formatLimitReset(window aiServicesLimitWindow, now time.Time) string {
 }
 
 func appendRawLimitCategory(text *strings.Builder, label string, windows aiServicesLimitWindows, now time.Time) {
-	fmt.Fprintf(text, "\n\n%s:", label)
+	fmt.Fprintf(text, "## %s\n\n", label)
+	text.WriteString("| Window | Left | Used | Limit | Remaining | Reset |\n")
+	text.WriteString("| --- | ---: | ---: | ---: | ---: | --- |\n")
 	appendRawLimitWindow(text, "Day", windows.Day, now)
 	appendRawLimitWindow(text, "Week", windows.Week, now)
 	appendRawLimitWindow(text, "Month", windows.Month, now)
@@ -269,17 +249,22 @@ func appendRawLimitCategory(text *strings.Builder, label string, windows aiServi
 func appendRawLimitWindow(text *strings.Builder, label string, window aiServicesLimitWindow, now time.Time) {
 	fmt.Fprintf(
 		text,
-		"\n- %s: percentage_left=`%d`, limit=`%s`, used=`%s`, remaining=`%s`",
+		"| %s | `%d%%` | `%s` | `%s` | `%s` | %s |\n",
 		label,
 		window.PercentageLeft,
-		formatInt(window.Limit),
 		formatInt(window.Used),
+		formatInt(window.Limit),
 		formatInt(window.Remaining),
+		formatRawLimitReset(window, now),
 	)
+}
+
+func formatRawLimitReset(window aiServicesLimitWindow, now time.Time) string {
 	if window.ResetAtMS > 0 {
 		resetAt := time.UnixMilli(window.ResetAtMS)
-		fmt.Fprintf(text, ", reset_at=`%d` (`%s`, in %s)", window.ResetAtMS, resetAt.UTC().Format(time.RFC3339), formatResetIn(resetAt, now))
+		return fmt.Sprintf("`%d` (`%s`, in %s)", window.ResetAtMS, resetAt.UTC().Format(time.RFC3339), formatResetIn(resetAt, now))
 	}
+	return "unknown"
 }
 
 func sharedResetAt(categories []limitCategory) (time.Time, bool) {

@@ -172,6 +172,13 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 			messageID, _ := evt.Get("messageId").(string)
 			message := ensureReasoningMessage(messageID)
 			message.content.WriteString(asString(evt.Get("delta")))
+		case agui.EventReasoningMsgChunk:
+			if !includeReasoning {
+				continue
+			}
+			messageID, _ := evt.Get("messageId").(string)
+			message := ensureReasoningMessage(messageID)
+			message.content.WriteString(asString(evt.Get("delta")))
 		case agui.EventReasoningMsgEnd:
 			messageID, _ := evt.Get("messageId").(string)
 			closeReasoningMessage(messageID)
@@ -305,6 +312,8 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	thinkingParts := map[string]*projectedPart{}
 	toolParts := map[string]MessagePart{}
 	stepParts := map[string]MessagePart{}
+	activityParts := map[string]MessagePart{}
+	activityContents := map[string]map[string]any{}
 	sourceParts := map[string]MessagePart{}
 	currentTextMessageID := ""
 	openTextMessageID := ""
@@ -452,6 +461,16 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			}
 			messageID, _ := evt.Get("messageId").(string)
 			ensureThinkingPart(messageID).content.WriteString(delta)
+		case agui.EventReasoningMsgChunk:
+			delta, _ := evt.Get("delta").(string)
+			if delta == "" {
+				continue
+			}
+			if !includeThinking {
+				continue
+			}
+			messageID, _ := evt.Get("messageId").(string)
+			ensureThinkingPart(messageID).content.WriteString(delta)
 		case agui.EventReasoningMsgEnd:
 			messageID, _ := evt.Get("messageId").(string)
 			closeThinkingPart(messageID)
@@ -583,6 +602,36 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 				stepParts[id] = part
 			}
 			part["state"] = state
+		case agui.EventActivitySnapshot:
+			messageID := firstString(evt.Get("messageId"), t.MessageID)
+			activityType := firstString(evt.Get("activityType"), "activity")
+			id := activityPartID(messageID, activityType)
+			content, _ := evt.Get("content").(map[string]any)
+			activityContents[id] = cloneMap(content)
+			part := activityParts[id]
+			if part == nil {
+				part = appendPart(MessagePart{"type": "thinking", "id": id, "messageId": messageID})
+				activityParts[id] = part
+			}
+			applyActivityContent(part, activityType, activityContents[id])
+		case agui.EventActivityDelta:
+			messageID := firstString(evt.Get("messageId"), t.MessageID)
+			activityType := firstString(evt.Get("activityType"), "activity")
+			id := activityPartID(messageID, activityType)
+			content := activityContents[id]
+			if content == nil {
+				content = map[string]any{}
+				activityContents[id] = content
+			}
+			if patch, ok := evt.Get("patch").([]any); ok {
+				applyJSONPatch(content, patch)
+			}
+			part := activityParts[id]
+			if part == nil {
+				part = appendPart(MessagePart{"type": "thinking", "id": id, "messageId": messageID})
+				activityParts[id] = part
+			}
+			applyActivityContent(part, activityType, content)
 		case agui.EventCustom:
 			name, _ := evt.Get("name").(string)
 			value, _ := evt.Get("value").(map[string]any)
@@ -632,15 +681,56 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 		projected.part["content"] = projected.content.String()
 		compactTextPart(projected.part, textBudget)
 	}
+	emptyThinkingPartIDs := map[string]struct{}{}
 	for _, projected := range thinkingParts {
 		content := projected.content.String()
 		if content == "" {
-			content = "Thinking..."
+			if t.Status.State != "" && t.Status.State != "streaming" {
+				if id := firstString(projected.part["id"]); id != "" {
+					emptyThinkingPartIDs[id] = struct{}{}
+				}
+				continue
+			}
 		}
 		projected.part["content"] = content
 		compactTextPart(projected.part, textBudget)
 	}
+	message.Parts = filterFinalMessageParts(message.Parts, emptyThinkingPartIDs)
 	return message
+}
+
+func filterFinalMessageParts(parts []MessagePart, emptyThinkingPartIDs map[string]struct{}) []MessagePart {
+	lastNativeOpenAIWebSearchByQuery := map[string]int{}
+	for index, part := range parts {
+		if query := nativeOpenAIWebSearchQuery(part); query != "" {
+			lastNativeOpenAIWebSearchByQuery[query] = index
+		}
+	}
+	out := parts[:0]
+	for index, part := range parts {
+		if part["type"] == "thinking" {
+			if _, ok := emptyThinkingPartIDs[firstString(part["id"])]; ok {
+				continue
+			}
+		}
+		if query := nativeOpenAIWebSearchQuery(part); query != "" && lastNativeOpenAIWebSearchByQuery[query] != index {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func nativeOpenAIWebSearchQuery(part MessagePart) string {
+	if part["type"] != "tool-call" || firstString(part["name"]) != "web_search" {
+		return ""
+	}
+	output, _ := part["output"].(map[string]any)
+	if output == nil || output["native"] != true {
+		return ""
+	}
+	input, _ := part["input"].(map[string]any)
+	return firstString(output["query"], input["query"])
 }
 
 func toolResultOutput(content string, state string, err any) any {
@@ -760,6 +850,7 @@ func isReasoningEventType(eventType string) bool {
 		agui.EventReasoningEnd,
 		agui.EventReasoningMsgStart,
 		agui.EventReasoningMsgCont,
+		agui.EventReasoningMsgChunk,
 		agui.EventReasoningMsgEnd:
 		return true
 	default:
@@ -787,7 +878,9 @@ func isActivityEventType(eventType string) bool {
 	case agui.EventToolCallStart,
 		agui.EventToolCallArgs,
 		agui.EventToolCallEnd,
-		agui.EventToolCallResult:
+		agui.EventToolCallResult,
+		agui.EventActivitySnapshot,
+		agui.EventActivityDelta:
 		return true
 	default:
 		return false
@@ -843,6 +936,129 @@ func asString(value any) string {
 	default:
 		return fmt.Sprint(typed)
 	}
+}
+
+func activityPartID(messageID string, activityType string) string {
+	return fmt.Sprintf("%s:activity:%s", messageID, activityType)
+}
+
+func applyActivityContent(part MessagePart, activityType string, content map[string]any) {
+	title, text, state := activityDisplay(activityType, content)
+	if text == "" {
+		return
+	}
+	part["content"] = text
+	if title != "" && title != text {
+		part["title"] = title
+	} else {
+		delete(part, "title")
+	}
+	part["stepId"] = firstString(title, text)
+	part["state"] = state
+}
+
+func activityDisplay(activityType string, content map[string]any) (title string, text string, state string) {
+	title = firstString(content["title"], content["label"], content["name"], activityTitle(activityType))
+	text = firstString(content["text"], content["content"], content["message"], content["summary"], content["description"], content["status"])
+	if text == "" {
+		text = title
+		title = ""
+	}
+	status := strings.ToLower(firstString(content["state"], content["status"], content["phase"]))
+	switch status {
+	case "done", "complete", "completed", "finished", "success", "failed", "error", "cancelled", "canceled":
+		state = agui.PartStateDone
+	default:
+		state = agui.PartStateStreaming
+	}
+	return title, text, state
+}
+
+func activityTitle(activityType string) string {
+	text := strings.NewReplacer("_", " ", "-", " ", ".", " ").Replace(strings.TrimSpace(activityType))
+	fields := strings.Fields(text)
+	for i, field := range fields {
+		if field == "" {
+			continue
+		}
+		fields[i] = strings.ToUpper(field[:1]) + field[1:]
+	}
+	return strings.Join(fields, " ")
+}
+
+func cloneMap(value map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
+}
+
+func applyJSONPatch(target map[string]any, patch []any) {
+	for _, rawOperation := range patch {
+		operation, ok := rawOperation.(map[string]any)
+		if !ok {
+			continue
+		}
+		path := firstString(operation["path"])
+		if path == "" {
+			continue
+		}
+		switch firstString(operation["op"]) {
+		case "add", "replace":
+			setJSONPointer(target, path, operation["value"])
+		case "remove":
+			removeJSONPointer(target, path)
+		}
+	}
+}
+
+func setJSONPointer(target map[string]any, path string, value any) {
+	parts := jsonPointerParts(path)
+	if len(parts) == 0 {
+		return
+	}
+	current := target
+	for _, part := range parts[:len(parts)-1] {
+		next, _ := current[part].(map[string]any)
+		if next == nil {
+			next = map[string]any{}
+			current[part] = next
+		}
+		current = next
+	}
+	current[parts[len(parts)-1]] = value
+}
+
+func removeJSONPointer(target map[string]any, path string) {
+	parts := jsonPointerParts(path)
+	if len(parts) == 0 {
+		return
+	}
+	current := target
+	for _, part := range parts[:len(parts)-1] {
+		next, _ := current[part].(map[string]any)
+		if next == nil {
+			return
+		}
+		current = next
+	}
+	delete(current, parts[len(parts)-1])
+}
+
+func jsonPointerParts(path string) []string {
+	if path == "" || path == "/" || !strings.HasPrefix(path, "/") {
+		return nil
+	}
+	raw := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~")
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 func cloneValueMap(value map[string]any) MessagePart {

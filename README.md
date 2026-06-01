@@ -301,7 +301,7 @@ Content is the universal `ContentBlock` (`text` / `thinking` / `toolCall` / `ima
 
 **Same protocol, new vendor** — usually *no code*:
 
-1. Add a model entry (in the generated catalog or a hand-built `ai.Model`) with the right `API`, `Provider`, `BaseURL`.
+1. Add a model entry in ai-services, or configure a custom provider model with the right `API`, `Provider`, `BaseURL`.
 2. Map the provider to its API-key env var(s) in `pkg/ai/env_api_keys.go`.
 3. Add any `Compat` overrides (most base-URL patterns are auto-detected by `detectOpenAICompletionsCompat`).
 
@@ -317,19 +317,15 @@ Provider-specific behaviors worth knowing live in `pkg/ai/providers`: OpenAI *Co
 
 ## The model catalog
 
-The runtime catalog is `Models` (`map[Provider]map[string]Model`) loaded from a large JSON literal in `pkg/ai/models_generated.go`. Accessors: `GetModel`, `GetProviders`, `GetModels`.
+The model catalog is owned by ai-services. The bridge loads `/models?feature=bridge:ai`, applies each model's runtime metadata, and fails provider resolution if ai-services does not return a catalog. There is no bridge-generated fallback catalog.
 
-It is **generated** by `cmd/generate-models-go`:
+Custom providers use the same ai-services catalog for model metadata. The bridge filters that catalog to the supported provider runtime (`openai`, `openrouter`, `anthropic`, or `google-vertex`) and then uses the user's configured base URL and API key for execution. Arbitrary model IDs and generic OpenAI-compatible providers are not accepted.
 
-```sh
-go run ./cmd/generate-models-go [output-path] [--include-unregistered]
-```
-
-It fetches `models.dev` and `openrouter.ai`, keeps only **tool-capable** models, normalizes capabilities/pricing, and applies hand-maintained overrides (`pkg/ai/modelcatalog/`) — e.g. `ThinkingLevelMap` for gpt-5/Gemini-3, Anthropic-style cache-control for OpenRouter Anthropic models. Reasoning levels form a ladder `off < minimal < low < medium < high < xhigh`; `ClampThinkingLevel` snaps a request to the nearest supported level.
+Reasoning levels form a ladder `off < minimal < low < medium < high < xhigh`; `ClampThinkingLevel` snaps a request to the nearest supported level from the model metadata the bridge was given.
 
 ## Image generation
 
-Image generation is a **separate path** (`pkg/ai/images.go`, `images_*.go`): `ai.GenerateImages(ctx, ImagesModel, ImagesContext, ImagesOptions) AssistantImages` (synchronous, no streaming). It has its own model catalog (`image_models_generated.go` — FLUX.2, Seedream, Gemini "Nano Banana", GPT Image, Recraft, etc.) and its own registry. The built-in implementation routes through OpenRouter; blank-import `pkg/ai/providers/images` to enable it. Models can also expose **provider-native** `image_generation` as a built-in tool (see [chat tools](#built-in-chat-tools--adding-your-own)).
+Image generation is a **separate path** (`pkg/ai/images.go`, `images_*.go`): `ai.GenerateImages(ctx, ImagesModel, ImagesContext, ImagesOptions) AssistantImages` (synchronous, no streaming). Image model metadata must come from ai-services or explicit provider configuration; the bridge does not keep a generated image catalog. The built-in implementation supports OpenRouter; blank-import `pkg/ai/providers/images` to enable it. Models can also expose **provider-native** `image_generation` as a built-in tool (see [chat tools](#built-in-chat-tools--adding-your-own)).
 
 ## The agent runtime
 
@@ -374,11 +370,13 @@ Errors are typed with codes (`pkg/agent/harness/public_errors.go`): `CompactionE
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| `get_session` | Live chat metadata (current time/timezone, model, reasoning, disabled tools, attachments) | read-only; recomputes time per call |
-| `fetch` | Fetch an HTTP/HTTPS URL → readable text + metadata | direct fetch (≤2 MiB, ≤20 000 chars) or Exa-backed contents (≤10 000 chars) with fallback |
-| `web_search` | Web search via Exa | only enabled for the Beeper provider with a proxy token; rich Exa options; results become source citations |
+| `get_session` | Live chat metadata (current time/timezone, model, reasoning, search/fetch modes, attachments) | read-only; recomputes time per call |
+| `fetch` | Fetch a full HTTP/HTTPS URL → readable text + metadata | Beeper mode: direct fetch (≤2 MiB, ≤20 000 chars) or AI-services `/tools/fetch` extraction with fallback; native mode: provider URL-context/fetch tool when available |
+| `web_search` | Web search | Exa-backed Beeper search, enabled when room search mode is `beeper`; returns concise URL results for optional follow-up `fetch` calls |
 
-Tools are gated per-room via the `com.beeper.ai.tools` state event's `disabled` array. Exa-backed tools route through the AI-services proxy (`/proxy/exa/v1/...`) using the appservice bearer token. Some models additionally expose **provider-native** built-ins (`image_generation`, `web_search`) injected into the request payload (`pkg/connector/builtin_tools.go`).
+Tools are gated per-room via the `com.beeper.ai.tools` state event. `search` may be `off`, `beeper`, or `native`; `fetch` may be `off`, `beeper`, or `native`. The legacy `disabled` array is still read for older room state. In `beeper` mode, web tools route through AI-services (`/tools/web_search`, `/tools/fetch`) using the appservice bearer token. In `native` mode, provider-native tools are injected where supported: OpenAI/OpenRouter search, OpenRouter fetch, Anthropic search/fetch, and Google search/URL context. If the selected provider API has no native equivalent, that native tool is unavailable. Search result URLs stay in the tool view; fetched pages, provider-native citation annotations, URL-context metadata, and final-answer URLs become canonical `com.beeper.source` artifacts for client source cards. Other provider-native built-ins, such as `image_generation`, are still injected from the model catalog (`pkg/connector/builtin_tools.go`).
+
+`fetch` tries the URL directly first with `Accept` preferring Markdown, plain text, JSON, XML, and CSV. If the response is already agent-readable (Markdown/plain/JSON/XML/CSV/source-ish), it returns that result without backend extraction. If the response is HTML, it checks HTTP `Link` headers and HTML `<link rel="alternate" type="text/markdown|text/plain">` for a readable alternate and fetches that directly. Only when the direct representation is not agent-ready does it call AI-services `/tools/fetch`. Local/private hosts, GitHub raw/gist URLs, GitLab-style raw paths, and source/text file extensions are treated as direct-fetch candidates.
 
 **Adding a tool:**
 
@@ -386,9 +384,9 @@ Tools are gated per-room via the `com.beeper.ai.tools` state event's `disabled` 
 2. Return `jsonResult(value)` for consistent text + `Details` output.
 3. Register in `chattools.Tools` (unconditionally or behind a config gate).
 4. Wire config in `pkg/connector/chat_tools.go` and honor `DisabledTools`.
-5. If it produces citable sources, mirror `webSearchSourceParts` so URLs surface as message sources.
+5. If it produces citable sources, add canonical source observations in `pkg/connector/sources.go` so URLs surface as message sources.
 
-> **Security note:** `fetch` has **no SSRF guard** — it can reach localhost/private/link-local addresses (it just bypasses Exa for them). Treat it accordingly in your threat model.
+> **Security note:** the direct fetch path intentionally bypasses AI-services for localhost/private/link-local addresses, raw asset URLs, and source-like files, and has **no SSRF guard**. Deployments that cannot allow bridge-origin egress to private networks should enforce an upstream deny-list or network policy before enabling `fetch`.
 
 ## Sessions: the branching conversation tree
 
@@ -414,8 +412,8 @@ The bridge advertises five login flows (`pkg/connector/login.go`):
 
 | Flow | What it does |
 |------|--------------|
-| `beeper` | The default **Beeper AI** login. Routes through an `ai-services.<domain>` proxy derived from the user's homeserver; uses an appservice bearer token, no stored key. Read-only/managed. |
-| `openai-responses` / `openai-completions` / `openai-codex-responses` | **Custom provider**: enter base URL + API key, the bridge fetches `/models`, you pick a default model. |
+| `beeper` | The default **Beeper AI** login. Loads its catalog and runtime proxy metadata from `ai-services.<domain>` derived from the user's homeserver; uses an appservice bearer token, no stored key. Read-only/managed. |
+| `openai-responses` / `openai-completions` / `openai-codex-responses` / `anthropic-messages` / `google-vertex` | **Custom provider**: enter base URL + API key, the bridge loads matching model metadata from ai-services, then you pick a default model. |
 | `chatgpt-device` | **ChatGPT** OAuth device-code flow (PKCE). Stores access + refresh tokens, auto-refreshes within 2 min of expiry. |
 
 One Matrix user can hold multiple AI logins; there's a canonical "AI Chats" login per user. Provider configs (with secrets) live in `UserLoginMetadata.Providers`. API keys support `env:NAME` indirection. The `beeper` provider is special and **read-only** — it can't be added/updated/deleted.
@@ -464,7 +462,7 @@ compaction:
 
 Three scopes layer together: **bridge-wide** YAML → **per-login** provider configs (`UserLoginMetadata.Providers`) → **per-room** state (`com.beeper.ai.model` / `.additional_prompt` / `.tools`).
 
-Relevant constants: default Beeper model `beeper/default`, title-generation model `gpt-4.1-mini` (fallback `gpt-5-mini`), default AI-services proxy path `/proxy/openai/v1`.
+Relevant constants: default Beeper model `beeper/default`, title-generation model `gpt-4.1-mini` (fallback `gpt-5-mini`), default AI Services base URL derived from the user's homeserver domain.
 
 ---
 
@@ -520,7 +518,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 - **Reasoning is double-validated and clamped** — setting a model can silently change the effective reasoning level.
 - **Two parallel session-tree implementations** (`aidb` vs `session` SQLite files) with near-duplicate SQL and one subtle difference (`ON DELETE CASCADE`).
 - **Token counts are estimates** (≈ chars/4) — compaction thresholds are approximate.
-- **`fetch` has no SSRF protection.**
+- **The direct fetch path intentionally allows private-network/raw-asset egress and has no SSRF protection.**
 - **`ProviderConfig` holds secrets** (API keys, refresh tokens) in login metadata and serializes to JSON *and* YAML — don't log it.
 - **AG-UI `Event` is a map, not a struct** — read typed fields via `Get`/`String`; unknown fields survive round-trips.
 
@@ -531,8 +529,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 | Package | Responsibility |
 |---------|----------------|
 | `cmd/ai` | bridge entry point (registers connector + providers) |
-| `cmd/generate-models-go` | regenerates the text-model catalog from upstream sources |
-| `pkg/ai` | provider/API/model abstraction, streaming interface, model catalog, env keys |
+| `pkg/ai` | provider/API/model abstraction, streaming interface, env keys |
 | `pkg/ai/providers` | built-in provider implementations (OpenAI Completions/Responses/Codex, Anthropic, Google GenAI/Vertex) + image generation |
 | `pkg/ai-stream` | the `Run` model: AG-UI event accumulation, anchor/stream/final projection, approvals, final-payload sizing |
 | `pkg/ag-ui` | the AG-UI wire event protocol, typed events, schema, validation, capabilities |
@@ -541,7 +538,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 | `pkg/agent/harness/session` | branching conversation tree (per-conversation SQLite) |
 | `pkg/agent/autocompact` | compaction trigger policy |
 | `pkg/chattools` | built-in tools: `get_session`, `fetch`, `web_search` |
-| `pkg/connector` | the `bridgev2` connector: rooms↔sessions, slash/bridge commands, login, provider routes, capabilities, contacts, direct media, room state |
+| `pkg/connector` | the `bridgev2` connector: rooms↔sessions, slash/bridge commands, login, provider catalog loading, capabilities, contacts, direct media, room state |
 | `pkg/msgconv` | Matrix ⇄ AI message conversion |
 | `pkg/aiid` | deterministic IDs + metadata types |
 | `pkg/aidb` | bridge-DB persistence: session storage + active-stream resume |

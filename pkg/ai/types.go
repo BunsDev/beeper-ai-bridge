@@ -8,6 +8,7 @@ type Provider string
 type ImagesProvider string
 type ThinkingLevel string
 type ModelThinkingLevel string
+type ModelReasoningMode string
 type CacheRetention string
 type Transport string
 type StopReason string
@@ -68,6 +69,8 @@ const (
 	ThinkingLevelXHigh   ThinkingLevel = "xhigh"
 
 	ModelThinkingLevelOff ModelThinkingLevel = "off"
+
+	ModelReasoningModeAdaptive ModelReasoningMode = "adaptive"
 
 	CacheRetentionNone  CacheRetention = "none"
 	CacheRetentionShort CacheRetention = "short"
@@ -139,6 +142,7 @@ type Model struct {
 	Reasoning            bool                           `json:"reasoning"`
 	ThinkingLevelMap     map[ModelThinkingLevel]*string `json:"thinkingLevelMap,omitempty"`
 	DefaultThinkingLevel ModelThinkingLevel             `json:"defaultThinkingLevel,omitempty"`
+	ReasoningMode        ModelReasoningMode             `json:"reasoningMode,omitempty"`
 	Input                []string                       `json:"input"`
 	Output               []string                       `json:"output,omitempty"`
 	Cost                 ModelCost                      `json:"cost"`
@@ -248,6 +252,24 @@ type Message struct {
 	FromID        string     `json:"fromId,omitempty"`
 	TokensBefore  int        `json:"tokensBefore,omitempty"`
 	Truncated     bool       `json:"truncated,omitempty"`
+	Citations     []Citation `json:"citations,omitempty"`
+}
+
+type Citation struct {
+	Type         string `json:"type,omitempty"`
+	URL          string `json:"url,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	SiteName     string `json:"siteName,omitempty"`
+	FaviconURL   string `json:"faviconUrl,omitempty"`
+	ImageURL     string `json:"imageUrl,omitempty"`
+	PublishedAt  string `json:"publishedAt,omitempty"`
+	StartIndex   *int   `json:"startIndex,omitempty"`
+	EndIndex     *int   `json:"endIndex,omitempty"`
+	ContentIndex *int   `json:"contentIndex,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	RawType      string `json:"rawType,omitempty"`
 }
 
 type Tool struct {

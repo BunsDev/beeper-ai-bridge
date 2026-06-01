@@ -19,8 +19,9 @@ type ProviderConfig struct {
 }
 
 type UserLoginMetadata struct {
-	Providers map[string]ProviderConfig   `json:"providers,omitempty"`
-	Approvals map[string]ApprovalDecision `json:"approvals,omitempty"`
+	Providers         map[string]ProviderConfig   `json:"providers,omitempty"`
+	Approvals         map[string]ApprovalDecision `json:"approvals,omitempty"`
+	LastKnownTimezone string                      `json:"last_known_timezone,omitempty"`
 }
 
 type ApprovalDecision struct {

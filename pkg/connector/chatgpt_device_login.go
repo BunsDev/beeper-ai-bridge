@@ -424,15 +424,6 @@ func chatGPTCodexProvider(credentials chatGPTCredentials) (aiid.ProviderConfig, 
 }
 
 func defaultChatGPTCodexModel() string {
-	for _, modelID := range []string{"gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5-codex"} {
-		if _, ok := ai.GetModel(ai.ProviderOpenAICodex, modelID); ok {
-			return modelID
-		}
-	}
-	models := ai.GetModels(ai.ProviderOpenAICodex)
-	if len(models) > 0 {
-		return models[0].ID
-	}
 	return "gpt-5-codex"
 }
 

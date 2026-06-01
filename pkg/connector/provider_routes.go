@@ -14,6 +14,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 )
 
+var errInvalidProviderLoginID = errors.New("invalid provider login_id")
+
 type providersListResponse struct {
 	Providers []ProviderResponse `json:"providers"`
 }
@@ -47,7 +49,7 @@ func (c *Connector) handleProvidersList(provisioning bridgev2.IProvisioningAPI) 
 	return func(w http.ResponseWriter, r *http.Request) {
 		login, err := c.loginForProviderRequest(r.Context(), provisioning.GetUser(r), r.URL.Query().Get("login_id"))
 		if err != nil {
-			writeProviderError(w, providerErrorStatus(err), err)
+			writeProviderError(w, providerRequestErrorStatus(err), err)
 			return
 		}
 		writeProviderJSON(r.Context(), w, http.StatusOK, providersListResponse{Providers: sortedProviderResponses(c.providersForLogin(login))})
@@ -58,7 +60,7 @@ func (c *Connector) handleProvidersGet(provisioning bridgev2.IProvisioningAPI) h
 	return func(w http.ResponseWriter, r *http.Request) {
 		login, err := c.loginForProviderRequest(r.Context(), provisioning.GetUser(r), r.URL.Query().Get("login_id"))
 		if err != nil {
-			writeProviderError(w, providerErrorStatus(err), err)
+			writeProviderError(w, providerRequestErrorStatus(err), err)
 			return
 		}
 		providerID := strings.TrimSpace(r.PathValue("providerID"))
@@ -96,14 +98,14 @@ func (c *Connector) handleProviderUpsert(w http.ResponseWriter, r *http.Request,
 		}
 		input.ID = routeProviderID
 	}
-	provider, err := c.VerifyProviderConfig(r.Context(), input)
-	if err != nil {
-		writeProviderError(w, http.StatusBadRequest, err)
-		return
-	}
 	login, err := c.loginForProviderRequest(r.Context(), provisioning.GetUser(r), r.URL.Query().Get("login_id"))
 	if err != nil {
-		writeProviderError(w, providerErrorStatus(err), err)
+		writeProviderError(w, providerRequestErrorStatus(err), err)
+		return
+	}
+	provider, err := c.VerifyProviderConfig(r.Context(), login, input)
+	if err != nil {
+		writeProviderError(w, http.StatusBadRequest, err)
 		return
 	}
 	if err = c.SaveProviderConfig(r.Context(), login, provider); err != nil {
@@ -121,7 +123,7 @@ func (c *Connector) handleProvidersDelete(provisioning bridgev2.IProvisioningAPI
 	return func(w http.ResponseWriter, r *http.Request) {
 		login, err := c.loginForProviderRequest(r.Context(), provisioning.GetUser(r), r.URL.Query().Get("login_id"))
 		if err != nil {
-			writeProviderError(w, providerErrorStatus(err), err)
+			writeProviderError(w, providerRequestErrorStatus(err), err)
 			return
 		}
 		err = c.DeleteProvider(r.Context(), login, r.PathValue("providerID"))
@@ -143,7 +145,7 @@ func (c *Connector) loginForProviderRequest(ctx context.Context, user *bridgev2.
 		return nil, err
 	}
 	if login == nil || login.UserMXID != user.MXID {
-		return nil, fmt.Errorf("login %s not found", loginID)
+		return nil, fmt.Errorf("%w: login %s not found", errInvalidProviderLoginID, loginID)
 	}
 	if err := c.ensureAIChatsMetadata(ctx, login); err != nil {
 		return nil, err
@@ -157,6 +159,13 @@ func writeProviderJSON(ctx context.Context, w http.ResponseWriter, status int, b
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		zerolog.Ctx(ctx).Debug().Err(err).Int("status", status).Msg("Failed to write provider JSON response")
 	}
+}
+
+func providerRequestErrorStatus(err error) int {
+	if errors.Is(err, errInvalidProviderLoginID) {
+		return http.StatusBadRequest
+	}
+	return providerErrorStatus(err)
 }
 
 func providerErrorStatus(err error) int {

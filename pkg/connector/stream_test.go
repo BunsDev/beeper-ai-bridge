@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +71,50 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	part := aiPayload.Events[1].Event
 	if part.Type() != agui.EventTextMessageContent || part.Get("delta") != "hel" {
 		t.Fatalf("unexpected first text part %#v", part)
+	}
+}
+
+func TestStreamPublisherPublishesThinkingDeltasLiveAfterThinkingStart(t *testing.T) {
+	ctx := context.Background()
+	testAPI := ai.Api("test-stream-thinking")
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "thinking", Thinking: "checking context"}, {Type: "text", Text: "answer"}}, StopReason: ai.StopReasonStop}
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "checking context", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 1, Delta: "answer", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "checking context", Partial: &message})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	result := client.streamPublisher(publisher, "!room:example.com", "$event", run)(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if result.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected stream result %#v", result)
+	}
+	var sawThinkingStart, sawThinkingDelta, sawTextDelta bool
+	for _, update := range publisher.updates {
+		payload, _ := update[aistream.BeeperAIKey].(aistream.BeeperAI)
+		for _, envelope := range payload.Events {
+			switch envelope.Event.Type() {
+			case agui.EventReasoningMsgStart:
+				sawThinkingStart = true
+			case agui.EventReasoningMsgCont:
+				sawThinkingDelta = envelope.Event.Get("delta") == "checking context"
+			case agui.EventTextMessageContent:
+				sawTextDelta = envelope.Event.Get("delta") == "answer"
+			}
+		}
+	}
+	if !sawThinkingStart || !sawThinkingDelta || !sawTextDelta {
+		t.Fatalf("expected live thinking and text carriers, start=%v thinking=%v text=%v updates=%#v", sawThinkingStart, sawThinkingDelta, sawTextDelta, publisher.updates)
 	}
 }
 
@@ -198,6 +243,184 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	}
 	if message.Parts[1]["type"] != "text" || message.Parts[1]["content"] != "hello" {
 		t.Fatalf("expected final answer text after tool call, got %#v", message.Parts)
+	}
+}
+
+func TestStreamPublisherUsesFreshTextMessageAfterToolContinuationWithPriorText(t *testing.T) {
+	ctx := context.Background()
+	toolAPI := ai.Api("test-stream-tool-prior-text")
+	answerAPI := ai.Api("test-stream-answer-after-prior-text")
+	ai.RegisterAPIProvider(toolAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			toolCall := &ai.ToolCall{ID: "call-session", Name: "get_session", Arguments: map[string]any{}}
+			message := ai.Message{
+				Role: "assistant",
+				Content: []ai.ContentBlock{
+					{Type: "text", Text: "before "},
+					{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
+				},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "before "})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{
+				Role:       "assistant",
+				Content:    []ai.ContentBlock{{Type: "text", Text: "after"}},
+				StopReason: ai.StopReasonStop,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "after"})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(toolAPI)
+	defer ai.UnregisterAPIProvider(answerAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	cursor := &streamPublishCursor{nextSeq: 1}
+
+	toolResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: toolAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if toolResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected tool stream result %#v", toolResult)
+	}
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolEnd("call-session", "get_session", map[string]any{}, map[string]any{"state": agui.ToolResultStateComplete, "status": "success"})
+
+	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if answerResult.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected answer stream result %#v", answerResult)
+	}
+
+	textMessageIDs := textContentMessageIDs(run.Events)
+	if strings.Join(textMessageIDs, "|") != "assistant:run|assistant:run-text-1" {
+		t.Fatalf("resumed answer reused a prior text message id: %#v", textMessageIDs)
+	}
+	message := run.FinalBeeperAIMessage(0, true)
+	got := uiPartSummary(message.Parts)
+	want := []string{"text:before ", "tool-call:call-session", "text:after"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("continued UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, message.Parts)
+	}
+}
+
+func TestStreamPublisherAnchorsContinuationThinkingAndSecondToolAfterApproval(t *testing.T) {
+	ctx := context.Background()
+	toolAPI := ai.Api("test-stream-tool-prior-text-second-tool")
+	answerAPI := ai.Api("test-stream-answer-thinking-second-tool")
+	ai.RegisterAPIProvider(toolAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			toolCall := &ai.ToolCall{ID: "call-session", Name: "get_session", Arguments: map[string]any{}}
+			message := ai.Message{
+				Role: "assistant",
+				Content: []ai.ContentBlock{
+					{Type: "text", Text: "before "},
+					{Type: "toolCall", ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
+				},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "before "})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 1, ToolCall: toolCall})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	ai.RegisterAPIProvider(answerAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			secondTool := &ai.ToolCall{ID: "call-second", Name: "second_tool", Arguments: map[string]any{"ok": true}}
+			message := ai.Message{
+				Role: "assistant",
+				Content: []ai.ContentBlock{
+					{Type: "thinking", Thinking: "checking approval"},
+					{Type: "text", Text: "after "},
+					{Type: "toolCall", ID: secondTool.ID, Name: secondTool.Name, Arguments: secondTool.Arguments},
+				},
+				StopReason: ai.StopReasonToolUse,
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "checking approval"})
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 1, Delta: "after "})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: 2, ToolCall: secondTool})
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_end", ContentIndex: 2, ToolCall: secondTool})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonToolUse, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(toolAPI)
+	defer ai.UnregisterAPIProvider(answerAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	cursor := &streamPublishCursor{nextSeq: 1}
+
+	toolResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: toolAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if toolResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected first tool stream result %#v", toolResult)
+	}
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolEnd("call-session", "get_session", map[string]any{}, map[string]any{"state": agui.ToolResultStateComplete, "status": "success"})
+
+	answerResult := client.streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, cursor, nil)(ctx, ai.Model{ID: "fake", API: answerAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if answerResult.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("unexpected answer stream result %#v", answerResult)
+	}
+
+	parents := toolParentMessageIDs(run.Events)
+	if parents["call-second"] != "assistant:run-text-2" {
+		t.Fatalf("second continuation tool used wrong parent: %#v", parents)
+	}
+
+	message := run.FinalBeeperAIMessage(0, true)
+	got := uiPartSummary(message.Parts)
+	want := []string{"text:before ", "tool-call:call-session", "thinking:checking approval", "text:after ", "tool-call:call-second"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("continued UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, message.Parts)
+	}
+}
+
+func TestDoneFallbackAfterPriorTextUsesCurrentWriterOnly(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	firstWriter := aistream.NewWriter(run, timeNow)
+	firstWriter.Start()
+	firstWriter.TextDelta(0, "before ")
+	firstWriter.ToolStart("call-session", "get_session", 1, nil)
+	firstWriter.ToolInputComplete("call-session", "get_session", map[string]any{})
+	firstWriter.AwaitToolUseWithUsage(nil)
+
+	message := ai.Message{
+		Role:       "assistant",
+		Content:    []ai.ContentBlock{{Type: "text", Text: "after"}},
+		StopReason: ai.StopReasonStop,
+	}
+	secondWriter := aistream.NewWriter(run, timeNow)
+	applyAIStreamEvent(secondWriter, ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+
+	textMessageIDs := textContentMessageIDs(run.Events)
+	if strings.Join(textMessageIDs, "|") != "assistant:run|assistant:run-text-1" {
+		t.Fatalf("done fallback reused a prior text message id: %#v", textMessageIDs)
+	}
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := uiPartSummary(uiMessage.Parts)
+	want := []string{"text:before ", "tool-call:call-session", "text:after"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("fallback UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
@@ -589,34 +812,25 @@ func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 	}
 }
 
-func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
+func TestAppendToolOutputsAddsFetchSources(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
 	run.MessageID = "assistant:run"
 	writer := aistream.NewWriter(run, timeNow)
-	writer.ToolStart("call-search", "web_search", 0, nil)
-	writer.ToolEnd("call-search", "web_search", map[string]any{"query": "q"}, nil)
+	writer.ToolStart("call-fetch", "fetch", 0, nil)
+	writer.ToolEnd("call-fetch", "fetch", map[string]any{"url": "https://example.com/one"}, nil)
 
 	appendToolOutputs(run, []toolOutputEvent{{
-		ID:    "call-search",
-		Name:  "web_search",
-		Input: map[string]any{"query": "q"},
+		ID:    "call-fetch",
+		Name:  "fetch",
+		Input: map[string]any{"url": "https://example.com/one"},
 		Result: agent.AgentToolResult[any]{
 			Details: map[string]any{
-				"results": []any{
-					map[string]any{
-						"id":              "doc_1",
-						"title":           "One",
-						"url":             "https://example.com/one",
-						"description":     "desc",
-						"published":       "2026-01-01",
-						"siteName":        "Example",
-						"highlights":      []any{"hit"},
-						"highlightScores": []any{0.5},
-						"summary":         "sum",
-						"subpages":        []any{map[string]any{"title": "Sub", "url": "https://example.com/sub"}},
-						"extras":          map[string]any{"links": []any{"https://example.com/link"}},
-					},
-				},
+				"title":        "One",
+				"url":          "https://example.com/one",
+				"final_url":    "https://example.com/one",
+				"description":  "desc",
+				"published_at": "2026-01-01",
+				"site_name":    "Example",
 			},
 		},
 	}})
@@ -639,8 +853,52 @@ func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
 		t.Fatalf("missing canonical source metadata: %#v", source)
 	}
 	appearances, ok := source["appearances"].([]map[string]any)
-	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "web_search" || appearances[0]["toolCallId"] != "call-search" || appearances[0]["rank"] != 1 {
+	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "fetch" || appearances[0]["toolCallId"] != "call-fetch" {
 		t.Fatalf("missing source appearances: %#v", source["appearances"])
+	}
+}
+
+func TestAppendToolOutputsKeepsWebSearchResultSources(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolStart("call-search", "web_search", 0, nil)
+	writer.ToolEnd("call-search", "web_search", map[string]any{"query": "latest news"}, nil)
+
+	appendToolOutputs(run, []toolOutputEvent{{
+		ID:    "call-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "latest news"},
+		Result: agent.AgentToolResult[any]{
+			Details: map[string]any{
+				"results": []any{
+					map[string]any{
+						"title":       "Headline",
+						"url":         "https://example.com/headline",
+						"description": "desc",
+					},
+				},
+			},
+		},
+	}})
+
+	message := run.FinalBeeperAIMessage(0, true)
+	var source map[string]any
+	for _, part := range message.Parts {
+		if part["type"] == "source-url" {
+			source = part
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("expected web_search source-url part for tool result list, got %#v", message.Parts)
+	}
+	appearances, ok := source["appearances"].([]map[string]any)
+	if !ok || len(appearances) != 1 || appearances[0]["kind"] != "web_search" || appearances[0]["toolCallId"] != "call-search" || appearances[0]["rank"] != 1 {
+		t.Fatalf("missing web_search source appearance: %#v", source["appearances"])
+	}
+	if appearances[0]["cited"] == true {
+		t.Fatalf("raw web_search result should not be marked cited: %#v", appearances[0])
 	}
 }
 
@@ -722,7 +980,7 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","provider":{"id":"wpcom_openai","model_id":"gpt-5.5","api":"openai-responses"}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","runtime":{"provider":"openai","model":"gpt-5.5","api":"openai-responses","base_url":"/proxy/openai/v1"}}]}`))
 	}))
 	defer server.Close()
 
@@ -735,7 +993,7 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 				DisplayName:  "Beeper AI",
 				API:          ai.ApiOpenAIResponses,
 				Provider:     ai.ProviderOpenAI,
-				BaseURL:      server.URL + "/proxy/openai/v1",
+				BaseURL:      server.URL,
 				DefaultModel: "beeper/default",
 			}}},
 		}},
@@ -817,6 +1075,49 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 	}
 }
 
+func TestApplyAIStreamEventStreamsNativeToolResult(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	toolCall := &ai.ToolCall{
+		ID:        "ws_1",
+		Name:      "web_search",
+		Arguments: map[string]any{"query": "latest headlines Amsterdam news today"},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: toolCall})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{
+		Type:     "toolresult",
+		ToolCall: toolCall,
+		CustomValue: map[string]any{
+			"state":    agui.ToolResultStateComplete,
+			"status":   "success",
+			"provider": "openai",
+			"native":   true,
+		},
+	})
+
+	var sawEnd, sawResult bool
+	for _, evt := range run.Events {
+		switch evt.Type() {
+		case agui.EventToolCallEnd:
+			sawEnd = evt.Get("toolCallId") == "ws_1" && evt.Get("toolName") == "web_search"
+		case agui.EventToolCallResult:
+			sawResult = evt.Get("toolCallId") == "ws_1"
+			var output map[string]any
+			if err := json.Unmarshal([]byte(evt.Get("content").(string)), &output); err != nil {
+				t.Fatalf("native tool result content is not JSON: %v", err)
+			}
+			if output["status"] != "success" || output["native"] != true {
+				t.Fatalf("unexpected native tool result output: %#v", output)
+			}
+		}
+	}
+	if !sawEnd || !sawResult {
+		t.Fatalf("missing native tool result lifecycle events: %#v", run.Events)
+	}
+}
+
 func TestApplyAIStreamEventSkipsEmptyToolCallDelta(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	run.MessageID = "assistant:run"
@@ -868,6 +1169,57 @@ func TestApplyAIStreamEventDoesNotPublishReasoningSignaturesToAGUI(t *testing.T)
 	}
 }
 
+func TestApplyAIStreamEventPublishesReasoningContentFromEndSnapshot(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:     "thinking",
+			Thinking: "final summary",
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "final summary", Partial: partial})
+
+	var reasoningContent []string
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventReasoningMsgCont {
+			reasoningContent = append(reasoningContent, fmt.Sprint(evt.Get("delta")))
+		}
+	}
+	if strings.Join(reasoningContent, "") != "final summary" {
+		t.Fatalf("expected thinking_end content to be emitted before end, got events=%#v", run.Events)
+	}
+}
+
+func TestApplyAIStreamEventDoesNotDuplicateReasoningEndSnapshot(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	writer := aistream.NewWriter(run, timeNow)
+	partial := &ai.Message{
+		Role: "assistant",
+		Content: []ai.ContentBlock{{
+			Type:     "thinking",
+			Thinking: "hidden continuity",
+		}},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: 0, Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: 0, Delta: "hidden continuity", Partial: partial})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "thinking_end", ContentIndex: 0, Content: "hidden continuity", Partial: partial})
+
+	var reasoningContent []string
+	for _, evt := range run.Events {
+		if evt.Type() == agui.EventReasoningMsgCont {
+			reasoningContent = append(reasoningContent, fmt.Sprint(evt.Get("delta")))
+		}
+	}
+	if strings.Join(reasoningContent, "") != "hidden continuity" || len(reasoningContent) != 1 {
+		t.Fatalf("expected reasoning content once, got %#v events=%#v", reasoningContent, run.Events)
+	}
+}
+
 func TestApplyAIStreamEventIgnoresRawProviderEvent(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	writer := aistream.NewWriter(run, timeNow)
@@ -910,6 +1262,9 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	if len(publisher.updates) != 1 {
 		t.Fatalf("expected one live stream update, got %#v", publisher.updates)
 	}
+	if len(active.streams) != 1 || len(active.streams[0].tools) != 1 || active.streams[0].tools[0].ID != "call-1" {
+		t.Fatalf("live tool output was not retained for finalization: %#v", active.streams)
+	}
 	aiPayload, ok := publisher.updates[0][aistream.BeeperAIKey].(aistream.BeeperAI)
 	if !ok || len(aiPayload.Events) != 2 {
 		t.Fatalf("unexpected live stream carrier %#v", publisher.updates[0])
@@ -921,6 +1276,72 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	result, ok := part.Get("content").(string)
 	if !ok || result == "" {
 		t.Fatalf("expected encoded tool result, got %#v", part.Get("content"))
+	}
+}
+
+func TestStreamPublisherSkipsDuplicateToolResultSourcesAfterLiveToolOutput(t *testing.T) {
+	ctx := context.Background()
+	testAPI := ai.Api("test-duplicate-toolresult-sources")
+	toolCall := &ai.ToolCall{
+		ID:        "call-fetch",
+		Name:      "fetch",
+		Arguments: map[string]any{"url": "https://example.com"},
+	}
+	result := map[string]any{
+		"url":         "https://example.com",
+		"title":       "Example",
+		"description": "Example source",
+	}
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			stream.Push(ai.AssistantMessageEvent{Type: "toolresult", ToolCall: toolCall, CustomValue: result})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &ai.Message{Role: "assistant", StopReason: ai.StopReasonStop}})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.ToolStart(toolCall.ID, toolCall.Name, 0, nil)
+	active := &activeAIRun{streams: []*assistantStreamState{{
+		eventID: "$event",
+		run:     run,
+		sources: newSourceCollector(),
+		publish: streamPublishCursor{
+			nextSeq:   1,
+			published: len(run.Events),
+			started:   true,
+		},
+	}}}
+
+	err := active.publishToolOutput(ctx, &Client{}, publisher, "!room:example.com", toolOutputEvent{
+		ID:    toolCall.ID,
+		Name:  toolCall.Name,
+		Input: toolCall.Arguments,
+		Result: agent.AgentToolResult[any]{
+			Details: result,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceEventsBefore := sourceCustomEventCount(run.Events)
+	if sourceEventsBefore != 1 {
+		t.Fatalf("expected live tool output to publish one source, got %d events=%#v", sourceEventsBefore, run.Events)
+	}
+
+	stream := active.streams[0]
+	response := (&Client{}).streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, &stream.publish, nil)(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if response.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected stream response %#v", response)
+	}
+	if sourceEventsAfter := sourceCustomEventCount(run.Events); sourceEventsAfter != sourceEventsBefore {
+		t.Fatalf("duplicate toolresult re-emitted sources: before=%d after=%d events=%#v", sourceEventsBefore, sourceEventsAfter, run.Events)
 	}
 }
 
@@ -944,6 +1365,65 @@ func TestPublishNewStreamEventsSuppressesMautrixRequestBodyLogs(t *testing.T) {
 	if publisher.publishLogLevels[0] < zerolog.FatalLevel {
 		t.Fatalf("stream carrier publish should suppress mautrix request body logs, got level %s", publisher.publishLogLevels[0])
 	}
+}
+
+func textContentMessageIDs(events []agui.Event) []string {
+	var ids []string
+	for _, evt := range events {
+		if evt.Type() != agui.EventTextMessageContent && evt.Type() != agui.EventTextMessageChunk {
+			continue
+		}
+		delta, _ := evt.Get("delta").(string)
+		if delta == "" {
+			continue
+		}
+		messageID, _ := evt.Get("messageId").(string)
+		ids = append(ids, messageID)
+	}
+	return ids
+}
+
+func toolParentMessageIDs(events []agui.Event) map[string]string {
+	parents := map[string]string{}
+	for _, evt := range events {
+		if evt.Type() != agui.EventToolCallStart {
+			continue
+		}
+		parents[firstNonEmptyString(evt.Get("toolCallId"))] = firstNonEmptyString(evt.Get("parentMessageId"))
+	}
+	return parents
+}
+
+func sourceCustomEventCount(events []agui.Event) int {
+	count := 0
+	for _, evt := range events {
+		if evt.Type() == agui.EventCustom && evt.Get("name") == "com.beeper.source" {
+			count++
+		}
+	}
+	return count
+}
+
+func uiPartSummary(parts []aistream.MessagePart) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part["type"] {
+		case "text", "thinking":
+			out = append(out, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			out = append(out, fmt.Sprintf("tool-call:%s", firstNonEmptyString(part["toolCallId"], part["id"])))
+		}
+	}
+	return out
+}
+
+func firstNonEmptyString(values ...any) string {
+	for _, value := range values {
+		if text, _ := value.(string); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func testAIStore(t *testing.T) *aidb.Store {

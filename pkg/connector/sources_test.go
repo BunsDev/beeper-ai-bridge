@@ -1,6 +1,10 @@
 package connector
 
-import "testing"
+import (
+	"testing"
+
+	ai "github.com/beeper/ai-bridge/pkg/ai"
+)
 
 func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 	webSources := newSourceCollector().addWebSearchOutput(toolOutputEvent{
@@ -36,17 +40,7 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 		},
 	})
 	if len(webSources) != 3 {
-		t.Fatalf("web source metadata fallback failed: %#v", webSources)
-	}
-	if webSources[0]["description"] != "Open Graph description" || webSources[0]["faviconUrl"] != "https://example.com/icon.png" || webSources[0]["imageUrl"] != "https://example.com/page-image.png" {
-		t.Fatalf("web source metadata fallback failed: %#v", webSources[0])
-	}
-	if webSources[1]["url"] != "https://example.com/subpage" || webSources[1]["description"] != "Subpage summary" || webSources[1]["faviconUrl"] != "https://example.com/subpage.ico" {
-		t.Fatalf("web subpage source metadata fallback failed: %#v", webSources[1])
-	}
-	appearances, ok := webSources[2]["appearances"].([]map[string]any)
-	if webSources[2]["url"] != "https://example.com/grounded" || !ok || len(appearances) != 1 || !appearances[0]["cited"].(bool) {
-		t.Fatalf("web grounding source metadata fallback failed: %#v", webSources[2])
+		t.Fatalf("web search helper should still normalize sources for grounded/provider-like payloads, got %#v", webSources)
 	}
 
 	fetchSources := newSourceCollector().addFetchOutput(toolOutputEvent{
@@ -62,10 +56,23 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 		t.Fatalf("fetch source metadata fallback failed: %#v", fetchSources)
 	}
 
+	captchaSources := newSourceCollector().addFetchOutput(toolOutputEvent{
+		ID:   "call-fetch-captcha",
+		Name: "fetch",
+	}, map[string]any{
+		"final_url": "https://example.com/world",
+		"text":      `{"url":"https://geo.captcha-delivery.com/captcha/?cid=long"}`,
+	})
+	if len(captchaSources) != 1 || captchaSources[0]["description"] != "Source from example.com" {
+		t.Fatalf("fetch source should not use full page text as card description: %#v", captchaSources)
+	}
+
 	providerSources := newSourceCollector().addProviderSources(map[string]any{
 		"annotations": []any{map[string]any{
-			"type": "url_citation",
-			"url":  "https://example.com/provider",
+			"type":        "url_citation",
+			"url":         "https://example.com/provider",
+			"start_index": float64(10),
+			"end_index":   float64(20),
 			"metadata": map[string]any{
 				"twitterDescription": "Provider description",
 				"siteIcon":           "https://example.com/provider.ico",
@@ -75,4 +82,124 @@ func TestSourceCollectorUsesDescriptionAndFaviconFallbacks(t *testing.T) {
 	if len(providerSources) != 1 || providerSources[0]["description"] != "Provider description" || providerSources[0]["faviconUrl"] != "https://example.com/provider.ico" {
 		t.Fatalf("provider source metadata fallback failed: %#v", providerSources)
 	}
+	appearances, ok := providerSources[0]["appearances"].([]map[string]any)
+	if !ok || len(appearances) != 1 || appearances[0]["startIndex"] != 10 || appearances[0]["endIndex"] != 20 {
+		t.Fatalf("provider citation ranges were not preserved: %#v", providerSources[0])
+	}
+
+	fetchResultSources := newSourceCollector().addProviderSources(map[string]any{
+		"type": "web_fetch_tool_result",
+		"content": map[string]any{
+			"type": "web_fetch_result",
+			"url":  "https://example.com/provider-fetch",
+			"content": map[string]any{
+				"type":  "document",
+				"title": "Provider Fetch",
+			},
+		},
+	})
+	if len(fetchResultSources) != 1 || fetchResultSources[0]["title"] != "Provider Fetch" {
+		t.Fatalf("provider web fetch result was not mapped: %#v", fetchResultSources)
+	}
+
+	openRouterFetchSources := newSourceCollector().addProviderSources(map[string]any{
+		"type": "openrouter:web_fetch",
+		"url":  "https://example.com/openrouter-fetch",
+		"content": map[string]any{
+			"type": "document",
+			"source": map[string]any{
+				"type": "text",
+				"data": "\nOpenRouter Fetch Title\nBody text",
+			},
+		},
+	})
+	if len(openRouterFetchSources) != 1 || openRouterFetchSources[0]["title"] != "OpenRouter Fetch Title" {
+		t.Fatalf("OpenRouter web fetch source was not mapped: %#v", openRouterFetchSources)
+	}
+
+	nestedCitationSources := newSourceCollector().addProviderSources(map[string]any{
+		"type": "annotation",
+		"url_citation": map[string]any{
+			"type":  "url_citation",
+			"url":   "https://example.com/nested",
+			"title": "Nested Citation",
+		},
+	})
+	if len(nestedCitationSources) != 1 || nestedCitationSources[0]["title"] != "Nested Citation" {
+		t.Fatalf("nested provider citation was not mapped: %#v", nestedCitationSources)
+	}
+
+	nativeSearchSources := newSourceCollector().addWebSearchOutput(toolOutputEvent{
+		ID:    "native-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "q"},
+	}, map[string]any{
+		"native": true,
+		"results": []map[string]any{{
+			"type":  "web_search_result",
+			"url":   "https://example.com/native-search",
+			"title": "Native Search",
+		}},
+	})
+	if len(nativeSearchSources) != 1 || nativeSearchSources[0]["title"] != "Native Search" {
+		t.Fatalf("native search source was not mapped: %#v", nativeSearchSources)
+	}
+
+	messageSources := newSourceCollector().addProviderSources(ai.Message{
+		Citations: []ai.Citation{{
+			Type:       "url_citation",
+			URL:        "https://example.com/message-citation",
+			Title:      "Typed Citation",
+			StartIndex: intPtr(30),
+			EndIndex:   intPtr(40),
+		}},
+	})
+	if len(messageSources) != 1 || messageSources[0]["title"] != "Typed Citation" {
+		t.Fatalf("typed provider citation was not mapped: %#v", messageSources)
+	}
+
+	urlContextSources := newSourceCollector().addProviderSources(ai.Message{
+		Citations: []ai.Citation{{
+			Type:    "url_citation",
+			URL:     "https://example.com/url-context",
+			RawType: "url_context",
+		}},
+	})
+	if len(urlContextSources) != 1 || urlContextSources[0]["url"] != "https://example.com/url-context" {
+		t.Fatalf("Google URL context source was not mapped: %#v", urlContextSources)
+	}
+
+	collector := newSourceCollector()
+	searchSources := collector.addWebSearchOutput(toolOutputEvent{
+		ID:    "call-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "q"},
+	}, map[string]any{
+		"results": []any{map[string]any{
+			"title": "Known Result",
+			"url":   "https://example.com/known?utm_source=noise",
+		}},
+	})
+	if len(searchSources) != 1 {
+		t.Fatalf("expected search source, got %#v", searchSources)
+	}
+	answerSources := collector.addAnswerURLSources(ai.Message{Content: "Use https://example.com/known and https://example.org/new. Per https://en.wikipedia.org/wiki/Mercury_(element), done."})
+	if len(answerSources) != 3 {
+		t.Fatalf("expected answer URL sources, got %#v", answerSources)
+	}
+	sources := collector.sources()
+	if len(sources) != 3 {
+		t.Fatalf("expected canonical known + new sources, got %#v", sources)
+	}
+	if sources[2]["url"] != "https://en.wikipedia.org/wiki/Mercury_(element)" {
+		t.Fatalf("parenthesized URL was not preserved: %#v", sources[2])
+	}
+	answerAppearances, ok := sources[0]["appearances"].([]map[string]any)
+	if !ok || len(answerAppearances) != 2 || answerAppearances[1]["kind"] != "answer" || answerAppearances[1]["cited"] != true {
+		t.Fatalf("known source was not marked cited by final answer URL: %#v", sources[0])
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

@@ -28,8 +28,21 @@ func TestChatToolsSkipGoogleVertexImageModels(t *testing.T) {
 	}
 }
 
-func TestModelSupportsAgentToolsDefaultsToTrue(t *testing.T) {
-	if !modelSupportsAgentTools(ai.Model{}) {
-		t.Fatal("models without catalog tool metadata should keep default tool behavior")
+func TestModelSupportsAgentToolsRequiresExplicitCatalogSupport(t *testing.T) {
+	if modelSupportsAgentTools(ai.Model{}) {
+		t.Fatal("models without catalog tool metadata should not expose agent tools")
+	}
+	if !modelSupportsAgentTools(ai.Model{Compat: map[string]any{"tools_supported": true}}) {
+		t.Fatal("models with explicit catalog tool support should expose agent tools")
+	}
+}
+
+func TestAIServicesToolURL(t *testing.T) {
+	got, err := aiServicesToolURL("https://ai-services.example/dev", "web_search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://ai-services.example/dev/tools/web_search"; got != want {
+		t.Fatalf("unexpected tool URL %q, want %q", got, want)
 	}
 }

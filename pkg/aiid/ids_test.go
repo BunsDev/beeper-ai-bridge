@@ -66,6 +66,7 @@ func TestMetadataJSONRoundTrip(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			provider.ID: provider,
 		},
+		LastKnownTimezone: "Europe/Amsterdam",
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -81,6 +82,9 @@ func TestMetadataJSONRoundTrip(t *testing.T) {
 	}
 	if decodedProvider.DefaultModel != "gpt-5" {
 		t.Fatalf("metadata did not round trip: %#v", decoded)
+	}
+	if decoded.LastKnownTimezone != "Europe/Amsterdam" {
+		t.Fatalf("timezone metadata did not round trip: %#v", decoded)
 	}
 }
 

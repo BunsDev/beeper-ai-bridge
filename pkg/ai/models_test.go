@@ -2,24 +2,6 @@ package ai
 
 import "testing"
 
-func TestModelRegistryGeneratedSurface(t *testing.T) {
-	providers := GetProviders()
-	if len(providers) != 2 || providers[0] != ProviderOpenAI || providers[1] != ProviderOpenRouter {
-		t.Fatalf("expected generated provider order, got %#v", providers)
-	}
-	models := GetModels(ProviderOpenAI)
-	if len(models) == 0 {
-		t.Fatalf("expected generated OpenAI models")
-	}
-	model, ok := GetModel(ProviderOpenAI, models[0].ID)
-	if !ok || model.ID != models[0].ID || model.Provider != ProviderOpenAI {
-		t.Fatalf("expected model lookup to round trip, got %#v ok=%v", model, ok)
-	}
-	if _, ok := GetModel("missing", "missing"); ok {
-		t.Fatalf("expected missing model lookup to fail")
-	}
-}
-
 func TestGetSupportedThinkingLevels(t *testing.T) {
 	if got := GetSupportedThinkingLevels(Model{}); len(got) != 1 || got[0] != ModelThinkingLevelOff {
 		t.Fatalf("expected non-reasoning model to support off only, got %#v", got)

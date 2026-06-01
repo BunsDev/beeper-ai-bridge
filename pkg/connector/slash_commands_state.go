@@ -48,11 +48,22 @@ func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2
 		}
 		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
 	}
+	if err = cl.validateReasoningMode(model, config); err != nil {
+		if !config.modelStatePresent {
+			return config, nil, false, err
+		}
+		cl.logAIRoomSettingsError(ctx, msg, err, "AI room settings rejected")
+		if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, fmt.Sprintf("AI room settings rejected: %v.", err)); noticeErr != nil {
+			return config, nil, false, noticeErr
+		}
+		return config, cl.commandHandledResponse(msg, "invalid-settings"), true, nil
+	}
 	config.ThinkingLevel = cl.reasoningLevelForModel(model, config)
-	normalized := config.modelStatePresent && (config.modelStateModel != canonical || config.modelStateReason != config.ThinkingLevel)
+	config.ReasoningMode = cl.reasoningModeForModel(model, config)
+	normalized := config.modelStatePresent && (config.modelStateModel != canonical || config.modelStateReason != config.ThinkingLevel || config.modelStateReasoningMode != config.ReasoningMode)
 	nameChanged := config.modelStatePresent && model.Name != "" && config.modelStateName != model.Name
 	if normalized || nameChanged {
-		if _, err = cl.writeRoomModelState(ctx, msg.Portal, provider, model, canonical, config.ThinkingLevel); err != nil {
+		if _, err = cl.writeRoomModelState(ctx, msg.Portal, provider, model, canonical, config.ThinkingLevel, config.ReasoningMode); err != nil {
 			return config, nil, false, err
 		}
 		cl.refreshRoomCapabilities(ctx, msg.Portal)
@@ -111,12 +122,12 @@ type applyRoomModelStateOptions struct {
 	ForceAvatar bool
 }
 
-func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string) (string, error) {
-	return cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, applyRoomModelStateOptions{})
+func (cl *Client) writeRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string, reasoningMode string) (string, error) {
+	return cl.applyRoomModelState(ctx, portal, provider, model, canonicalModel, reasoning, reasoningMode, applyRoomModelStateOptions{})
 }
 
-func (cl *Client) applyRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string, opts applyRoomModelStateOptions) (string, error) {
-	content := roomModelStateContent(model, canonicalModel, reasoning)
+func (cl *Client) applyRoomModelState(ctx context.Context, portal *bridgev2.Portal, provider aiid.ProviderConfig, model ai.Model, canonicalModel string, reasoning string, reasoningMode string, opts applyRoomModelStateOptions) (string, error) {
+	content := roomModelStateContent(model, canonicalModel, reasoning, reasoningMode)
 	eventID, err := cl.writeAIRoomState(ctx, portal, aiid.RoomModelType, content)
 	if err != nil {
 		return eventID, err
@@ -128,13 +139,16 @@ func (cl *Client) applyRoomModelState(ctx context.Context, portal *bridgev2.Port
 	return eventID, nil
 }
 
-func roomModelStateContent(model ai.Model, canonicalModel string, reasoning string) map[string]any {
+func roomModelStateContent(model ai.Model, canonicalModel string, reasoning string, reasoningMode string) map[string]any {
 	content := map[string]any{"model": canonicalModel}
 	if model.Name != "" {
 		content["name"] = model.Name
 	}
 	if reasoning != "" {
 		content["reasoning"] = reasoning
+	}
+	if reasoningMode != "" {
+		content["reasoning_mode"] = reasoningMode
 	}
 	return content
 }

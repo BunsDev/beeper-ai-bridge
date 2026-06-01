@@ -195,6 +195,78 @@ func TestWriterKeepsReasoningMessagesSeparate(t *testing.T) {
 	}
 }
 
+func TestWriterAnchorsContinuationReasoningBeforeTextToFreshAssistantMessage(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text("before ")
+	writer.ToolStart("tool-1", "ask_approval", 1, nil)
+	writer.AwaitToolUseWithUsage(nil)
+
+	continuation := NewWriter(run, func() time.Time { return time.Unix(11, 0) })
+	continuation.ReasoningMessageStart(0)
+	continuation.ReasoningDelta(0, "checking approval")
+	continuation.Text("after")
+
+	var ordered []string
+	for _, evt := range run.Events {
+		switch evt.Type() {
+		case agui.EventTextMessageStart:
+			ordered = append(ordered, "text-start:"+asString(evt.Get("messageId")))
+		case agui.EventReasoningMsgStart:
+			ordered = append(ordered, "thinking-start:"+asString(evt.Get("messageId")))
+		case agui.EventReasoningMsgCont:
+			ordered = append(ordered, "thinking:"+asString(evt.Get("delta")))
+		case agui.EventTextMessageContent:
+			if delta := asString(evt.Get("delta")); delta != "" {
+				ordered = append(ordered, "text:"+asString(evt.Get("messageId"))+":"+delta)
+			}
+		}
+	}
+	got := strings.Join(ordered, "|")
+	if !strings.Contains(got, "text-start:msg-run-1-text-1|thinking-start:msg-run-1-reasoning-0|thinking:checking approval|text:msg-run-1-text-1:after") {
+		t.Fatalf("continuation reasoning was not anchored to the fresh assistant message:\n%s", got)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	gotParts := uiPartSummary(uiMessage.Parts)
+	wantParts := []string{"text:before ", "tool-call:tool-1", "thinking:checking approval", "text:after"}
+	if !reflect.DeepEqual(gotParts, wantParts) {
+		t.Fatalf("continued reasoning UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", gotParts, wantParts, uiMessage.Parts)
+	}
+}
+
+func TestWriterParentsContinuationToolsToCurrentAssistantMessage(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.Text("before ")
+	writer.ToolStart("tool-1", "ask_approval", 1, nil)
+	writer.AwaitToolUseWithUsage(nil)
+
+	continuation := NewWriter(run, func() time.Time { return time.Unix(11, 0) })
+	continuation.Text("after ")
+	continuation.ToolStart("tool-2", "second_tool", 1, nil)
+
+	parentByTool := map[string]string{}
+	for _, evt := range run.Events {
+		if evt.Type() != agui.EventToolCallStart {
+			continue
+		}
+		parentByTool[asString(evt.Get("toolCallId"))] = asString(evt.Get("parentMessageId"))
+	}
+	if parentByTool["tool-2"] != "msg-run-1-text-1" {
+		t.Fatalf("second continuation tool used wrong parent: %#v", parentByTool)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	gotParts := uiPartSummary(uiMessage.Parts)
+	wantParts := []string{"text:before ", "tool-call:tool-1", "text:after ", "tool-call:tool-2"}
+	if !reflect.DeepEqual(gotParts, wantParts) {
+		t.Fatalf("continued tool UI parts mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", gotParts, wantParts, uiMessage.Parts)
+	}
+}
+
 func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
@@ -324,7 +396,7 @@ func TestFinalBeeperAIMessagePreservesTextChunksAfterToolCalls(t *testing.T) {
 	}
 }
 
-func TestFinalBeeperAIMessageShowsHiddenReasoningInOrder(t *testing.T) {
+func TestFinalBeeperAIMessageSuppressesEmptyHiddenReasoningInOrder(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
@@ -354,11 +426,77 @@ func TestFinalBeeperAIMessageShowsHiddenReasoningInOrder(t *testing.T) {
 	want := []string{
 		"text:first text",
 		"tool-call:tool-1",
-		"thinking:Thinking...",
 		"text:second text",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("final hidden reasoning order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessageKeepsStreamingThinkingPartEmptyUntilTokensArrive(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.ReasoningMessageStart(0)
+
+	streamingEmpty := run.FinalBeeperAIMessage(0, true)
+	if len(streamingEmpty.Parts) != 1 || streamingEmpty.Parts[0]["type"] != "thinking" || streamingEmpty.Parts[0]["content"] != "" || streamingEmpty.Parts[0]["state"] != agui.PartStateStreaming {
+		t.Fatalf("streaming empty reasoning should render as an empty in-progress part, got %#v", streamingEmpty.Parts)
+	}
+
+	writer.ReasoningDelta(0, "reading sources")
+	streamingContent := run.FinalBeeperAIMessage(0, true)
+	if len(streamingContent.Parts) != 1 || streamingContent.Parts[0]["type"] != "thinking" || streamingContent.Parts[0]["content"] != "reading sources" || streamingContent.Parts[0]["state"] != agui.PartStateStreaming {
+		t.Fatalf("streaming reasoning tokens should update the same thinking part, got %#v", streamingContent.Parts)
+	}
+
+	writer.ReasoningMessageEnd(0)
+	writer.Finish(agui.FinishReasonStop)
+	finalContent := run.FinalBeeperAIMessage(0, true)
+	if len(finalContent.Parts) != 1 || finalContent.Parts[0]["type"] != "thinking" || finalContent.Parts[0]["content"] != "reading sources" || finalContent.Parts[0]["state"] != agui.PartStateDone {
+		t.Fatalf("final reasoning tokens should remain in order as a done thinking part, got %#v", finalContent.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessageDedupesNativeWebSearchRows(t *testing.T) {
+	for _, provider := range []string{"openai", "openrouter"} {
+		t.Run(provider, func(t *testing.T) {
+			run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+			writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+			query := "pop culture latest Oscars Grammys Wikipedia"
+			writer.ToolStart("ws_aggregate", "web_search", 0, nil)
+			writer.ToolEnd("ws_aggregate", "web_search", map[string]any{
+				"query":   query,
+				"queries": []any{query, "latest entertainment news film music television"},
+			}, map[string]any{
+				"state":    "complete",
+				"status":   "success",
+				"provider": provider,
+				"native":   true,
+				"query":    query,
+				"queries":  []any{query, "latest entertainment news film music television"},
+			})
+			writer.ToolStart("ws_single", "web_search", 0, nil)
+			writer.ToolEnd("ws_single", "web_search", map[string]any{"query": query}, map[string]any{
+				"state":    "complete",
+				"status":   "success",
+				"provider": provider,
+				"native":   true,
+				"query":    query,
+			})
+			writer.Finish(agui.FinishReasonStop)
+
+			uiMessage := run.FinalBeeperAIMessage(0, true)
+			var webSearchIDs []string
+			for _, part := range uiMessage.Parts {
+				if part["type"] == "tool-call" && part["name"] == "web_search" {
+					webSearchIDs = append(webSearchIDs, firstString(part["toolCallId"]))
+				}
+			}
+			if !reflect.DeepEqual(webSearchIDs, []string{"ws_single"}) {
+				t.Fatalf("expected only the final native web_search row, got IDs=%#v parts=%#v", webSearchIDs, uiMessage.Parts)
+			}
+		})
 	}
 }
 
@@ -383,6 +521,28 @@ func TestFinalBeeperAIMessagePreservesStepsAsThinking(t *testing.T) {
 	want := []string{"thinking:Search docs:Search docs:done"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("final UIMessage step mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessagePreservesActivitySnapshots(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Events = append(run.Events,
+		builder.ActivitySnapshot(run.MessageID, "web_search", map[string]any{"title": "Searching web", "text": "Looking up docs"}, nil),
+		builder.ActivityDelta(run.MessageID, "web_search", []any{map[string]any{"op": "replace", "path": "/text", "value": "Found docs"}}),
+		builder.ActivityDelta(run.MessageID, "web_search", []any{map[string]any{"op": "replace", "path": "/status", "value": "completed"}}),
+	)
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			got = append(got, fmt.Sprintf("thinking:%s:%s:%s", part["title"], part["content"], part["state"]))
+		}
+	}
+	want := []string{"thinking:Searching web:Found docs:done"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage activity mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
@@ -944,4 +1104,17 @@ func TestApprovalQueueKeepsOneActiveInterruptAndTimeouts(t *testing.T) {
 	if result.Status != "timed_out" || result.State != agui.ToolResultStateError || result.Approved {
 		t.Fatalf("bad timed-out tool result: %#v", result)
 	}
+}
+
+func uiPartSummary(parts []MessagePart) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part["type"] {
+		case "text", "thinking":
+			out = append(out, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			out = append(out, fmt.Sprintf("tool-call:%s", firstString(part["toolCallId"], part["id"])))
+		}
+	}
+	return out
 }

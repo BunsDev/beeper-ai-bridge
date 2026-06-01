@@ -32,6 +32,8 @@ func TestParseAISlashCommand(t *testing.T) {
 		{body: "/model", name: "model", ok: true},
 		{body: " /reasoning high ", name: "reasoning", arg: "high", ok: true},
 		{body: "/reasoning", name: "reasoning", ok: true},
+		{body: "/reasoning-mode adaptive", name: "reasoning-mode", arg: "adaptive", ok: true},
+		{body: "/reasoning-mode", name: "reasoning-mode", ok: true},
 		{body: "/reasoniing low", ok: false},
 		{body: "/system-prompt be terse", name: "system-prompt", arg: "be terse", ok: true},
 		{body: "/system-prompt", name: "system-prompt", ok: true},
@@ -187,20 +189,53 @@ func TestCurrentCommandResponseText(t *testing.T) {
 	}
 	model := ai.Model{ID: "anthropic/claude-opus-4.5", Reasoning: true}
 	status := reasoningStatusText("", "beeper/anthropic/claude-opus-4.5", model)
-	if !strings.Contains(status, "Current reasoning is `off` for `beeper/anthropic/claude-opus-4.5`.") {
+	if !strings.Contains(status, "beeper/anthropic/claude-opus-4.5's reasoning is set to `off`.") {
 		t.Fatalf("reasoning status is missing current value:\n%s", status)
 	}
-	if !strings.Contains(status, "Options: `off`, `minimal`, `low`, `medium`, `high`.") {
+	if !strings.Contains(status, "Available settings: `off`, `minimal`, `low`, `medium`, `high`.") {
 		t.Fatalf("reasoning status is missing supported options:\n%s", status)
 	}
-	modelStatus := canonicalTestClient().modelStatusText("beeper/gpt-5.5", "off", aiid.ProviderConfig{
+	geminiStatus := reasoningStatusText("off", "beeper/google/gemini-3-pro-image-preview", ai.Model{
+		ID:        "google/gemini-3-pro-image-preview",
+		Name:      "Gemini 3 Pro Image Preview",
+		Reasoning: true,
+	})
+	if geminiStatus != "Gemini 3 Pro Image Preview's reasoning is set to `off`. Available settings: `off`, `minimal`, `low`, `medium`, `high`." {
+		t.Fatalf("unexpected Gemini reasoning status:\n%s", geminiStatus)
+	}
+	unsupportedStatus := reasoningStatusText("off", "beeper/meta-llama/llama-3.3-70b-instruct", ai.Model{ID: "meta-llama/llama-3.3-70b-instruct", Name: "Llama 3.3 70B"})
+	if unsupportedStatus != "Llama 3.3 70B doesn't support reasoning." {
+		t.Fatalf("unexpected unsupported reasoning status:\n%s", unsupportedStatus)
+	}
+	fixedStatus := reasoningStatusText("low", "beeper/minimax/minimax-m2.7", ai.Model{
+		ID:        "minimax/minimax-m2.7",
+		Name:      "MiniMax M2.7",
+		Reasoning: true,
+		ThinkingLevelMap: map[ai.ModelThinkingLevel]*string{
+			ai.ModelThinkingLevelOff:     nil,
+			ai.ModelThinkingLevelMinimal: nil,
+			ai.ModelThinkingLevelMedium:  nil,
+			ai.ModelThinkingLevelHigh:    nil,
+		},
+	})
+	if fixedStatus != "MiniMax M2.7's reasoning is set to `low` and it doesn't support changing reasoning settings." {
+		t.Fatalf("unexpected fixed reasoning status:\n%s", fixedStatus)
+	}
+	modeStatus := reasoningModeStatusText("adaptive", "beeper/anthropic/claude-opus-4.8", ai.Model{ID: "anthropic/claude-opus-4.8", ReasoningMode: ai.ModelReasoningModeAdaptive})
+	if !strings.Contains(modeStatus, "beeper/anthropic/claude-opus-4.8's reasoning mode is set to `adaptive`.") {
+		t.Fatalf("reasoning mode status is missing current value:\n%s", modeStatus)
+	}
+	if !strings.Contains(modeStatus, "Available modes: `default`, `adaptive`.") {
+		t.Fatalf("reasoning mode status is missing supported options:\n%s", modeStatus)
+	}
+	modelStatus := canonicalTestClient().modelStatusText("beeper/gpt-5.5", "off", "", aiid.ProviderConfig{
 		ID:     "beeper",
 		Models: []ai.Model{{ID: "gpt-5.5"}, {ID: "openai/gpt-5.5"}},
 	})
-	if !strings.Contains(modelStatus, "Current model is `beeper/gpt-5.5`. Current reasoning is `off`.") {
+	if !strings.Contains(modelStatus, "Current model: `beeper/gpt-5.5`. Reasoning: `off`.") {
 		t.Fatalf("model status is missing current value:\n%s", modelStatus)
 	}
-	if !strings.Contains(modelStatus, "Options: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`.") {
+	if !strings.Contains(modelStatus, "Available models: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`.") {
 		t.Fatalf("model status is missing available options:\n%s", modelStatus)
 	}
 	if got := currentSystemPromptText(RoomConfig{}); got != "No additional system prompt is set." {
@@ -357,13 +392,14 @@ func TestSessionCommandStatsFromEntries(t *testing.T) {
 
 func TestFormatSessionCommandInfo(t *testing.T) {
 	text := formatSessionCommandInfo(sessionCommandInfo{
-		SessionID:     "session-1",
-		CreatedAt:     "2026-05-30T00:00:00Z",
-		RoomProvider:  "beeper",
-		RoomModel:     "beeper/gpt-5.5",
-		RoomReasoning: "off",
-		SystemPrompt:  true,
-		Responding:    true,
+		SessionID:         "session-1",
+		CreatedAt:         "2026-05-30T00:00:00Z",
+		RoomProvider:      "beeper",
+		RoomModel:         "beeper/gpt-5.5",
+		RoomReasoning:     "off",
+		SystemPrompt:      true,
+		Responding:        true,
+		LastKnownTimezone: "Europe/Amsterdam",
 		Stats: sessionCommandStats{
 			TotalEntries:       4,
 			Messages:           3,
@@ -377,6 +413,7 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 		"Status: `responding`",
 		"ID: `session-1`",
 		"Room model: `beeper/gpt-5.5`",
+		"Last known timezone: `Europe/Amsterdam`",
 		"System prompt: `yes, 0 chars`",
 		"Messages: `3` total, `1` user, `1` assistant, `1` tool results",
 		"Compactions: `1`",
@@ -392,16 +429,12 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 	}
 }
 
-func TestAIServicesLimitsURLStripsProviderProxyPaths(t *testing.T) {
+func TestAIServicesLimitsURLUsesBaseURL(t *testing.T) {
 	tests := map[string]string{
-		"https://ai-services.beeper.com/proxy/openai/v1":          "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/openrouter/v1":      "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/anthropic":          "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/vertex":             "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/a8c/v1":             "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/_/v1/responses":     "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/dev/proxy/openai/v1":      "https://ai-services.beeper.com/dev/limits",
-		"https://ai-services.beeper.com/dev/proxy/openrouter/v1/": "https://ai-services.beeper.com/dev/limits",
+		"https://ai-services.beeper.com":      "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/":     "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/dev":  "https://ai-services.beeper.com/dev/limits",
+		"https://ai-services.beeper.com/dev/": "https://ai-services.beeper.com/dev/limits",
 	}
 	for input, want := range tests {
 		got, err := aiServicesLimitsURL(input)
@@ -439,7 +472,7 @@ func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL}
 	client := &Client{
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
@@ -458,6 +491,52 @@ func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
 	}
 }
 
+func TestRunLimitsCommandRawUsesAIResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/limits" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"windows":{"llm":{"day":{"percentage_left":75,"limit":1000,"used":250,"remaining":750,"reset_at":1893456000000}}}}`))
+	}))
+	defer server.Close()
+
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL}
+	client := &Client{
+		Main: &Connector{AppServiceToken: "as-token"},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@alice:beeper.test",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				provider.ID: provider,
+			}},
+		}},
+	}
+	responder := &recordingCommandResponder{}
+	if err := runLimitsCommand(client, context.Background(), nil, RoomConfig{}, "raw", responder); err != nil {
+		t.Fatal(err)
+	}
+	if responder.text != "" {
+		t.Fatalf("raw limits should use AI response, got plain text %q", responder.text)
+	}
+	if !strings.Contains(responder.aiText, "## LLM tokens") || !strings.Contains(responder.aiText, "| Day | `75%` | `250` | `1,000` | `750` |") {
+		t.Fatalf("raw limits AI response missing table:\n%s", responder.aiText)
+	}
+}
+
+type recordingCommandResponder struct {
+	text   string
+	aiText string
+}
+
+func (r *recordingCommandResponder) Reply(_ context.Context, text string) error {
+	r.text = text
+	return nil
+}
+
+func (r *recordingCommandResponder) ReplyAI(_ context.Context, text string) error {
+	r.aiText = text
+	return nil
+}
+
 func TestBeeperUsageLimitErrorUsesPlanResetMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/limits" {
@@ -467,7 +546,7 @@ func TestBeeperUsageLimitErrorUsesPlanResetMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL}
 	client := &Client{
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
@@ -532,24 +611,22 @@ func TestFormatLimitsCommandInfo(t *testing.T) {
 		},
 	}}, now)
 	for _, want := range []string{
-		"AI limits",
+		"# AI limits",
 		"## Models",
+		"## Web Search",
+		"## Transcription",
+		"## Audio Generation",
 		"| Window | Left | Used | Reset |",
 		"| Daily | `75%` | `250 / 1,000` | in 1 day 2 hours 3 minutes |",
 		"| Weekly | Unlimited | `1,234` used | in 1 day 2 hours 3 minutes |",
 		"| Monthly | **Out** | `30,500 / 30,000` | in 1 day 2 hours 3 minutes |",
-		"## Web Search",
-		"| Daily | `99%` | `1 / 200,000` | in 1 day 2 hours 3 minutes |",
-		"## Transcription",
-		"| Daily | `99%` | `1 minute / 1,440 minutes` | in 1 day 2 hours 3 minutes |",
-		"## Audio Generation",
-		"| Daily | `99%` | `1,234 / 50,000 chars` | in 1 day 2 hours 3 minutes |",
+		"`1 / 200,000`",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	for _, notWant := range []string{"`199,999`", "2030-01-01T00:00:00Z"} {
+	for _, notWant := range []string{"2030-01-01T00:00:00Z"} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("limits info exposed non-summary value %q:\n%s", notWant, text)
 		}
@@ -566,19 +643,20 @@ func TestFormatLimitsCommandInfoShowsPerWindowResetsWhenDifferent(t *testing.T) 
 		},
 	}}, now)
 	for _, want := range []string{
+		"# AI limits",
 		"## Models",
 		"| Daily | `75%` | Not reported | in 1 day 1 hour 3 minutes |",
 		"| Weekly | `100%` | Not reported | in 7 days |",
 		"| Monthly | **Out** | Not reported | in 31 days |",
-		"## Web Search",
-		"No limits reported.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("limits info missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "Everything resets") {
-		t.Fatalf("limits info collapsed different reset times:\n%s", text)
+	for _, notWant := range []string{"## Web Search", "No limits reported.", "Everything resets"} {
+		if strings.Contains(text, notWant) {
+			t.Fatalf("limits info exposed %q:\n%s", notWant, text)
+		}
 	}
 }
 
@@ -612,15 +690,22 @@ func TestFormatRawLimitsCommandInfoShowsExactUsage(t *testing.T) {
 		},
 	}}, time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC))
 	for _, want := range []string{
-		"AI limits raw:",
-		"percentage_left=`75`, limit=`1,000`, used=`250`, remaining=`750`, reset_at=`1893456000000` (`2030-01-01T00:00:00Z`, in 1 day)",
-		"percentage_left=`100`, limit=`-1`, used=`1,234`, remaining=`-1`",
-		"Audio transcription seconds:",
-		"percentage_left=`99`, limit=`86,400`, used=`43`, remaining=`86,357`",
+		"## LLM tokens",
+		"| Window | Left | Used | Limit | Remaining | Reset |",
+		"| Day | `75%` | `250` | `1,000` | `750` | `1893456000000` (`2030-01-01T00:00:00Z`, in 1 day) |",
+		"| Week | `100%` | `1,234` | `-1` | `-1` | `1893456000000` (`2030-01-01T00:00:00Z`, in 1 day) |",
+		"## Web tools",
+		"| Day | `0%` | `0` | `0` | `0` | unknown |",
+		"## Audio transcription seconds",
+		"| Day | `99%` | `43` | `86,400` | `86,357` | `1893456000000` (`2030-01-01T00:00:00Z`, in 1 day) |",
+		"## Audio generation characters",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("raw limits info missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "AI limits raw:") {
+		t.Fatalf("raw limits info should render as tables without the old header:\n%s", text)
 	}
 }
 

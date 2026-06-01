@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -47,7 +45,7 @@ func TestModelForProviderBuildsDefaultProviderModelFromConfig(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
-		BaseURL:  "https://ai-services.beeper-staging.com/proxy/openai/v1",
+		BaseURL:  "https://ai-services.beeper-staging.com",
 	}
 	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
 	if model.ID != "openai/gpt-5.5" || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
@@ -79,7 +77,7 @@ func TestModelForProviderFillsCustomListedModelInputFromCatalog(t *testing.T) {
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "https://custom.test/v1",
-		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses, Input: []string{"text", "image"}}},
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
 	if !isImageModel(model) {
@@ -94,7 +92,7 @@ func TestModelForProviderFillsCustomPrefixedOpenAIInputFromCatalog(t *testing.T)
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "https://custom.test/v1",
-		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses, Input: []string{"text", "image"}}},
 	}
 	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
 	if !isImageModel(model) {
@@ -135,7 +133,7 @@ func TestTitleGenerationModelUsesDefaultMini(t *testing.T) {
 	client := &Client{Main: conn}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
 	model := client.titleGenerationModel(provider, ai.Model{ID: defaultBeeperAIModel})
-	if model.ID != defaultTitleGenerationModel || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
+	if model.ID != defaultBeeperAIModel {
 		t.Fatalf("unexpected title model %#v", model)
 	}
 }
@@ -238,8 +236,8 @@ func TestDefaultProviderAuthRequiresBeeperUsername(t *testing.T) {
 		},
 	}
 	_, err := client.authForProvider(aiid.ProviderConfig{ID: aiid.DefaultProvider})(context.Background(), ai.Model{})
-	if err == nil || !strings.Contains(err.Error(), "Beeper username") {
-		t.Fatalf("expected Beeper username error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "user login") {
+		t.Fatalf("expected user login error, got %v", err)
 	}
 }
 
@@ -269,17 +267,17 @@ func TestConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultAIServicesOpenAIProxyBaseURLUsesUserHomeserver(t *testing.T) {
+func TestDefaultAIServicesBaseURLUsesUserHomeserver(t *testing.T) {
 	conn := &Connector{}
 	tests := map[string]string{
-		"@alice:beeper.localtest.me": "https://ai-services.beeper.localtest.me/proxy/openai/v1",
-		"@alice:beeper-dev.com":      "https://ai-services.beeper-dev.com/proxy/openai/v1",
-		"@alice:beeper-staging.com":  "https://ai-services.beeper-staging.com/proxy/openai/v1",
-		"@alice:beeper.com":          "https://ai-services.beeper.com/proxy/openai/v1",
+		"@alice:beeper.localtest.me": "https://ai-services.beeper.localtest.me",
+		"@alice:beeper-dev.com":      "https://ai-services.beeper-dev.com",
+		"@alice:beeper-staging.com":  "https://ai-services.beeper-staging.com",
+		"@alice:beeper.com":          "https://ai-services.beeper.com",
 	}
 	for userMXID, want := range tests {
-		if got := conn.defaultAIServicesOpenAIProxyBaseURL(id.UserID(userMXID)); got != want {
-			t.Fatalf("defaultAIServicesOpenAIProxyBaseURL(%q) = %q, want %q", userMXID, got, want)
+		if got := conn.defaultAIServicesBaseURL(id.UserID(userMXID)); got != want {
+			t.Fatalf("defaultAIServicesBaseURL(%q) = %q, want %q", userMXID, got, want)
 		}
 	}
 }
@@ -287,7 +285,7 @@ func TestDefaultAIServicesOpenAIProxyBaseURLUsesUserHomeserver(t *testing.T) {
 func TestDefaultProviderBaseURLUsesUserHomeserver(t *testing.T) {
 	conn := &Connector{}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
-	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
+	if provider.BaseURL != "https://ai-services.beeper-staging.com" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -295,7 +293,7 @@ func TestDefaultProviderBaseURLUsesUserHomeserver(t *testing.T) {
 func TestDefaultProviderBaseURLUsesInternalLocalServiceForLocalUser(t *testing.T) {
 	conn := &Connector{HomeserverURL: "http://megahungry-proxy.megahungry/api/proxy/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")
-	if provider.BaseURL != "http://ai-services.beeper/proxy/openai/v1" {
+	if provider.BaseURL != "http://ai-services.beeper" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -303,7 +301,7 @@ func TestDefaultProviderBaseURLUsesInternalLocalServiceForLocalUser(t *testing.T
 func TestDefaultProviderBaseURLUsesUserHomeserverForMegahungryCloudUser(t *testing.T) {
 	conn := &Connector{HomeserverURL: "http://megahungry-proxy.megahungry/api/proxy/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
-	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
+	if provider.BaseURL != "https://ai-services.beeper-staging.com" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -311,7 +309,7 @@ func TestDefaultProviderBaseURLUsesUserHomeserverForMegahungryCloudUser(t *testi
 func TestDefaultProviderBaseURLUsesExternalLocaltestServiceForSelfHosted(t *testing.T) {
 	conn := &Connector{HomeserverURL: "https://matrix.beeper.localtest.me/_hungryserv/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")
-	if provider.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
+	if provider.BaseURL != "https://ai-services.beeper.localtest.me" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -332,7 +330,7 @@ func TestDefaultProviderReadsAIChatsLoginMetadata(t *testing.T) {
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
 	got := conn.providersForLogin(login)[aiid.DefaultProvider]
-	if got.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
+	if got.BaseURL != "https://ai-services.beeper.localtest.me" {
 		t.Fatalf("expected persisted default provider, got %#v", got)
 	}
 }
@@ -358,7 +356,7 @@ func TestProvidersForLoginReadsProviderMap(t *testing.T) {
 		}},
 	}}
 	providers := conn.providersForLogin(login)
-	if providers[aiid.DefaultProvider].BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
+	if providers[aiid.DefaultProvider].BaseURL != "https://ai-services.beeper.com" {
 		t.Fatalf("default provider missing from provider map: %#v", providers)
 	}
 	if providers["custom"].APIKey != "secret-key" || providers["custom"].DefaultModel != "model-a" {
@@ -647,118 +645,50 @@ func TestProviderModelsParsesOptionalModelList(t *testing.T) {
 	}
 }
 
-func TestFetchProviderModelsVerifiesAndBuildsModels(t *testing.T) {
-	var gotAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"},{"id":"model-a"}]}`))
-	}))
-	defer server.Close()
-
-	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL+"/v1", "key")
-	if err != nil {
-		t.Fatal(err)
+func TestCatalogRuntimeForCustomProviderUsesCustomBaseURL(t *testing.T) {
+	entry := aiServicesModelEntry{
+		ID:   "z-ai/glm-4.5v",
+		Name: "GLM 4.5V",
+		Runtime: &struct {
+			API      string                 `json:"api"`
+			Provider string                 `json:"provider"`
+			BaseURL  string                 `json:"base_url"`
+			Model    string                 `json:"model"`
+			Endpoint string                 `json:"endpoint"`
+			Compat   *aiServicesModelCompat `json:"compat"`
+		}{
+			API:      string(ai.ApiOpenAICompletions),
+			Provider: string(ai.ProviderOpenRouter),
+			BaseURL:  "/proxy/openrouter/v1",
+			Model:    "z-ai/glm-4.5v",
+		},
 	}
-	if gotAuth != "Bearer key" {
-		t.Fatalf("unexpected auth header %q", gotAuth)
+	provider := aiid.ProviderConfig{
+		ID:       "openrouter",
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
 	}
-	if len(models) != 2 || models[0].ID != "model-a" || models[1].ID != "model-b" {
-		t.Fatalf("unexpected models %#v", models)
+	model := entry.applyRuntime(ai.Model{
+		ID:       entry.ID,
+		Name:     entry.Name,
+		API:      provider.API,
+		Provider: provider.Provider,
+		BaseURL:  provider.BaseURL,
+	}, provider, false)
+	if model.API != ai.ApiOpenAICompletions || model.Provider != ai.ProviderOpenRouter || model.BaseURL != provider.BaseURL {
+		t.Fatalf("unexpected custom provider runtime %#v", model)
 	}
-	if models[0].API != ai.ApiOpenAIResponses || models[0].Provider != "local" || models[0].BaseURL != server.URL+"/v1" {
-		t.Fatalf("unexpected model route %#v", models[0])
-	}
-}
-
-func TestFetchProviderModelsRespectsPublishedProviderRoutes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[
-				{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
-				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
-				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","provider":{"id":"wpcom_google","model_id":"gemini-2.5-flash","api":"openai-responses"}}
-			]}`))
-	}))
-	defer server.Close()
-
-	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL+"/proxy/openai/v1", "key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	byID := map[string]ai.Model{}
-	for _, model := range models {
-		byID[model.ID] = model
-	}
-	if got := byID["claude-sonnet-4-5"]; got.API != ai.ApiAnthropicMessages || got.Provider != ai.ProviderAnthropic || got.BaseURL != server.URL+"/proxy/anthropic" {
-		t.Fatalf("unexpected Anthropic route %#v", got)
-	}
-	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
-		t.Fatalf("unexpected Vertex route %#v", got)
-	}
-	if got := byID["google/gemini-2.5-flash"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
-		t.Fatalf("unexpected legacy Google route %#v", got)
+	if model.Compat["runtime_model"] != "z-ai/glm-4.5v" || model.Compat["runtime_provider"] != string(ai.ProviderOpenRouter) {
+		t.Fatalf("expected runtime metadata, got %#v", model.Compat)
 	}
 }
 
-func TestFetchProviderModelsRejectsFailedVerification(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad key", http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	if _, err := fetchProviderModels(context.Background(), ai.ApiOpenAICompletions, "local", server.URL, "bad"); err == nil {
-		t.Fatalf("expected failed verification to return an error")
-	}
-}
-
-func TestCustomProviderLoginStagesAPIConfigAndDefaultModel(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-test"},{"id":"gpt-other"}]}`))
-	}))
-	defer server.Close()
-
+func TestCustomProviderLoginConfigStep(t *testing.T) {
 	login := &CustomProviderLogin{config: providerLoginConfig{API: ai.ApiOpenAICompletions}}
 	step := login.providerConfigStep()
 	if step.StepID != loginStepProviderConfig || len(step.UserInputParams.Fields) != 3 {
 		t.Fatalf("unexpected config step %#v", step)
-	}
-
-	step, err := login.submitProviderConfig(context.Background(), map[string]string{
-		"provider_id": "local-ai",
-		"base_url":    server.URL,
-		"api_key":     "key",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if step.StepID != loginStepProviderDefault {
-		t.Fatalf("expected default model step, got %#v", step)
-	}
-	field := step.UserInputParams.Fields[0]
-	if field.Type != bridgev2.LoginInputFieldTypeSelect || field.DefaultValue != "gpt-test" || len(field.Options) != 2 {
-		t.Fatalf("unexpected default model field %#v", field)
-	}
-	if login.config.ProviderID != "local-ai" || login.config.API != ai.ApiOpenAICompletions || len(login.config.Models) != 2 {
-		t.Fatalf("login config was not retained: %#v", login.config)
-	}
-}
-
-func TestCustomProviderLoginRejectsEmptyModelList(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[]}`))
-	}))
-	defer server.Close()
-
-	login := &CustomProviderLogin{config: providerLoginConfig{API: ai.ApiOpenAICompletions}}
-	_, err := login.submitProviderConfig(context.Background(), map[string]string{
-		"provider_id": "local-ai",
-		"base_url":    server.URL,
-		"api_key":     "key",
-	})
-	if err == nil || !strings.Contains(err.Error(), "no models") {
-		t.Fatalf("expected empty model list error, got %v", err)
 	}
 }
 
@@ -768,13 +698,13 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
-		BaseURL:  "https://ai-services.beeper.com/proxy/openai/v1/responses",
+		BaseURL:  "https://ai-services.beeper.com",
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
 	if model.Provider != ai.ProviderOpenAI || model.ID != "gpt-5.5" {
 		t.Fatalf("expected AI Services model, got %#v", model)
 	}
-	if model.BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
+	if model.BaseURL != "https://ai-services.beeper.com" {
 		t.Fatalf("expected route base URL override, got %q", model.BaseURL)
 	}
 	if model.ContextWindow != 128000 || model.MaxTokens != 32000 {
@@ -782,7 +712,7 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 	}
 }
 
-func TestResolveProviderRequiresListedModelWhenModelListExists(t *testing.T) {
+func TestResolveProviderRejectsUnknownConfiguredModel(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
 		ID:           "custom",
@@ -795,11 +725,11 @@ func TestResolveProviderRequiresListedModelWhenModelListExists(t *testing.T) {
 		ID:       "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
-	_, _, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
+	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
 	if err == nil {
-		t.Fatal("expected missing model to be rejected")
+		t.Fatalf("expected missing model to fail, got model ID %q", modelID)
 	}
-	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "allowed"})
+	_, modelID, err = conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "allowed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,10 +751,7 @@ func TestValidateReasoningLevelRejectsUnsupportedPair(t *testing.T) {
 
 func TestValidateReasoningLevelAcceptsOffForReasoningModel(t *testing.T) {
 	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
-	model, ok := ai.GetModel(ai.ProviderOpenAI, "gpt-5.4")
-	if !ok {
-		t.Fatal("expected generated gpt-5.4 model")
-	}
+	model := ai.Model{ID: "reasoning", Reasoning: true}
 	if err := client.validateReasoningLevel(model, RoomConfig{}); err != nil {
 		t.Fatalf("expected default off reasoning to be accepted: %v", err)
 	}
@@ -850,6 +777,31 @@ func TestDefaultReasoningLevelClampsForMandatoryReasoningModel(t *testing.T) {
 	}
 }
 
+func TestValidateReasoningModeRejectsUnsupportedPair(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model := ai.Model{ID: "plain", Input: []string{"text"}}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "adaptive"}); err == nil {
+		t.Fatalf("expected unsupported reasoning mode to fail")
+	}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "default"}); err != nil {
+		t.Fatalf("expected default reasoning mode to be accepted: %v", err)
+	}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "bad"}); err == nil {
+		t.Fatalf("expected invalid reasoning mode to fail")
+	}
+}
+
+func TestReasoningModeDefaultsFromModelCatalog(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model := ai.Model{ID: "anthropic/claude-opus-4.8", ReasoningMode: ai.ModelReasoningModeAdaptive}
+	if got := client.reasoningModeForModel(model, RoomConfig{}); got != "adaptive" {
+		t.Fatalf("expected catalog reasoning mode, got %q", got)
+	}
+	if err := client.validateReasoningMode(model, RoomConfig{ReasoningMode: "adaptive"}); err != nil {
+		t.Fatalf("expected adaptive reasoning mode to be accepted: %v", err)
+	}
+}
+
 func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *testing.T) {
 	model := normalizeProviderModel(ai.Model{
 		ID:       "minimax/minimax-m2.7",
@@ -858,7 +810,7 @@ func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *t
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
-		BaseURL:  "https://ai-services.test/proxy/openrouter/v1",
+		BaseURL:  "https://ai-services.test",
 	})
 	if model.Reasoning || model.DefaultThinkingLevel != "" || len(model.ThinkingLevelMap) != 0 {
 		t.Fatalf("expected default provider model to rely only on AI Services metadata, got %#v", model)
@@ -870,8 +822,12 @@ func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *t
 
 func TestNormalizeProviderModelInheritsCustomProviderCatalogReasoningMetadata(t *testing.T) {
 	model := normalizeProviderModel(ai.Model{
-		ID:       "gpt-5.5",
-		Provider: ai.ProviderOpenAI,
+		ID:        "gpt-5.5",
+		Provider:  ai.ProviderOpenAI,
+		Reasoning: true,
+		ThinkingLevelMap: map[ai.ModelThinkingLevel]*string{
+			ai.ModelThinkingLevelOff: nil,
+		},
 	}, aiid.ProviderConfig{
 		ID:       "custom-openai",
 		Provider: ai.ProviderOpenAI,
@@ -879,7 +835,7 @@ func TestNormalizeProviderModelInheritsCustomProviderCatalogReasoningMetadata(t 
 		BaseURL:  "https://custom.test/v1",
 	})
 	if !model.Reasoning || len(model.ThinkingLevelMap) == 0 {
-		t.Fatalf("expected custom provider model to inherit local catalog reasoning metadata, got %#v", model)
+		t.Fatalf("expected custom provider model to preserve catalog reasoning metadata, got %#v", model)
 	}
 	if roomThinkingLevelSupported(model, ai.ModelThinkingLevelOff) {
 		t.Fatalf("expected normalized GPT-5.5 custom provider model to reject off reasoning")

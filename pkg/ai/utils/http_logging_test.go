@@ -32,7 +32,7 @@ func TestAIServicesLoggingTransportLogsMetadataWithoutBodies(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer secret-token")
-	req.Header.Set("X-Client-Request-ID", "session_123")
+	req.Header.Set("Session-ID", "session_123")
 
 	resp, err := WithAIServicesLogging(&http.Client{}).Do(req)
 	if err != nil {
@@ -46,6 +46,9 @@ func TestAIServicesLoggingTransportLogsMetadataWithoutBodies(t *testing.T) {
 	}
 	if !strings.Contains(output, `"action":"ai_services_http"`) || !strings.Contains(output, `"request_number":`) {
 		t.Fatalf("missing request context:\n%s", output)
+	}
+	if !strings.Contains(output, `"request_id":"session_123"`) {
+		t.Fatalf("missing session-id request id:\n%s", output)
 	}
 	if !strings.Contains(output, `"status_code":401`) || !strings.Contains(output, `"level":"error"`) || !strings.Contains(output, `"duration":`) {
 		t.Fatalf("missing error response metadata:\n%s", output)

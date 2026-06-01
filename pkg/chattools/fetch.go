@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/net/html"
 
 	agent "github.com/beeper/ai-bridge/pkg/agent"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -23,9 +25,9 @@ func FetchTool(options FetchOptions) agent.AgentTool[any] {
 	return agent.AgentTool[any]{
 		Tool: ai.Tool{
 			Name:        "fetch",
-			Description: "Fetch an HTTP or HTTPS URL and return readable page content, metadata, and source details.",
+			Description: "Fetch a URL and return readable page content.",
 			Parameters: objectSchema(map[string]any{
-				"url":       map[string]any{"type": "string", "description": "HTTP or HTTPS URL to fetch."},
+				"url":       map[string]any{"type": "string", "description": "The full HTTP/HTTPS URL to fetch."},
 				"max_chars": map[string]any{"type": "integer", "description": "Maximum number of text characters to return."},
 			}, []string{"url"}),
 		},
@@ -64,7 +66,16 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 	if options.MaxChars == 0 {
 		options.MaxChars = 20000
 	}
-	if options.ExaEndpoint != "" && !shouldDirectFetch(parsed) {
+	directFirst := options.ToolEndpoint == "" || shouldReturnDirectURL(parsed)
+	var directResult FetchResult
+	var directErr error
+	if directFirst {
+		directResult, directErr = fetchDirect(ctx, rawURL, parsed, options)
+		if result, ok := directFetchResult(ctx, directResult, directErr, options); ok {
+			return result, nil
+		}
+	}
+	if options.ToolEndpoint != "" {
 		result, err := FetchContents(ctx, parsed.String(), options)
 		if err == nil {
 			return result, nil
@@ -73,12 +84,45 @@ func Fetch(ctx context.Context, rawURL string, options FetchOptions) (FetchResul
 			Err(err).
 			Str("action", "ai_tool_http").
 			Str("tool", "fetch").
-			Str("fetch_method", "exa").
+			Str("fetch_method", "web_tool").
 			Str("target_url", parsed.Redacted()).
 			Str("target_host", parsed.Host).
-			Msg("Falling back to direct fetch after Exa fetch failed")
+			Msg("Falling back to direct fetch result after web tool fetch failed")
 	}
-	return fetchDirect(ctx, rawURL, parsed, options)
+	if !directFirst {
+		directResult, directErr = fetchDirect(ctx, rawURL, parsed, options)
+		if result, ok := directFetchResult(ctx, directResult, directErr, options); ok {
+			return result, nil
+		}
+	}
+	if directErr != nil {
+		return FetchResult{}, directErr
+	}
+	if !isHTTPSuccess(directResult.Status) {
+		return FetchResult{}, fmt.Errorf("direct fetch failed with HTTP %d", directResult.Status)
+	}
+	return directResult, nil
+}
+
+func directFetchResult(ctx context.Context, directResult FetchResult, directErr error, options FetchOptions) (FetchResult, bool) {
+	if directErr != nil || !isHTTPSuccess(directResult.Status) {
+		return FetchResult{}, false
+	}
+	if shouldReturnDirectResult(mustParseURL(directResult.FinalURL), directResult.ContentType) {
+		return directResult, true
+	}
+	if isHTMLContentType(directResult.ContentType) || looksLikeHTML(directResult.RawBody) {
+		if alternateURL := findReadableAlternate(directResult.ResponseHeaders, directResult.RawBody, directResult.FinalURL); alternateURL != "" {
+			if alternate, err := fetchDirectURL(ctx, alternateURL, options); err == nil && isHTTPSuccess(alternate.Status) && shouldReturnDirectResult(mustParseURL(alternate.FinalURL), alternate.ContentType) {
+				return alternate, true
+			}
+		}
+	}
+	return FetchResult{}, false
+}
+
+func isHTTPSuccess(status int) bool {
+	return status >= 200 && status < 300
 }
 
 func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options FetchOptions) (FetchResult, error) {
@@ -98,6 +142,7 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 		return FetchResult{}, err
 	}
 	req.Header.Set("User-Agent", "beeper-ai-bridge/1.0")
+	req.Header.Set("Accept", directOpenAcceptHeader)
 	log.Trace().Msg("Sending AI tool HTTP request")
 	started := time.Now()
 	resp, err := client.Do(req)
@@ -123,27 +168,45 @@ func fetchDirect(ctx context.Context, rawURL string, parsed *url.URL, options Fe
 		truncated = true
 	}
 	metadata := extractHTMLMetadata(body, resp.Request.URL)
+	markdown := ""
+	if isDirectReadableContentType(resp.Header.Get("Content-Type")) || shouldReturnDirectURL(resp.Request.URL) {
+		markdown = text
+	}
 	return FetchResult{
-		URL:         rawURL,
-		FinalURL:    resp.Request.URL.String(),
-		Status:      resp.StatusCode,
-		ContentType: resp.Header.Get("Content-Type"),
-		Title:       metadata.Title,
-		Description: metadata.Description,
-		Text:        text,
-		Favicon:     metadata.Favicon,
-		Truncated:   truncated,
-		FetchMethod: "direct",
+		URL:             rawURL,
+		FinalURL:        resp.Request.URL.String(),
+		Status:          resp.StatusCode,
+		ContentType:     resp.Header.Get("Content-Type"),
+		Title:           metadata.Title,
+		Description:     metadata.Description,
+		Text:            text,
+		Markdown:        markdown,
+		Favicon:         metadata.Favicon,
+		Truncated:       truncated,
+		FetchMethod:     "direct",
+		ResponseHeaders: resp.Header.Clone(),
+		RawBody:         body,
 	}, nil
 }
 
+func fetchDirectURL(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return FetchResult{}, fmt.Errorf("invalid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return FetchResult{}, fmt.Errorf("unsupported URL scheme %s", parsed.Scheme)
+	}
+	return fetchDirect(ctx, rawURL, parsed, options)
+}
+
 func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (FetchResult, error) {
-	if options.ExaEndpoint == "" {
+	if options.ToolEndpoint == "" {
 		return FetchResult{}, errors.New("fetch contents is not configured")
 	}
 	textMaxChars := options.MaxChars
-	if textMaxChars <= 0 || textMaxChars > 10000 {
-		textMaxChars = 10000
+	if textMaxChars <= 0 || textMaxChars > 50000 {
+		textMaxChars = 20000
 	}
 	client := options.Client
 	if client == nil {
@@ -153,21 +216,18 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 	if err != nil || target == nil || target.Scheme == "" || target.Host == "" {
 		return FetchResult{}, fmt.Errorf("invalid URL")
 	}
-	log := toolHTTPLog(ctx, "fetch", http.MethodPost, options.ExaEndpoint).
+	log := toolHTTPLog(ctx, "fetch", http.MethodPost, options.ToolEndpoint).
 		With().
-		Str("fetch_method", "exa").
+		Str("fetch_method", "web_tool").
 		Str("target_url", target.Redacted()).
 		Str("target_host", target.Host).
 		Logger()
 	ctx = log.WithContext(ctx)
 	payload, _ := json.Marshal(map[string]any{
-		"urls": []string{rawURL},
-		"text": map[string]any{
-			"maxCharacters": textMaxChars,
-			"verbosity":     "standard",
-		},
+		"url":       rawURL,
+		"max_chars": textMaxChars,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.ExaEndpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.ToolEndpoint, bytes.NewReader(payload))
 	if err != nil {
 		return FetchResult{}, err
 	}
@@ -193,63 +253,53 @@ func FetchContents(ctx context.Context, rawURL string, options FetchOptions) (Fe
 		return FetchResult{}, err
 	}
 	result := FetchResult{
-		URL:         rawURL,
-		FinalURL:    rawURL,
-		Status:      200,
-		Truncated:   false,
-		RequestID:   body.RequestID,
-		Context:     body.Context,
-		FetchMethod: "exa",
+		URL:            firstNonEmpty(body.URL, rawURL),
+		FinalURL:       firstNonEmpty(body.FinalURL, body.URL, rawURL),
+		Status:         200,
+		Title:          body.Title,
+		Description:    body.Description,
+		SiteName:       body.SiteName,
+		Text:           firstNonEmpty(body.Text, body.Markdown),
+		Markdown:       firstNonEmpty(body.Markdown, body.Text),
+		Truncated:      body.Truncated,
+		RequestID:      firstNonEmpty(body.RequestID, body.RequestIDSnake),
+		RequestIDSnake: firstNonEmpty(body.RequestIDSnake, body.RequestID),
+		Published:      firstNonEmpty(body.Published, body.PublishedAt, body.PublishedDate),
+		Author:         body.Author,
+		Image:          firstNonEmpty(body.Image, body.ImageURL),
+		ImageURL:       firstNonEmpty(body.ImageURL, body.Image),
+		Favicon:        firstNonEmpty(body.Favicon, body.FaviconURL),
+		FaviconURL:     firstNonEmpty(body.FaviconURL, body.Favicon),
+		Extras:         body.Metadata,
+		FetchMethod:    "web_tool",
 	}
-	if len(body.Statuses) > 0 {
-		status := body.Statuses[0]
-		result.Source = status.Source
-		if status.Status == "error" {
-			result.Status = status.Error.HTTPStatusCode
-			if result.Status == 0 {
-				result.Status = 502
-			}
-			result.Error = status.Error.Tag
-			log.Error().
-				Int("status_code", result.Status).
-				Str("request_id", body.RequestID).
-				Str("error_tag", status.Error.Tag).
-				Msg("AI tool fetch provider returned item error")
-			return result, fmt.Errorf("fetch contents failed: %s", firstNonEmpty(status.Error.Tag, status.Status))
-		}
-	}
-	if len(body.Results) == 0 {
-		return result, nil
-	}
-	item := body.Results[0]
-	result.FinalURL = firstNonEmpty(item.URL, rawURL)
-	result.ID = item.ID
-	result.Title = item.Title
-	result.Description = item.Description
-	result.Text = item.Text
-	result.Published = firstNonEmpty(item.Published, item.PublishedDate)
-	result.Author = item.Author
-	result.Image = item.Image
-	result.Favicon = item.Favicon
-	result.Highlights = item.Highlights
-	result.HighlightScores = item.HighlightScores
-	result.Summary = item.Summary
-	result.Subpages = item.Subpages
-	result.Entities = item.Entities
-	result.Extras = item.Extras
 	if len([]rune(result.Text)) > textMaxChars {
 		runes := []rune(result.Text)
 		result.Text = string(runes[:textMaxChars])
 		result.Truncated = true
 	}
+	if len([]rune(result.Markdown)) > textMaxChars {
+		runes := []rune(result.Markdown)
+		result.Markdown = string(runes[:textMaxChars])
+		result.Truncated = true
+	}
 	log.Debug().
-		Str("request_id", body.RequestID).
+		Str("request_id", result.RequestID).
 		Bool("truncated", result.Truncated).
 		Msg("Parsed AI tool fetch result")
 	return result, nil
 }
 
-func shouldDirectFetch(parsed *url.URL) bool {
+const directOpenAcceptHeader = "text/markdown, text/plain;q=0.95, application/json;q=0.9, application/xml;q=0.85, text/xml;q=0.85, text/csv;q=0.85, text/html;q=0.5, */*;q=0.1"
+
+func shouldReturnDirectResult(parsed *url.URL, contentType string) bool {
+	return isDirectReadableContentType(contentType) || shouldReturnDirectURL(parsed)
+}
+
+func shouldReturnDirectURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
 	host := strings.ToLower(parsed.Hostname())
 	path := strings.ToLower(parsed.EscapedPath())
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
@@ -272,55 +322,190 @@ func shouldDirectFetch(parsed *url.URL) bool {
 	case ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml", ".rss", ".atom",
 		".log", ".diff", ".patch",
 		".go", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sass", ".less",
-		".c", ".cc", ".cpp", ".h", ".hpp", ".java", ".kt", ".kts", ".rs", ".py", ".rb", ".swift", ".sh", ".bash", ".zsh", ".fish", ".sql",
-		".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".svg",
-		".pdf", ".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar",
-		".mp3", ".mp4", ".m4a", ".mov", ".wav", ".webm", ".ogg",
-		".woff", ".woff2", ".ttf", ".otf", ".eot", ".wasm",
-		".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx":
+		".c", ".cc", ".cpp", ".h", ".hpp", ".java", ".kt", ".kts", ".rs", ".py", ".rb", ".swift", ".sh", ".bash", ".zsh", ".fish", ".sql":
 		return true
 	default:
 		return false
 	}
 }
 
+func isDirectReadableContentType(contentType string) bool {
+	mediaType := normalizedMediaType(contentType)
+	if mediaType == "" {
+		return false
+	}
+	if mediaType == "text/markdown" || mediaType == "text/plain" || mediaType == "text/csv" || mediaType == "text/xml" {
+		return true
+	}
+	if strings.HasPrefix(mediaType, "text/") && mediaType != "text/html" {
+		return true
+	}
+	if mediaType == "application/json" || mediaType == "application/xml" {
+		return true
+	}
+	return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+}
+
+func isHTMLContentType(contentType string) bool {
+	mediaType := normalizedMediaType(contentType)
+	return mediaType == "text/html" || mediaType == "application/xhtml+xml"
+}
+
+func looksLikeHTML(body []byte) bool {
+	prefix := strings.ToLower(string(bytes.TrimSpace(body)))
+	return strings.HasPrefix(prefix, "<!doctype html") || strings.HasPrefix(prefix, "<html")
+}
+
+func isReadableAlternateType(contentType string) bool {
+	mediaType := normalizedMediaType(contentType)
+	return mediaType == "text/markdown" || mediaType == "text/plain"
+}
+
+func normalizedMediaType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	}
+	return strings.ToLower(mediaType)
+}
+
+func findReadableAlternate(headers http.Header, body []byte, finalURL string) string {
+	baseURL := mustParseURL(finalURL)
+	if alt := readableAlternateFromLinkHeaders(headers.Values("Link"), baseURL); alt != "" {
+		return alt
+	}
+	return readableAlternateFromHTML(body, baseURL)
+}
+
+func readableAlternateFromLinkHeaders(values []string, baseURL *url.URL) string {
+	for _, value := range values {
+		for _, part := range splitLinkHeader(value) {
+			linkURL, params := parseLinkValue(part)
+			if linkURL == "" {
+				continue
+			}
+			if !relContains(params["rel"], "alternate") || !isReadableAlternateType(params["type"]) {
+				continue
+			}
+			if resolved := resolveMetadataURL(linkURL, baseURL); resolved != "" {
+				return resolved
+			}
+		}
+	}
+	return ""
+}
+
+func splitLinkHeader(value string) []string {
+	var parts []string
+	start := 0
+	inQuote := false
+	inAngle := false
+	for i, r := range value {
+		switch r {
+		case '"':
+			inQuote = !inQuote
+		case '<':
+			if !inQuote {
+				inAngle = true
+			}
+		case '>':
+			if !inQuote {
+				inAngle = false
+			}
+		case ',':
+			if !inQuote && !inAngle {
+				parts = append(parts, strings.TrimSpace(value[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(value[start:]))
+	return parts
+}
+
+func parseLinkValue(value string) (string, map[string]string) {
+	params := map[string]string{}
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "<") {
+		return "", params
+	}
+	end := strings.Index(value, ">")
+	if end < 0 {
+		return "", params
+	}
+	linkURL := strings.TrimSpace(value[1:end])
+	for _, part := range strings.Split(value[end+1:], ";") {
+		key, raw, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		params[strings.ToLower(strings.TrimSpace(key))] = strings.Trim(strings.TrimSpace(raw), `"`)
+	}
+	return linkURL, params
+}
+
+func readableAlternateFromHTML(body []byte, baseURL *url.URL) string {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	var out string
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if out != "" {
+			return
+		}
+		if node.Type == html.ElementNode && strings.EqualFold(node.Data, "link") {
+			if relContains(attr(node, "rel"), "alternate") && isReadableAlternateType(attr(node, "type")) {
+				out = resolveMetadataURL(attr(node, "href"), baseURL)
+				return
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	return out
+}
+
+func relContains(rel string, token string) bool {
+	for _, part := range strings.Fields(strings.ToLower(rel)) {
+		if part == token {
+			return true
+		}
+	}
+	return false
+}
+
+func mustParseURL(rawURL string) *url.URL {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
 type contentsResponse struct {
-	RequestID   string                `json:"requestId"`
-	Context     string                `json:"context"`
-	CostDollars map[string]any        `json:"costDollars"`
-	Results     []contentsResultItem  `json:"results"`
-	Statuses    []contentsStatusEntry `json:"statuses"`
-}
-
-type contentsResultItem struct {
-	ID              string          `json:"id"`
-	Title           string          `json:"title"`
-	Description     string          `json:"description"`
-	URL             string          `json:"url"`
-	Text            string          `json:"text"`
-	Highlights      []string        `json:"highlights"`
-	HighlightScores []float64       `json:"highlightScores"`
-	Summary         any             `json:"summary"`
-	Published       string          `json:"published"`
-	PublishedDate   string          `json:"publishedDate"`
-	Author          string          `json:"author"`
-	Image           string          `json:"image"`
-	Favicon         string          `json:"favicon"`
-	Subpages        []SearchSubpage `json:"subpages"`
-	Entities        []any           `json:"entities"`
-	Extras          map[string]any  `json:"extras"`
-}
-
-type contentsStatusEntry struct {
-	ID     string              `json:"id"`
-	Status string              `json:"status"`
-	Source string              `json:"source"`
-	Error  contentsStatusError `json:"error"`
-}
-
-type contentsStatusError struct {
-	Tag            string `json:"tag"`
-	HTTPStatusCode int    `json:"httpStatusCode"`
+	URL            string         `json:"url"`
+	FinalURL       string         `json:"final_url"`
+	Title          string         `json:"title"`
+	Description    string         `json:"description"`
+	SiteName       string         `json:"site_name"`
+	Published      string         `json:"published"`
+	PublishedAt    string         `json:"published_at"`
+	PublishedDate  string         `json:"publishedDate"`
+	Author         string         `json:"author"`
+	Image          string         `json:"image"`
+	ImageURL       string         `json:"image_url"`
+	Favicon        string         `json:"favicon"`
+	FaviconURL     string         `json:"favicon_url"`
+	Text           string         `json:"text"`
+	Markdown       string         `json:"markdown"`
+	Truncated      bool           `json:"truncated"`
+	Metadata       map[string]any `json:"metadata"`
+	RequestID      string         `json:"requestId"`
+	RequestIDSnake string         `json:"request_id"`
 }
 
 func toolHTTPLog(ctx context.Context, tool string, method string, rawURL string) zerolog.Logger {

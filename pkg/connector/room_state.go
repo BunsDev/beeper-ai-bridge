@@ -26,14 +26,18 @@ type RoomConfig struct {
 	ModelID          string
 	AdditionalPrompt string
 	ThinkingLevel    string
+	ReasoningMode    string
 	DisabledTools    []string
+	SearchMode       string
+	FetchMode        string
 
-	modelStatePresent  bool
-	modelStateModel    string
-	modelStateName     string
-	modelStateReason   string
-	modelStateEventID  string
-	promptStateEventID string
+	modelStatePresent       bool
+	modelStateModel         string
+	modelStateName          string
+	modelStateReason        string
+	modelStateReasoningMode string
+	modelStateEventID       string
+	promptStateEventID      string
 }
 
 func (c *Connector) aiRoomStateStore() AIRoomStateStore {
@@ -62,10 +66,14 @@ func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (Roo
 		config.modelStateModel = firstString(raw, "model")
 		config.modelStateName = firstString(raw, "name")
 		config.modelStateReason = firstString(raw, "reasoning")
+		config.modelStateReasoningMode = firstString(raw, "reasoning_mode")
 		config.modelStateEventID = eventID
 		applyRoomModelConfig(&config, raw)
 		if _, ok := raw["reasoning"]; !ok {
 			config.ThinkingLevel = ""
+		}
+		if _, ok := raw["reasoning_mode"]; !ok {
+			config.ReasoningMode = ""
 		}
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
@@ -80,6 +88,16 @@ func (s AIRoomStateStore) ReadConfig(ctx context.Context, roomID id.RoomID) (Roo
 		return RoomConfig{}, "", err
 	} else if raw != nil {
 		config.DisabledTools = stringSlice(raw["disabled"])
+		if _, ok := raw["search"]; ok {
+			config.SearchMode = normalizedToolMode(firstString(raw, "search"), defaultSearchMode)
+		} else {
+			config.SearchMode = searchModeFromDisabled(config.DisabledTools)
+		}
+		if _, ok := raw["fetch"]; ok {
+			config.FetchMode = normalizedToolMode(firstString(raw, "fetch"), defaultFetchMode)
+		} else {
+			config.FetchMode = fetchModeFromDisabled(config.DisabledTools)
+		}
 		stateEventIDs = append(stateEventIDs, eventID)
 	}
 	return config, strings.Join(stateEventIDs, ","), nil
@@ -121,20 +139,14 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
 		return provider, resolvedModelID, nil
 	}
-	if !providerAllowsModel(provider, modelID) {
-		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
-	}
-	return provider, modelID, nil
+	return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s does not offer model %s", providerID, modelID)
 }
 
 func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
 	if _, ok := resolveProviderModelID(provider, modelID); ok {
 		return true
 	}
-	if len(provider.Models) > 0 {
-		return false
-	}
-	return strings.TrimSpace(modelID) != ""
+	return false
 }
 
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {
@@ -209,6 +221,9 @@ func applyRoomModelConfig(config *RoomConfig, raw map[string]any) {
 	}
 	if reasoning := firstString(raw, "reasoning"); reasoning != "" {
 		config.ThinkingLevel = reasoning
+	}
+	if reasoningMode := firstString(raw, "reasoning_mode"); reasoningMode != "" {
+		config.ReasoningMode = reasoningMode
 	}
 }
 

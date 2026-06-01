@@ -39,6 +39,7 @@ func (c *Connector) registerAICommands() {
 	processor.AddHandlers(
 		c.bridgeAICommand("model", "Show or set the AI model for this room.", "[model]"),
 		c.bridgeAICommand("reasoning", "Show or set the reasoning level for this room.", "[off|minimal|low|medium|high|xhigh]"),
+		c.bridgeAICommand("reasoning-mode", "Show or set the reasoning mode for this room.", "[default|adaptive]"),
 		c.bridgeAICommand("system-prompt", "Show, set, or clear this room's additional system prompt.", "[prompt|clear]"),
 		c.bridgeAICommand("abort", "Abort the active AI response or compaction.", ""),
 		c.bridgeAICommand("stop", "Stop the active AI response or compaction.", ""),
@@ -222,14 +223,14 @@ func (c *Connector) handleBridgeProviderUpsert(ce *commands.Event, action string
 	if len(fields) == 5 {
 		input.DefaultModel = fields[4]
 	}
-	provider, err := c.VerifyProviderConfig(ce.Ctx, input)
-	if err != nil {
-		ce.Reply("Provider rejected: %v", err)
-		return
-	}
 	login, err := c.loginForBridgeProviderCommand(ce)
 	if err != nil {
 		ce.Reply(err.Error())
+		return
+	}
+	provider, err := c.VerifyProviderConfig(ce.Ctx, login, input)
+	if err != nil {
+		ce.Reply("Provider rejected: %v", err)
 		return
 	}
 	if err = c.SaveProviderConfig(ce.Ctx, login, provider); err != nil {

@@ -98,6 +98,32 @@ func TestCompleteOpenAIResponsesUsesNonStreamingPayload(t *testing.T) {
 	}
 }
 
+func TestCompleteOpenAIResponsesExtractsOpenRouterWebFetchSources(t *testing.T) {
+	model := ai.Model{ID: "x-ai/grok-4.20", API: ai.ApiOpenAIResponses, Provider: ai.ProviderOpenRouter}
+	output := newAssistant(model)
+	applyCompleteOpenAIResponses(&output, model, OpenAIResponsesOptions{}, map[string]any{
+		"id":     "resp_1",
+		"status": "completed",
+		"output": []any{map[string]any{
+			"type":   "openrouter:web_fetch",
+			"id":     "st_1",
+			"status": "completed",
+			"url":    "https://example.com/fetched",
+			"title":  "Fetched Page",
+		}, map[string]any{
+			"type": "message",
+			"id":   "msg_1",
+			"content": []any{map[string]any{
+				"type": "output_text",
+				"text": "ok",
+			}},
+		}},
+	})
+	if len(output.Citations) != 1 || output.Citations[0].URL != "https://example.com/fetched" || output.Citations[0].Title != "Fetched Page" {
+		t.Fatalf("expected OpenRouter fetch source from non-stream response, got %#v", output.Citations)
+	}
+}
+
 func TestConvertCompletionsMessagesIncludesNativeAudio(t *testing.T) {
 	model := ai.Model{ID: "gpt-audio", API: ai.ApiOpenAICompletions, Provider: "openai", Input: []string{"text", "audio"}}
 	messages := ConvertCompletionsMessages(model, ai.Context{
@@ -114,6 +140,138 @@ func TestConvertCompletionsMessagesIncludesNativeAudio(t *testing.T) {
 	audio := audioPart["input_audio"].(map[string]any)
 	if audio["data"] != "abc123" || audio["format"] != "mp3" {
 		t.Fatalf("unexpected audio payload %#v", audio)
+	}
+}
+
+func TestProviderCitationsFromOpenAIAnnotations(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type": "message",
+		"content": []any{map[string]any{
+			"type": "output_text",
+			"text": "hello citation",
+			"annotations": []any{map[string]any{
+				"type":        "url_citation",
+				"start_index": float64(6),
+				"end_index":   float64(14),
+				"url":         "https://example.com/source",
+				"title":       "Source",
+			}},
+		}},
+	}, ai.ProviderOpenAI, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/source" || citations[0].Title != "Source" {
+		t.Fatalf("unexpected citations %#v", citations)
+	}
+	if citations[0].StartIndex == nil || *citations[0].StartIndex != 6 || citations[0].EndIndex == nil || *citations[0].EndIndex != 14 {
+		t.Fatalf("missing citation range %#v", citations[0])
+	}
+}
+
+func TestProviderCitationsFromGoogleGrounding(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"candidates": []any{map[string]any{
+			"groundingMetadata": map[string]any{
+				"groundingChunks": []any{map[string]any{
+					"web": map[string]any{"uri": "https://example.com/google", "title": "Google Source"},
+				}},
+				"groundingSupports": []any{map[string]any{
+					"segment":               map[string]any{"startIndex": float64(2), "endIndex": float64(8), "text": "claim"},
+					"groundingChunkIndices": []any{float64(0)},
+				}},
+			},
+		}},
+	}, ai.ProviderGoogle, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/google" || citations[0].Title != "Google Source" {
+		t.Fatalf("unexpected grounding citations %#v", citations)
+	}
+	if citations[0].StartIndex == nil || *citations[0].StartIndex != 2 || citations[0].EndIndex == nil || *citations[0].EndIndex != 8 || citations[0].Text != "claim" {
+		t.Fatalf("missing grounding citation range %#v", citations[0])
+	}
+}
+
+func TestProviderCitationsFromAnthropicWebSearchLocation(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type":       "web_search_result_location",
+		"url":        "https://example.com/anthropic",
+		"title":      "Anthropic Source",
+		"cited_text": "quoted source text",
+	}, ai.ProviderAnthropic, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/anthropic" || citations[0].Title != "Anthropic Source" {
+		t.Fatalf("unexpected citations %#v", citations)
+	}
+	if citations[0].Text != "quoted source text" {
+		t.Fatalf("missing cited text %#v", citations[0])
+	}
+}
+
+func TestProviderCitationsFromNativeWebSearchResult(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type":  "web_search_result",
+		"url":   "https://example.com/native",
+		"title": "Native Result",
+	}, ai.ProviderAnthropic, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/native" || citations[0].Title != "Native Result" || citations[0].RawType != "web_search_result" {
+		t.Fatalf("unexpected native search citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsPreferNestedCitationType(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type": "annotation",
+		"url_citation": map[string]any{
+			"type":  "url_citation",
+			"url":   "https://example.com/nested",
+			"title": "Nested",
+		},
+	}, ai.ProviderOpenAI, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/nested" || citations[0].Title != "Nested" {
+		t.Fatalf("unexpected nested citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsFromAnthropicWebFetchResult(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type": "web_fetch_tool_result",
+		"content": map[string]any{
+			"type": "web_fetch_result",
+			"url":  "https://example.com/article",
+			"content": map[string]any{
+				"type":  "document",
+				"title": "Fetched Article",
+			},
+		},
+	}, ai.ProviderAnthropic, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/article" || citations[0].Title != "Fetched Article" || citations[0].RawType != "web_fetch_result" {
+		t.Fatalf("unexpected web fetch citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsFromOpenRouterWebFetchItem(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"type":       "openrouter:web_fetch",
+		"status":     "completed",
+		"url":        "https://example.com/openrouter-fetch",
+		"title":      "OpenRouter Fetch",
+		"httpStatus": float64(200),
+		"content":    "Fetched page text",
+	}, ai.ProviderOpenRouter, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/openrouter-fetch" || citations[0].Title != "OpenRouter Fetch" || citations[0].RawType != "openrouter:web_fetch" {
+		t.Fatalf("unexpected OpenRouter web fetch citations %#v", citations)
+	}
+}
+
+func TestProviderCitationsFromGoogleURLContextMetadata(t *testing.T) {
+	citations := providerCitationsFromAny(map[string]any{
+		"candidates": []any{map[string]any{
+			"urlContextMetadata": map[string]any{
+				"urlMetadata": []any{map[string]any{
+					"retrievedUrl":       "https://example.com/url-context",
+					"urlRetrievalStatus": "URL_RETRIEVAL_STATUS_SUCCESS",
+				}},
+			},
+		}},
+	}, ai.ProviderGoogle, 0)
+	if len(citations) != 1 || citations[0].URL != "https://example.com/url-context" || citations[0].RawType != "url_context" {
+		t.Fatalf("unexpected URL context citations %#v", citations)
 	}
 }
 
@@ -341,6 +499,25 @@ func TestBuildCompletionsParamsUsesDetectedCompat(t *testing.T) {
 	}
 }
 
+func TestOpenRouterCompletionsCompatDoesNotUseDeveloperRole(t *testing.T) {
+	model := ai.Model{
+		ID:        "z-ai/glm-4.5v",
+		API:       ai.ApiOpenAICompletions,
+		Provider:  ai.ProviderOpenRouter,
+		BaseURL:   "https://openrouter.ai/api/v1",
+		Reasoning: true,
+		Input:     []string{"text", "image"},
+	}
+	params := BuildCompletionsParams(model, ai.Context{SystemPrompt: "You are concise."}, OpenAICompletionsOptions{})
+	messages := params["messages"].([]map[string]any)
+	if messages[0]["role"] != "system" {
+		t.Fatalf("OpenRouter completions must not use developer role, got %#v", messages[0])
+	}
+	if thinking := params["reasoning"].(map[string]any); thinking["effort"] != "none" {
+		t.Fatalf("expected OpenRouter default reasoning none, got %#v", thinking)
+	}
+}
+
 func TestRegisterBuiltInsIncludesOpenAICodexResponses(t *testing.T) {
 	ResetAPIProviders()
 	provider, ok := ai.GetAPIProvider(ai.ApiOpenAICodexResponses)
@@ -349,17 +526,6 @@ func TestRegisterBuiltInsIncludesOpenAICodexResponses(t *testing.T) {
 	}
 	if provider.API != ai.ApiOpenAICodexResponses || provider.Stream == nil || provider.StreamSimple == nil {
 		t.Fatalf("unexpected codex provider %#v", provider)
-	}
-}
-
-func TestModelRegistryOnlyExposesRegisteredTextAPIs(t *testing.T) {
-	ResetAPIProviders()
-	for _, provider := range ai.GetProviders() {
-		for _, model := range ai.GetModels(provider) {
-			if _, ok := ai.GetAPIProvider(model.API); !ok {
-				t.Fatalf("model %s/%s uses unregistered api %s", provider, model.ID, model.API)
-			}
-		}
 	}
 }
 
@@ -421,7 +587,59 @@ func TestOpenAIClientConfigResolvesCloudflareGatewayHeaders(t *testing.T) {
 		t.Fatalf("expected merged headers, got %#v", config.Headers)
 	}
 	if config.Headers["x-client-request-id"] != "session-1" {
+		t.Fatalf("default completions compat should send request id header, got %#v", config.Headers)
+	}
+}
+
+func TestOpenAIClientConfigResponsesHonorsSessionIDCompat(t *testing.T) {
+	config, err := buildOpenAIClientConfig(ai.Model{
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  "https://api.openai.com/v1",
+		Compat:   map[string]any{"sendSessionIdHeader": false},
+	}, ai.Context{}, ai.StreamOptions{APIKey: "token", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Headers["x-client-request-id"] != "session-1" {
 		t.Fatalf("expected request id header, got %#v", config.Headers)
+	}
+	if _, ok := config.Headers["session_id"]; ok {
+		t.Fatalf("sendSessionIdHeader=false should suppress session_id, got %#v", config.Headers)
+	}
+}
+
+func TestOpenAIClientConfigCompletionsAffinityHeadersRequireCompat(t *testing.T) {
+	defaultConfig, err := buildOpenAIClientConfig(ai.Model{
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
+	}, ai.Context{}, ai.StreamOptions{APIKey: "token", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"session_id", "x-session-affinity"} {
+		if _, ok := defaultConfig.Headers[key]; ok {
+			t.Fatalf("default completions compat should not send %s, got %#v", key, defaultConfig.Headers)
+		}
+	}
+	if defaultConfig.Headers["x-client-request-id"] != "session-1" {
+		t.Fatalf("default completions compat should send request id header, got %#v", defaultConfig.Headers)
+	}
+
+	enabledConfig, err := buildOpenAIClientConfig(ai.Model{
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
+		Compat:   map[string]any{"sendSessionAffinityHeaders": true},
+	}, ai.Context{}, ai.StreamOptions{APIKey: "token", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"session_id", "x-client-request-id", "x-session-affinity"} {
+		if enabledConfig.Headers[key] != "session-1" {
+			t.Fatalf("expected %s=session-1, got %#v", key, enabledConfig.Headers)
+		}
 	}
 }
 
