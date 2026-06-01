@@ -16,6 +16,7 @@ const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
 
 const seeMoreSupportedClients = "[See more on supported clients]"
 const seeMoreSupportedClientsHTML = `<span data-beeper-ai-fallback="final-parts">` + seeMoreSupportedClients + `</span>`
+const workingFallbackText = "Working..."
 const finalEncryptedEventOverheadBytes = 2048
 
 const finalEditSizeProbeEventID = id.EventID("$final-size-probe-final-size-probe-final-size-probe:beeper.local")
@@ -103,7 +104,7 @@ func finalVisibleText(run aistream.Run) string {
 	if run.Preview.Text != "" {
 		return run.Preview.Text
 	}
-	return "..."
+	return workingFallbackText
 }
 
 func fitFinalHTML(run aistream.Run, markdown string, budget int, extra map[string]any) (*event.MessageEventContent, bool) {
@@ -212,7 +213,7 @@ func finalPayloadSize(content *event.MessageEventContent, extra map[string]any) 
 func previewContent(run aistream.Run) *event.MessageEventContent {
 	body := run.Preview.Text
 	if body == "" {
-		body = "..."
+		body = workingFallbackText
 	}
 	rendered := format.RenderMarkdown(body, true, false)
 	content := &rendered

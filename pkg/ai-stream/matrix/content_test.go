@@ -41,7 +41,7 @@ func TestStreamingAnchorDoesNotIncludePreviewPart(t *testing.T) {
 	run.Preview = aistream.Preview{}
 
 	content, extra := AnchorContent(*run)
-	if content.Body != "..." {
+	if content.Body != "Working..." {
 		t.Fatalf("empty streaming anchor should use placeholder body, got %q", content.Body)
 	}
 	ai, ok := extra[aistream.BeeperAIKey].(aistream.BeeperAI)
