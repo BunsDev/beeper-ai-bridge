@@ -318,6 +318,19 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 	}
 }
 
+func TestSearchIncludesErrorResponseMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"Web tool upstream request timed out"}}`))
+	}))
+	defer server.Close()
+
+	_, err := Search(context.Background(), "query", 5, SearchRequestOptions{}, SearchOptions{Enabled: true, Endpoint: server.URL, APIKey: "key", Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "Web tool upstream request timed out") {
+		t.Fatalf("expected upstream error message to propagate, got %v", err)
+	}
+}
+
 func TestSearchMapsToolOptionsToPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any

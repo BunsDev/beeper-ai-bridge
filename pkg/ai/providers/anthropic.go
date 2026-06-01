@@ -550,12 +550,21 @@ func isAnthropicMessageEvent(event string) bool {
 }
 
 type anthropicStreamState struct {
-	anthropicIndexes map[int]int
-	partialJSON      map[int]string
+	anthropicIndexes      map[int]int
+	partialJSON           map[int]string
+	nativeToolsByIndex    map[int]ai.ToolCall
+	nativeToolsByID       map[string]ai.ToolCall
+	nativeToolArgsByIndex map[int]string
 }
 
 func newAnthropicStreamState() *anthropicStreamState {
-	return &anthropicStreamState{anthropicIndexes: map[int]int{}, partialJSON: map[int]string{}}
+	return &anthropicStreamState{
+		anthropicIndexes:      map[int]int{},
+		partialJSON:           map[int]string{},
+		nativeToolsByIndex:    map[int]ai.ToolCall{},
+		nativeToolsByID:       map[string]ai.ToolCall{},
+		nativeToolArgsByIndex: map[int]string{},
+	}
 }
 
 func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, output *ai.Message, model ai.Model, llmContext ai.Context, isOAuth bool, event map[string]any) {
@@ -576,18 +585,21 @@ func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			return
 		}
 		contentIndex := len(output.Content.([]ai.ContentBlock))
-		s.anthropicIndexes[index] = contentIndex
 		switch blockMap["type"] {
 		case "text":
+			s.anthropicIndexes[index] = contentIndex
 			appendContentBlock(output, ai.ContentBlock{Type: "text"})
 			stream.Push(ai.AssistantMessageEvent{Type: "text_start", ContentIndex: contentIndex, Partial: output})
 		case "thinking":
+			s.anthropicIndexes[index] = contentIndex
 			appendContentBlock(output, ai.ContentBlock{Type: "thinking"})
 			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: contentIndex, Partial: output})
 		case "redacted_thinking":
+			s.anthropicIndexes[index] = contentIndex
 			appendContentBlock(output, ai.ContentBlock{Type: "thinking", Thinking: "[Reasoning redacted]", ThinkingSignature: stringFromAny(blockMap["data"]), Redacted: true})
 			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: contentIndex, Partial: output})
 		case "tool_use":
+			s.anthropicIndexes[index] = contentIndex
 			name := stringFromAny(blockMap["name"])
 			if isOAuth {
 				name = fromClaudeCodeName(name, llmContext.Tools)
@@ -601,8 +613,42 @@ func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			}
 			appendContentBlock(output, ai.ContentBlock{Type: "toolCall", ID: stringFromAny(blockMap["id"]), Name: name, Arguments: arguments})
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: contentIndex, Partial: output})
+		case "server_tool_use":
+			toolCall, ok := anthropicNativeServerToolCall(blockMap, index)
+			if !ok {
+				return
+			}
+			s.nativeToolsByIndex[index] = toolCall
+			s.nativeToolsByID[toolCall.ID] = toolCall
+			if len(toolCall.Arguments) > 0 {
+				s.nativeToolArgsByIndex[index] = mustJSON(toolCall.Arguments)
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: &toolCall, Partial: output})
+			if len(toolCall.Arguments) > 0 {
+				stream.Push(ai.AssistantMessageEvent{Type: "toolcall_delta", Delta: mustJSON(toolCall.Arguments), ToolCall: &toolCall, Partial: output})
+			}
+		case "web_search_tool_result", "web_fetch_tool_result":
+			toolCall := s.anthropicNativeToolCallForResult(blockMap)
+			if toolCall.ID == "" {
+				return
+			}
+			stream.Push(ai.AssistantMessageEvent{Type: "toolresult", ToolCall: &toolCall, CustomValue: anthropicNativeToolResult(blockMap), Partial: output})
 		}
 	case "content_block_delta":
+		blockIndex := intFromAny(event["index"])
+		if toolCall, ok := s.nativeToolsByIndex[blockIndex]; ok {
+			delta, _ := event["delta"].(map[string]any)
+			if delta == nil || delta["type"] != "input_json_delta" {
+				return
+			}
+			part := stringFromAny(delta["partial_json"])
+			s.nativeToolArgsByIndex[blockIndex] += part
+			toolCall.Arguments = parseJSONMap(s.nativeToolArgsByIndex[blockIndex])
+			s.nativeToolsByIndex[blockIndex] = toolCall
+			s.nativeToolsByID[toolCall.ID] = toolCall
+			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_delta", Delta: part, ToolCall: &toolCall, Partial: output})
+			return
+		}
 		contentIndex, ok := s.anthropicIndexes[intFromAny(event["index"])]
 		if !ok {
 			return
@@ -634,7 +680,14 @@ func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: contentIndex, Delta: part, Partial: output})
 		}
 	case "content_block_stop":
-		contentIndex, ok := s.anthropicIndexes[intFromAny(event["index"])]
+		blockIndex := intFromAny(event["index"])
+		if toolCall, ok := s.nativeToolsByIndex[blockIndex]; ok {
+			s.nativeToolsByID[toolCall.ID] = toolCall
+			delete(s.nativeToolsByIndex, blockIndex)
+			delete(s.nativeToolArgsByIndex, blockIndex)
+			return
+		}
+		contentIndex, ok := s.anthropicIndexes[blockIndex]
 		if !ok {
 			return
 		}
@@ -662,6 +715,129 @@ func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			applyAnthropicUsage(output, model, usage)
 		}
 	}
+}
+
+func anthropicNativeServerToolCall(block map[string]any, fallbackIndex int) (ai.ToolCall, bool) {
+	name := anthropicNativeToolName(stringFromAny(block["name"]))
+	if name == "" {
+		return ai.ToolCall{}, false
+	}
+	id := stringFromAny(block["id"])
+	if id == "" {
+		id = fmt.Sprintf("server_tool_%d", fallbackIndex+1)
+	}
+	arguments := map[string]any{}
+	if input, ok := block["input"]; ok {
+		arguments = parseJSONMap(mustJSON(input))
+	}
+	return ai.ToolCall{Type: "toolCall", ID: id, Name: name, Arguments: arguments}, true
+}
+
+func (s *anthropicStreamState) anthropicNativeToolCallForResult(block map[string]any) ai.ToolCall {
+	id := stringFromAny(block["tool_use_id"])
+	if id != "" {
+		if toolCall, ok := s.nativeToolsByID[id]; ok {
+			return toolCall
+		}
+	}
+	name := anthropicNativeResultToolName(stringFromAny(block["type"]))
+	if name == "" || id == "" {
+		return ai.ToolCall{}
+	}
+	return ai.ToolCall{Type: "toolCall", ID: id, Name: name, Arguments: map[string]any{}}
+}
+
+func anthropicNativeToolName(name string) string {
+	switch name {
+	case "web_search":
+		return "web_search"
+	case "web_fetch":
+		return "fetch"
+	default:
+		return ""
+	}
+}
+
+func anthropicNativeResultToolName(blockType string) string {
+	switch blockType {
+	case "web_search_tool_result":
+		return "web_search"
+	case "web_fetch_tool_result":
+		return "fetch"
+	default:
+		return ""
+	}
+}
+
+func anthropicNativeToolResult(block map[string]any) map[string]any {
+	result := map[string]any{
+		"state":    "complete",
+		"status":   "success",
+		"provider": "anthropic",
+		"native":   true,
+	}
+	content := block["content"]
+	if errorCode := anthropicNativeToolErrorCode(content); errorCode != "" {
+		result["state"] = "error"
+		result["status"] = "failed"
+		result["reason"] = errorCode
+		return result
+	}
+	switch block["type"] {
+	case "web_search_tool_result":
+		results := anthropicNativeSearchResults(content)
+		result["results"] = results
+		result["count"] = len(results)
+	case "web_fetch_tool_result":
+		if data, _ := content.(map[string]any); data != nil {
+			if url := stringFromAny(data["url"]); url != "" {
+				result["url"] = url
+				result["final_url"] = url
+			}
+			if retrievedAt := stringFromAny(data["retrieved_at"]); retrievedAt != "" {
+				result["retrieved_at"] = retrievedAt
+			}
+		}
+	}
+	return result
+}
+
+func anthropicNativeToolErrorCode(content any) string {
+	data, _ := content.(map[string]any)
+	if data == nil {
+		return ""
+	}
+	if strings.Contains(stringFromAny(data["type"]), "error") {
+		if code := stringFromAny(data["error_code"]); code != "" {
+			return code
+		}
+		return stringFromAny(data["type"])
+	}
+	return ""
+}
+
+func anthropicNativeSearchResults(content any) []map[string]any {
+	items, _ := content.([]any)
+	results := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		data, _ := item.(map[string]any)
+		if data == nil || data["type"] != "web_search_result" {
+			continue
+		}
+		result := map[string]any{}
+		for _, key := range []string{"url", "title", "page_age"} {
+			if value := stringFromAny(data[key]); value != "" {
+				result[key] = value
+			}
+		}
+		if pageAge := stringFromAny(data["page_age"]); pageAge != "" {
+			result["published_at"] = pageAge
+		}
+		if len(result) > 0 {
+			results = append(results, result)
+		}
+	}
+	return results
 }
 
 func appendContentBlock(output *ai.Message, block ai.ContentBlock) {

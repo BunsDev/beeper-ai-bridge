@@ -852,6 +852,49 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 	}
 }
 
+func TestApplyAIStreamEventStreamsNativeToolResult(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	toolCall := &ai.ToolCall{
+		ID:        "ws_1",
+		Name:      "web_search",
+		Arguments: map[string]any{"query": "latest headlines Amsterdam news today"},
+	}
+
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "toolcall_start", ToolCall: toolCall})
+	applyAIStreamEvent(writer, ai.AssistantMessageEvent{
+		Type:     "toolresult",
+		ToolCall: toolCall,
+		CustomValue: map[string]any{
+			"state":    agui.ToolResultStateComplete,
+			"status":   "success",
+			"provider": "openai",
+			"native":   true,
+		},
+	})
+
+	var sawEnd, sawResult bool
+	for _, evt := range run.Events {
+		switch evt.Type() {
+		case agui.EventToolCallEnd:
+			sawEnd = evt.Get("toolCallId") == "ws_1" && evt.Get("toolName") == "web_search"
+		case agui.EventToolCallResult:
+			sawResult = evt.Get("toolCallId") == "ws_1"
+			var output map[string]any
+			if err := json.Unmarshal([]byte(evt.Get("content").(string)), &output); err != nil {
+				t.Fatalf("native tool result content is not JSON: %v", err)
+			}
+			if output["status"] != "success" || output["native"] != true {
+				t.Fatalf("unexpected native tool result output: %#v", output)
+			}
+		}
+	}
+	if !sawEnd || !sawResult {
+		t.Fatalf("missing native tool result lifecycle events: %#v", run.Events)
+	}
+}
+
 func TestApplyAIStreamEventSkipsEmptyToolCallDelta(t *testing.T) {
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
 	run.MessageID = "assistant:run"

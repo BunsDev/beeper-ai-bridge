@@ -328,6 +328,10 @@ func TestRunAgentLoopTurnsToolUpdateEmitErrorIntoToolResult(t *testing.T) {
 	if content[0].Text != "update emit failed" {
 		t.Fatalf("expected update emit error content, got %#v", content)
 	}
+	details, _ := messages[2].Details.(map[string]any)
+	if details["state"] != "error" || details["status"] != "failed" || details["reason"] != "update emit failed" {
+		t.Fatalf("expected structured tool error details, got %#v", messages[2].Details)
+	}
 }
 
 func TestRunAgentLoopValidatesPreparedToolArguments(t *testing.T) {
