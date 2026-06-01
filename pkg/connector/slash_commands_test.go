@@ -189,27 +189,53 @@ func TestCurrentCommandResponseText(t *testing.T) {
 	}
 	model := ai.Model{ID: "anthropic/claude-opus-4.5", Reasoning: true}
 	status := reasoningStatusText("", "beeper/anthropic/claude-opus-4.5", model)
-	if !strings.Contains(status, "Current reasoning is `off` for `beeper/anthropic/claude-opus-4.5`.") {
+	if !strings.Contains(status, "beeper/anthropic/claude-opus-4.5's reasoning is set to `off`.") {
 		t.Fatalf("reasoning status is missing current value:\n%s", status)
 	}
-	if !strings.Contains(status, "Options: `off`, `minimal`, `low`, `medium`, `high`.") {
+	if !strings.Contains(status, "Available settings: `off`, `minimal`, `low`, `medium`, `high`.") {
 		t.Fatalf("reasoning status is missing supported options:\n%s", status)
 	}
+	geminiStatus := reasoningStatusText("off", "beeper/google/gemini-3-pro-image-preview", ai.Model{
+		ID:        "google/gemini-3-pro-image-preview",
+		Name:      "Gemini 3 Pro Image Preview",
+		Reasoning: true,
+	})
+	if geminiStatus != "Gemini 3 Pro Image Preview's reasoning is set to `off`. Available settings: `off`, `minimal`, `low`, `medium`, `high`." {
+		t.Fatalf("unexpected Gemini reasoning status:\n%s", geminiStatus)
+	}
+	unsupportedStatus := reasoningStatusText("off", "beeper/meta-llama/llama-3.3-70b-instruct", ai.Model{ID: "meta-llama/llama-3.3-70b-instruct", Name: "Llama 3.3 70B"})
+	if unsupportedStatus != "Llama 3.3 70B doesn't support reasoning." {
+		t.Fatalf("unexpected unsupported reasoning status:\n%s", unsupportedStatus)
+	}
+	fixedStatus := reasoningStatusText("low", "beeper/minimax/minimax-m2.7", ai.Model{
+		ID:        "minimax/minimax-m2.7",
+		Name:      "MiniMax M2.7",
+		Reasoning: true,
+		ThinkingLevelMap: map[ai.ModelThinkingLevel]*string{
+			ai.ModelThinkingLevelOff:     nil,
+			ai.ModelThinkingLevelMinimal: nil,
+			ai.ModelThinkingLevelMedium:  nil,
+			ai.ModelThinkingLevelHigh:    nil,
+		},
+	})
+	if fixedStatus != "MiniMax M2.7's reasoning is set to `low` and it doesn't support changing reasoning settings." {
+		t.Fatalf("unexpected fixed reasoning status:\n%s", fixedStatus)
+	}
 	modeStatus := reasoningModeStatusText("adaptive", "beeper/anthropic/claude-opus-4.8", ai.Model{ID: "anthropic/claude-opus-4.8", ReasoningMode: ai.ModelReasoningModeAdaptive})
-	if !strings.Contains(modeStatus, "Current reasoning mode is `adaptive` for `beeper/anthropic/claude-opus-4.8`.") {
+	if !strings.Contains(modeStatus, "beeper/anthropic/claude-opus-4.8's reasoning mode is set to `adaptive`.") {
 		t.Fatalf("reasoning mode status is missing current value:\n%s", modeStatus)
 	}
-	if !strings.Contains(modeStatus, "Options: `default`, `adaptive`.") {
+	if !strings.Contains(modeStatus, "Available modes: `default`, `adaptive`.") {
 		t.Fatalf("reasoning mode status is missing supported options:\n%s", modeStatus)
 	}
 	modelStatus := canonicalTestClient().modelStatusText("beeper/gpt-5.5", "off", "", aiid.ProviderConfig{
 		ID:     "beeper",
 		Models: []ai.Model{{ID: "gpt-5.5"}, {ID: "openai/gpt-5.5"}},
 	})
-	if !strings.Contains(modelStatus, "Current model is `beeper/gpt-5.5`. Current reasoning is `off`.") {
+	if !strings.Contains(modelStatus, "Current model: `beeper/gpt-5.5`. Reasoning: `off`.") {
 		t.Fatalf("model status is missing current value:\n%s", modelStatus)
 	}
-	if !strings.Contains(modelStatus, "Options: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`.") {
+	if !strings.Contains(modelStatus, "Available models: `beeper/gpt-5.5`, `beeper/openai/gpt-5.5`.") {
 		t.Fatalf("model status is missing available options:\n%s", modelStatus)
 	}
 	if got := currentSystemPromptText(RoomConfig{}); got != "No additional system prompt is set." {
@@ -403,16 +429,12 @@ func TestFormatSessionCommandInfo(t *testing.T) {
 	}
 }
 
-func TestAIServicesLimitsURLStripsProviderProxyPaths(t *testing.T) {
+func TestAIServicesLimitsURLUsesBaseURL(t *testing.T) {
 	tests := map[string]string{
-		"https://ai-services.beeper.com/proxy/openai/v1":          "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/openrouter/v1":      "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/anthropic":          "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/vertex":             "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/a8c/v1":             "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/proxy/_/v1/responses":     "https://ai-services.beeper.com/limits",
-		"https://ai-services.beeper.com/dev/proxy/openai/v1":      "https://ai-services.beeper.com/dev/limits",
-		"https://ai-services.beeper.com/dev/proxy/openrouter/v1/": "https://ai-services.beeper.com/dev/limits",
+		"https://ai-services.beeper.com":      "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/":     "https://ai-services.beeper.com/limits",
+		"https://ai-services.beeper.com/dev":  "https://ai-services.beeper.com/dev/limits",
+		"https://ai-services.beeper.com/dev/": "https://ai-services.beeper.com/dev/limits",
 	}
 	for input, want := range tests {
 		got, err := aiServicesLimitsURL(input)
@@ -450,7 +472,7 @@ func TestFetchAIServicesLimitsUsesAppserviceBearerToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL}
 	client := &Client{
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
@@ -478,7 +500,7 @@ func TestRunLimitsCommandRawUsesAIResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL}
 	client := &Client{
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
@@ -524,7 +546,7 @@ func TestBeeperUsageLimitErrorUsesPlanResetMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL + "/proxy/openai/v1"}
+	provider := aiid.ProviderConfig{ID: aiid.DefaultProvider, BaseURL: server.URL}
 	client := &Client{
 		Main: &Connector{AppServiceToken: "as-token"},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{

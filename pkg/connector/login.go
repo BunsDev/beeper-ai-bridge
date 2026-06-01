@@ -373,7 +373,7 @@ func fetchProviderModels(ctx context.Context, api ai.Api, providerID string, bas
 			ContextWindow: item.contextWindow(),
 			MaxTokens:     item.maxTokens(),
 		}
-		model = item.applyProviderRoute(model, providerConfig)
+		model = item.applyRuntime(model, providerConfig)
 		models = append(models, normalizeProviderModel(model, providerConfig))
 	}
 	if len(models) == 0 {

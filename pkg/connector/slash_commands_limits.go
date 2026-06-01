@@ -118,12 +118,11 @@ func (cl *Client) defaultAIProviderForLimits() (aiid.ProviderConfig, error) {
 	return provider, nil
 }
 
-func aiServicesLimitsURL(proxyBaseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesLimitsURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = trimAIProxyProviderPath(parsed.Path)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/limits"
 	parsed.RawQuery = ""
 	parsed.Fragment = ""

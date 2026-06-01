@@ -1,7 +1,5 @@
 package ai
 
-import "slices"
-
 var extendedThinkingLevels = []ModelThinkingLevel{
 	ModelThinkingLevelOff,
 	ModelThinkingLevelMinimal,
@@ -18,31 +16,6 @@ const (
 	ModelThinkingLevelHigh    ModelThinkingLevel = "high"
 	ModelThinkingLevelXHigh   ModelThinkingLevel = "xhigh"
 )
-
-func GetModel(provider Provider, modelID string) (Model, bool) {
-	models, ok := Models[provider]
-	if !ok {
-		return Model{}, false
-	}
-	model, ok := models[modelID]
-	return model, ok
-}
-
-func GetProviders() []Provider {
-	return slices.Clone(modelProviderOrder)
-}
-
-func GetModels(provider Provider) []Model {
-	models := Models[provider]
-	order := modelIDOrder[provider]
-	out := make([]Model, 0, len(order))
-	for _, modelID := range order {
-		if model, ok := models[modelID]; ok {
-			out = append(out, model)
-		}
-	}
-	return out
-}
 
 func GetSupportedThinkingLevels(model Model) []ModelThinkingLevel {
 	if !model.Reasoning {
@@ -71,7 +44,7 @@ func GetSupportedThinkingLevels(model Model) []ModelThinkingLevel {
 
 func ClampThinkingLevel(model Model, level ModelThinkingLevel) ModelThinkingLevel {
 	available := GetSupportedThinkingLevels(model)
-	if slices.Contains(available, level) {
+	if containsThinkingLevel(available, level) {
 		return level
 	}
 	requestedIndex := thinkingLevelIndex(level)
@@ -80,13 +53,13 @@ func ClampThinkingLevel(model Model, level ModelThinkingLevel) ModelThinkingLeve
 	}
 	for i := requestedIndex; i < len(extendedThinkingLevels); i++ {
 		candidate := extendedThinkingLevels[i]
-		if slices.Contains(available, candidate) {
+		if containsThinkingLevel(available, candidate) {
 			return candidate
 		}
 	}
 	for i := requestedIndex - 1; i >= 0; i-- {
 		candidate := extendedThinkingLevels[i]
-		if slices.Contains(available, candidate) {
+		if containsThinkingLevel(available, candidate) {
 			return candidate
 		}
 	}
@@ -107,6 +80,15 @@ func thinkingLevelIndex(level ModelThinkingLevel) int {
 		}
 	}
 	return -1
+}
+
+func containsThinkingLevel(levels []ModelThinkingLevel, level ModelThinkingLevel) bool {
+	for _, candidate := range levels {
+		if candidate == level {
+			return true
+		}
+	}
+	return false
 }
 
 func firstThinkingLevelOrOff(levels []ModelThinkingLevel) ModelThinkingLevel {

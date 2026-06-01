@@ -5,24 +5,6 @@ import (
 	"testing"
 )
 
-func TestImageModelRegistryGeneratedSurface(t *testing.T) {
-	providers := GetImageProviders()
-	if len(providers) != 1 || providers[0] != ImagesProviderOpenRouter {
-		t.Fatalf("unexpected image providers: %#v", providers)
-	}
-	model, ok := GetImageModel(ImagesProviderOpenRouter, "openai/gpt-5-image")
-	if !ok {
-		t.Fatal("expected generated image model")
-	}
-	if model.API != ImagesApiOpenRouter || model.Provider != ImagesProviderOpenRouter {
-		t.Fatalf("unexpected image model metadata: %#v", model)
-	}
-	models := GetImageModels(ImagesProviderOpenRouter)
-	if len(models) == 0 || models[0].ID != "black-forest-labs/flux.2-flex" {
-		t.Fatalf("unexpected image model order: %#v", models)
-	}
-}
-
 func TestGenerateImagesMissingProviderPanics(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered == nil {

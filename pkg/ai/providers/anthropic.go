@@ -288,7 +288,11 @@ func ConvertAnthropicMessages(model ai.Model, llmContext ai.Context, isOAuth boo
 					if isOAuth {
 						name = toClaudeCodeName(name)
 					}
-					blocks = append(blocks, map[string]any{"type": "tool_use", "id": block.ID, "name": name, "input": block.Arguments})
+					input := block.Arguments
+					if input == nil {
+						input = map[string]any{}
+					}
+					blocks = append(blocks, map[string]any{"type": "tool_use", "id": block.ID, "name": name, "input": input})
 				}
 			}
 			if len(blocks) > 0 {

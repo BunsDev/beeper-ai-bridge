@@ -301,7 +301,7 @@ Content is the universal `ContentBlock` (`text` / `thinking` / `toolCall` / `ima
 
 **Same protocol, new vendor** — usually *no code*:
 
-1. Add a model entry (in the generated catalog or a hand-built `ai.Model`) with the right `API`, `Provider`, `BaseURL`.
+1. Add a model entry in ai-services, or configure a custom provider model with the right `API`, `Provider`, `BaseURL`.
 2. Map the provider to its API-key env var(s) in `pkg/ai/env_api_keys.go`.
 3. Add any `Compat` overrides (most base-URL patterns are auto-detected by `detectOpenAICompletionsCompat`).
 
@@ -317,19 +317,15 @@ Provider-specific behaviors worth knowing live in `pkg/ai/providers`: OpenAI *Co
 
 ## The model catalog
 
-The runtime catalog is `Models` (`map[Provider]map[string]Model`) loaded from a large JSON literal in `pkg/ai/models_generated.go`. Accessors: `GetModel`, `GetProviders`, `GetModels`.
+The Beeper AI model catalog is owned by ai-services. The bridge loads `/models?feature=bridge:ai`, applies each model's runtime metadata, and fails the default Beeper provider if ai-services does not return a catalog. There is no bridge-generated fallback catalog.
 
-It is **generated** by `cmd/generate-models-go`:
+Custom providers are intentionally simpler: the bridge uses the provider's `/models` response or the user's configured `ai.Model` entries. If a custom provider does not advertise detailed metadata, the bridge uses a conservative text-only model shape instead of consulting Beeper's catalog by model ID.
 
-```sh
-go run ./cmd/generate-models-go [output-path] [--include-unregistered]
-```
-
-It fetches `models.dev` and `openrouter.ai`, keeps only **tool-capable** models, normalizes capabilities/pricing, and applies hand-maintained overrides (`pkg/ai/modelcatalog/`) — e.g. `ThinkingLevelMap` for gpt-5/Gemini-3, Anthropic-style cache-control for OpenRouter Anthropic models. Reasoning levels form a ladder `off < minimal < low < medium < high < xhigh`; `ClampThinkingLevel` snaps a request to the nearest supported level.
+Reasoning levels form a ladder `off < minimal < low < medium < high < xhigh`; `ClampThinkingLevel` snaps a request to the nearest supported level from the model metadata the bridge was given.
 
 ## Image generation
 
-Image generation is a **separate path** (`pkg/ai/images.go`, `images_*.go`): `ai.GenerateImages(ctx, ImagesModel, ImagesContext, ImagesOptions) AssistantImages` (synchronous, no streaming). It has its own model catalog (`image_models_generated.go` — FLUX.2, Seedream, Gemini "Nano Banana", GPT Image, Recraft, etc.) and its own registry. The built-in implementation routes through OpenRouter; blank-import `pkg/ai/providers/images` to enable it. Models can also expose **provider-native** `image_generation` as a built-in tool (see [chat tools](#built-in-chat-tools--adding-your-own)).
+Image generation is a **separate path** (`pkg/ai/images.go`, `images_*.go`): `ai.GenerateImages(ctx, ImagesModel, ImagesContext, ImagesOptions) AssistantImages` (synchronous, no streaming). Image model metadata must come from ai-services or explicit provider configuration; the bridge does not keep a generated image catalog. The built-in implementation supports OpenRouter; blank-import `pkg/ai/providers/images` to enable it. Models can also expose **provider-native** `image_generation` as a built-in tool (see [chat tools](#built-in-chat-tools--adding-your-own)).
 
 ## The agent runtime
 
@@ -416,7 +412,7 @@ The bridge advertises five login flows (`pkg/connector/login.go`):
 
 | Flow | What it does |
 |------|--------------|
-| `beeper` | The default **Beeper AI** login. Routes through an `ai-services.<domain>` proxy derived from the user's homeserver; uses an appservice bearer token, no stored key. Read-only/managed. |
+| `beeper` | The default **Beeper AI** login. Loads its catalog and runtime proxy metadata from `ai-services.<domain>` derived from the user's homeserver; uses an appservice bearer token, no stored key. Read-only/managed. |
 | `openai-responses` / `openai-completions` / `openai-codex-responses` | **Custom provider**: enter base URL + API key, the bridge fetches `/models`, you pick a default model. |
 | `chatgpt-device` | **ChatGPT** OAuth device-code flow (PKCE). Stores access + refresh tokens, auto-refreshes within 2 min of expiry. |
 
@@ -466,7 +462,7 @@ compaction:
 
 Three scopes layer together: **bridge-wide** YAML → **per-login** provider configs (`UserLoginMetadata.Providers`) → **per-room** state (`com.beeper.ai.model` / `.additional_prompt` / `.tools`).
 
-Relevant constants: default Beeper model `beeper/default`, title-generation model `gpt-4.1-mini` (fallback `gpt-5-mini`), default AI-services proxy path `/proxy/openai/v1`.
+Relevant constants: default Beeper model `beeper/default`, title-generation model `gpt-4.1-mini` (fallback `gpt-5-mini`), default AI Services base URL derived from the user's homeserver domain.
 
 ---
 
@@ -533,8 +529,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 | Package | Responsibility |
 |---------|----------------|
 | `cmd/ai` | bridge entry point (registers connector + providers) |
-| `cmd/generate-models-go` | regenerates the text-model catalog from upstream sources |
-| `pkg/ai` | provider/API/model abstraction, streaming interface, model catalog, env keys |
+| `pkg/ai` | provider/API/model abstraction, streaming interface, env keys |
 | `pkg/ai/providers` | built-in provider implementations (OpenAI Completions/Responses/Codex, Anthropic, Google GenAI/Vertex) + image generation |
 | `pkg/ai-stream` | the `Run` model: AG-UI event accumulation, anchor/stream/final projection, approvals, final-payload sizing |
 | `pkg/ag-ui` | the AG-UI wire event protocol, typed events, schema, validation, capabilities |
@@ -543,7 +538,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 | `pkg/agent/harness/session` | branching conversation tree (per-conversation SQLite) |
 | `pkg/agent/autocompact` | compaction trigger policy |
 | `pkg/chattools` | built-in tools: `get_session`, `fetch`, `web_search` |
-| `pkg/connector` | the `bridgev2` connector: rooms↔sessions, slash/bridge commands, login, provider routes, capabilities, contacts, direct media, room state |
+| `pkg/connector` | the `bridgev2` connector: rooms↔sessions, slash/bridge commands, login, provider catalog loading, capabilities, contacts, direct media, room state |
 | `pkg/msgconv` | Matrix ⇄ AI message conversion |
 | `pkg/aiid` | deterministic IDs + metadata types |
 | `pkg/aidb` | bridge-DB persistence: session storage + active-stream resume |

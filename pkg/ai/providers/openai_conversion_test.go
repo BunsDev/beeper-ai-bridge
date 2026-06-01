@@ -529,17 +529,6 @@ func TestRegisterBuiltInsIncludesOpenAICodexResponses(t *testing.T) {
 	}
 }
 
-func TestModelRegistryOnlyExposesRegisteredTextAPIs(t *testing.T) {
-	ResetAPIProviders()
-	for _, provider := range ai.GetProviders() {
-		for _, model := range ai.GetModels(provider) {
-			if _, ok := ai.GetAPIProvider(model.API); !ok {
-				t.Fatalf("model %s/%s uses unregistered api %s", provider, model.ID, model.API)
-			}
-		}
-	}
-}
-
 func TestSimpleReasoningEffortClampsAndOmitsOff(t *testing.T) {
 	off := "none"
 	xhigh := "extra"

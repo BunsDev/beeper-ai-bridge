@@ -35,7 +35,7 @@ func TestModelSupportsAgentToolsDefaultsToTrue(t *testing.T) {
 }
 
 func TestAIServicesToolURL(t *testing.T) {
-	got, err := aiServicesToolURL("https://ai-services.example/dev/proxy/openai/v1/responses", "web_search")
+	got, err := aiServicesToolURL("https://ai-services.example/dev", "web_search")
 	if err != nil {
 		t.Fatal(err)
 	}

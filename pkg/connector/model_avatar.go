@@ -136,7 +136,7 @@ func remoteModelAvatar(logoID string, logoURL string) *bridgev2.Avatar {
 	}
 }
 
-func aiServicesProviderLogoURL(proxyBaseURL string, providerLogoURL string) (string, error) {
+func aiServicesProviderLogoURL(baseURL string, providerLogoURL string) (string, error) {
 	providerLogoURL = strings.TrimSpace(providerLogoURL)
 	if providerLogoURL == "" {
 		return "", fmt.Errorf("empty provider logo URL")
@@ -152,17 +152,17 @@ func aiServicesProviderLogoURL(proxyBaseURL string, providerLogoURL string) (str
 		logo.Fragment = ""
 		return logo.String(), nil
 	}
-	if proxyBaseURL == "" {
+	if baseURL == "" {
 		return "", fmt.Errorf("missing AI Services base URL for provider logo %q", providerLogoURL)
 	}
-	base, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+	base, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
 	if base.Scheme == "" || base.Host == "" {
-		return "", fmt.Errorf("invalid AI Services base URL %q", proxyBaseURL)
+		return "", fmt.Errorf("invalid AI Services base URL %q", baseURL)
 	}
-	base.Path = joinURLPath(trimAIProxyProviderPath(base.Path), logo.Path)
+	base.Path = joinURLPath(base.Path, logo.Path)
 	base.RawQuery = logo.RawQuery
 	base.Fragment = ""
 	return base.String(), nil
@@ -187,7 +187,7 @@ func modelAvatarProviderKeyFromHints(model ai.Model) string {
 	if key := providerLogoURLAvatarKey(compatString(model.Compat["provider_logo_url"])); key != "" {
 		return key
 	}
-	if key := modelAvatarProviderKeyFromModelID(compatString(model.Compat["provider_model_id"])); key != "" {
+	if key := modelAvatarProviderKeyFromModelID(compatString(model.Compat["runtime_model"])); key != "" {
 		return key
 	}
 	return modelAvatarProviderKeyFromFamily(compatString(model.Compat["family"]))

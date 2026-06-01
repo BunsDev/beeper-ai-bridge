@@ -125,44 +125,11 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if model.Name == "" {
 		model.Name = model.ID
 	}
-	if provider.ID != aiid.DefaultProvider {
-		if catalogModel, ok := ai.GetModel(model.Provider, model.ID); ok {
-			if len(model.Input) == 0 && len(catalogModel.Input) > 0 {
-				model.Input = append([]string(nil), catalogModel.Input...)
-			}
-			if !model.Reasoning {
-				model.Reasoning = catalogModel.Reasoning
-			}
-			if len(model.ThinkingLevelMap) == 0 && len(catalogModel.ThinkingLevelMap) > 0 {
-				model.ThinkingLevelMap = catalogModel.ThinkingLevelMap
-			}
-			if model.DefaultThinkingLevel == "" {
-				model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
-			}
-			if model.ReasoningMode == "" {
-				model.ReasoningMode = catalogModel.ReasoningMode
-			}
-		} else if len(model.Input) == 0 {
-			model.Input = catalogInputForProviderModel(model)
-		}
-	}
 	if len(model.Input) == 0 {
 		model.Input = []string{"text"}
 	}
 	model.BaseURL = normalizeResponsesBaseURL(model.BaseURL)
 	return model
-}
-
-func catalogInputForProviderModel(model ai.Model) []string {
-	prefix := string(model.Provider) + "/"
-	if !strings.HasPrefix(model.ID, prefix) {
-		return nil
-	}
-	catalogModel, ok := ai.GetModel(model.Provider, strings.TrimPrefix(model.ID, prefix))
-	if !ok || len(catalogModel.Input) == 0 {
-		return nil
-	}
-	return append([]string(nil), catalogModel.Input...)
 }
 
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {

@@ -47,7 +47,7 @@ func TestModelForProviderBuildsDefaultProviderModelFromConfig(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
-		BaseURL:  "https://ai-services.beeper-staging.com/proxy/openai/v1",
+		BaseURL:  "https://ai-services.beeper-staging.com",
 	}
 	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
 	if model.ID != "openai/gpt-5.5" || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
@@ -269,17 +269,17 @@ func TestConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultAIServicesOpenAIProxyBaseURLUsesUserHomeserver(t *testing.T) {
+func TestDefaultAIServicesBaseURLUsesUserHomeserver(t *testing.T) {
 	conn := &Connector{}
 	tests := map[string]string{
-		"@alice:beeper.localtest.me": "https://ai-services.beeper.localtest.me/proxy/openai/v1",
-		"@alice:beeper-dev.com":      "https://ai-services.beeper-dev.com/proxy/openai/v1",
-		"@alice:beeper-staging.com":  "https://ai-services.beeper-staging.com/proxy/openai/v1",
-		"@alice:beeper.com":          "https://ai-services.beeper.com/proxy/openai/v1",
+		"@alice:beeper.localtest.me": "https://ai-services.beeper.localtest.me",
+		"@alice:beeper-dev.com":      "https://ai-services.beeper-dev.com",
+		"@alice:beeper-staging.com":  "https://ai-services.beeper-staging.com",
+		"@alice:beeper.com":          "https://ai-services.beeper.com",
 	}
 	for userMXID, want := range tests {
-		if got := conn.defaultAIServicesOpenAIProxyBaseURL(id.UserID(userMXID)); got != want {
-			t.Fatalf("defaultAIServicesOpenAIProxyBaseURL(%q) = %q, want %q", userMXID, got, want)
+		if got := conn.defaultAIServicesBaseURL(id.UserID(userMXID)); got != want {
+			t.Fatalf("defaultAIServicesBaseURL(%q) = %q, want %q", userMXID, got, want)
 		}
 	}
 }
@@ -287,7 +287,7 @@ func TestDefaultAIServicesOpenAIProxyBaseURLUsesUserHomeserver(t *testing.T) {
 func TestDefaultProviderBaseURLUsesUserHomeserver(t *testing.T) {
 	conn := &Connector{}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
-	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
+	if provider.BaseURL != "https://ai-services.beeper-staging.com" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -295,7 +295,7 @@ func TestDefaultProviderBaseURLUsesUserHomeserver(t *testing.T) {
 func TestDefaultProviderBaseURLUsesInternalLocalServiceForLocalUser(t *testing.T) {
 	conn := &Connector{HomeserverURL: "http://megahungry-proxy.megahungry/api/proxy/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")
-	if provider.BaseURL != "http://ai-services.beeper/proxy/openai/v1" {
+	if provider.BaseURL != "http://ai-services.beeper" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -303,7 +303,7 @@ func TestDefaultProviderBaseURLUsesInternalLocalServiceForLocalUser(t *testing.T
 func TestDefaultProviderBaseURLUsesUserHomeserverForMegahungryCloudUser(t *testing.T) {
 	conn := &Connector{HomeserverURL: "http://megahungry-proxy.megahungry/api/proxy/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper-staging.com")
-	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
+	if provider.BaseURL != "https://ai-services.beeper-staging.com" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -311,7 +311,7 @@ func TestDefaultProviderBaseURLUsesUserHomeserverForMegahungryCloudUser(t *testi
 func TestDefaultProviderBaseURLUsesExternalLocaltestServiceForSelfHosted(t *testing.T) {
 	conn := &Connector{HomeserverURL: "https://matrix.beeper.localtest.me/_hungryserv/bridge-user"}
 	provider := conn.defaultProviderConfig("@alice:beeper.localtest.me")
-	if provider.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
+	if provider.BaseURL != "https://ai-services.beeper.localtest.me" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -332,7 +332,7 @@ func TestDefaultProviderReadsAIChatsLoginMetadata(t *testing.T) {
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
 	got := conn.providersForLogin(login)[aiid.DefaultProvider]
-	if got.BaseURL != "https://ai-services.beeper.localtest.me/proxy/openai/v1" {
+	if got.BaseURL != "https://ai-services.beeper.localtest.me" {
 		t.Fatalf("expected persisted default provider, got %#v", got)
 	}
 }
@@ -358,7 +358,7 @@ func TestProvidersForLoginReadsProviderMap(t *testing.T) {
 		}},
 	}}
 	providers := conn.providersForLogin(login)
-	if providers[aiid.DefaultProvider].BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
+	if providers[aiid.DefaultProvider].BaseURL != "https://ai-services.beeper.com" {
 		t.Fatalf("default provider missing from provider map: %#v", providers)
 	}
 	if providers["custom"].APIKey != "secret-key" || providers["custom"].DefaultModel != "model-a" {
@@ -676,14 +676,14 @@ func TestFetchProviderModelsVerifiesAndBuildsModels(t *testing.T) {
 func TestFetchProviderModelsRespectsPublishedProviderRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[
-				{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
-				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
-				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","provider":{"id":"wpcom_google","model_id":"gemini-2.5-flash","api":"openai-responses"}}
+				{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","runtime":{"provider":"anthropic","model":"claude-sonnet-4-5","api":"anthropic-messages","baseUrl":"/proxy/anthropic"}},
+				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash-lite","api":"google-vertex","baseUrl":"/proxy/vertex"}},
+				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash","api":"google-vertex","baseUrl":"/proxy/vertex"}}
 			]}`))
 	}))
 	defer server.Close()
 
-	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL+"/proxy/openai/v1", "key")
+	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL, "key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,13 +768,13 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		API:      ai.ApiOpenAIResponses,
 		Provider: ai.ProviderOpenAI,
-		BaseURL:  "https://ai-services.beeper.com/proxy/openai/v1/responses",
+		BaseURL:  "https://ai-services.beeper.com",
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
 	if model.Provider != ai.ProviderOpenAI || model.ID != "gpt-5.5" {
 		t.Fatalf("expected AI Services model, got %#v", model)
 	}
-	if model.BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
+	if model.BaseURL != "https://ai-services.beeper.com" {
 		t.Fatalf("expected route base URL override, got %q", model.BaseURL)
 	}
 	if model.ContextWindow != 128000 || model.MaxTokens != 32000 {
@@ -821,10 +821,7 @@ func TestValidateReasoningLevelRejectsUnsupportedPair(t *testing.T) {
 
 func TestValidateReasoningLevelAcceptsOffForReasoningModel(t *testing.T) {
 	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
-	model, ok := ai.GetModel(ai.ProviderOpenAI, "gpt-5.4")
-	if !ok {
-		t.Fatal("expected generated gpt-5.4 model")
-	}
+	model := ai.Model{ID: "reasoning", Reasoning: true}
 	if err := client.validateReasoningLevel(model, RoomConfig{}); err != nil {
 		t.Fatalf("expected default off reasoning to be accepted: %v", err)
 	}
@@ -883,7 +880,7 @@ func TestNormalizeProviderModelDoesNotInheritDefaultProviderCatalogMetadata(t *t
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
-		BaseURL:  "https://ai-services.test/proxy/openrouter/v1",
+		BaseURL:  "https://ai-services.test",
 	})
 	if model.Reasoning || model.DefaultThinkingLevel != "" || len(model.ThinkingLevelMap) != 0 {
 		t.Fatalf("expected default provider model to rely only on AI Services metadata, got %#v", model)

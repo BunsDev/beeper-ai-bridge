@@ -901,7 +901,7 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","provider":{"id":"wpcom_openai","model_id":"gpt-5.5","api":"openai-responses"}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","runtime":{"provider":"openai","model":"gpt-5.5","api":"openai-responses","baseUrl":"/proxy/openai/v1"}}]}`))
 	}))
 	defer server.Close()
 
@@ -914,7 +914,7 @@ func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
 				DisplayName:  "Beeper AI",
 				API:          ai.ApiOpenAIResponses,
 				Provider:     ai.ProviderOpenAI,
-				BaseURL:      server.URL + "/proxy/openai/v1",
+				BaseURL:      server.URL,
 				DefaultModel: "beeper/default",
 			}}},
 		}},

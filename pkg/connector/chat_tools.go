@@ -120,12 +120,12 @@ func (cl *Client) searchOptions(roomConfig RoomConfig, provider aiid.ProviderCon
 	}
 }
 
-func aiServicesToolURL(proxyBaseURL string, tool string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesToolURL(baseURL string, tool string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/tools/" + tool
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/tools/" + tool
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil

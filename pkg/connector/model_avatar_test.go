@@ -21,7 +21,7 @@ func TestModelAvatarUsesEmbeddedPNGAssets(t *testing.T) {
 		{name: "google vertex", model: ai.Model{ID: "gemini-3-pro", Provider: ai.ProviderGoogleVertex}, wantKey: "google"},
 		{name: "openrouter own model", model: ai.Model{ID: "openrouter/owl-alpha", Provider: ai.ProviderOpenRouter}, wantKey: "openrouter"},
 		{name: "catalog provider logo wins over route", model: ai.Model{ID: "openrouter/anthropic/claude-opus-4.8-fast", Provider: ai.ProviderOpenRouter, Compat: map[string]any{"provider_logo_url": "/models/providers/anthropic.png"}}, wantKey: "anthropic"},
-		{name: "catalog provider model wins over route", model: ai.Model{ID: "openrouter/z-ai/glm-5", Provider: ai.ProviderOpenRouter, Compat: map[string]any{"provider_model_id": "z-ai/glm-5"}}, wantKey: "zai"},
+		{name: "catalog runtime model wins over route", model: ai.Model{ID: "openrouter/z-ai/glm-5", Provider: ai.ProviderOpenRouter, Compat: map[string]any{"runtime_model": "z-ai/glm-5"}}, wantKey: "zai"},
 		{name: "catalog family wins over route", model: ai.Model{ID: "openrouter/xiaomi/mimo-v2.5", Provider: ai.ProviderOpenRouter, Compat: map[string]any{"family": "mimo"}}, wantKey: "xiaomi"},
 		{name: "openrouter routed anthropic model", model: ai.Model{ID: "anthropic/claude-sonnet-4.5", Provider: ai.ProviderOpenRouter}, wantKey: "anthropic"},
 		{name: "openrouter routed bare claude model", model: ai.Model{ID: "claude-sonnet-4-5", Provider: ai.ProviderOpenRouter}, wantKey: "anthropic"},
@@ -70,7 +70,7 @@ func TestModelAvatarFetchesCatalogProviderLogoFromAIServices(t *testing.T) {
 	}))
 	defer server.Close()
 
-	avatar := modelAvatar(aiid.ProviderConfig{BaseURL: server.URL + "/proxy/openai/v1"}, ai.Model{
+	avatar := modelAvatar(aiid.ProviderConfig{BaseURL: server.URL}, ai.Model{
 		ID:       "qwen/qwen3-max",
 		Provider: ai.ProviderOpenRouter,
 		Compat:   map[string]any{"provider_logo_url": "/models/providers/qwen.png"},
@@ -94,7 +94,7 @@ func TestModelAvatarFetchesCatalogProviderLogoFromAIServices(t *testing.T) {
 }
 
 func TestAIServicesProviderLogoURL(t *testing.T) {
-	got, err := aiServicesProviderLogoURL("https://ai-services.example/dev/proxy/openrouter/v1", "/models/providers/anthropic.png")
+	got, err := aiServicesProviderLogoURL("https://ai-services.example/dev", "/models/providers/anthropic.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestAIServicesProviderLogoURL(t *testing.T) {
 		t.Fatalf("unexpected logo URL %q, want %q", got, want)
 	}
 
-	got, err = aiServicesProviderLogoURL("https://ai-services.example/proxy/openai/v1/responses", "models/providers/zai.png?cache=1")
+	got, err = aiServicesProviderLogoURL("https://ai-services.example", "models/providers/zai.png?cache=1")
 	if err != nil {
 		t.Fatal(err)
 	}

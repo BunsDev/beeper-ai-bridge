@@ -58,7 +58,7 @@ func TestModelContactsCacheRefreshesAfterCachedRead(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newDefaultProviderContactClient(server.URL + "/proxy/openai/v1")
+	client := newDefaultProviderContactClient(server.URL)
 	contacts, err := client.GetContactList(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestConnectWarmsModelContactsCache(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newDefaultProviderContactClient(server.URL + "/proxy/openai/v1")
+	client := newDefaultProviderContactClient(server.URL)
 	client.Connect(context.Background())
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -166,11 +166,11 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("feature") != "bridge:ai" || r.URL.Query().Get("route") != "responses" {
+		if r.URL.Query().Get("feature") != "bridge:ai" || r.URL.Query().Has("route") {
 			t.Fatalf("unexpected query %s", r.URL.RawQuery)
 		}
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","provider":{"id":"openrouter","model_id":"minimax/minimax-m2.7","api":"openai-completions"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off","mode":"adaptive"},"tools":{"supported":true,"built_in":["image_generation"]},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","runtime":{"provider":"openrouter","model":"minimax/minimax-m2.7","api":"openai-completions","baseUrl":"/proxy/openrouter/v1","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_completion_tokens","thinkingFormat":"openrouter"}},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
 	}))
 	defer server.Close()
 
@@ -186,7 +186,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
-		BaseURL:  server.URL + "/proxy/openai/v1",
+		BaseURL:  server.URL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	if !strings.HasPrefix(gotAuth, "Bearer "+aiServicesAppserviceTokenPrefix) {
 		t.Fatalf("unexpected auth header %q", gotAuth)
 	}
-	if len(models) != 3 || models[0].ID != "openai/gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/openai/v1" {
+	if len(models) != 3 || models[0].ID != "openai/gpt-5.5" || models[0].BaseURL != server.URL {
 		t.Fatalf("unexpected models %#v", models)
 	}
 	if models[0].ContextWindow != 1050000 || models[0].MaxTokens != 128000 {
@@ -226,6 +226,9 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 	if models[1].API != ai.ApiOpenAICompletions || models[1].Provider != ai.ProviderOpenRouter || models[1].BaseURL != server.URL+"/proxy/openrouter/v1" {
 		t.Fatalf("expected MiniMax OpenRouter route, got %#v", models[1])
+	}
+	if models[1].Compat["supportsDeveloperRole"] != false || models[1].Compat["thinkingFormat"] != "openrouter" || models[1].Compat["maxTokensField"] != "max_completion_tokens" {
+		t.Fatalf("expected MiniMax OpenRouter compat from AI Services, got %#v", models[1].Compat)
 	}
 	if roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelMinimal) {
 		t.Fatalf("expected MiniMax reasoning to reject minimal, got %#v", models[1])
@@ -279,7 +282,7 @@ func TestAIServicesCatalogModelsDoNotUseBridgeCatalogWhenMetadataMissing(t *test
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
-		BaseURL:  server.URL + "/proxy/openai/v1",
+		BaseURL:  server.URL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -298,16 +301,12 @@ func TestAIServicesCatalogModelsDoNotUseBridgeCatalogWhenMetadataMissing(t *test
 	}
 }
 
-func TestAIServicesModelsURLStripsProviderProxyPaths(t *testing.T) {
+func TestAIServicesModelsURLUsesBaseURL(t *testing.T) {
 	tests := map[string]string{
-		"https://ai-services.beeper.com/proxy/openai/v1":          "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/proxy/openrouter/v1":      "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/proxy/anthropic":          "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/proxy/vertex":             "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/proxy/a8c/v1":             "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/proxy/_/v1/responses":     "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/dev/proxy/openai/v1":      "https://ai-services.beeper.com/dev/models?feature=bridge%3Aai&route=responses",
-		"https://ai-services.beeper.com/dev/proxy/openrouter/v1/": "https://ai-services.beeper.com/dev/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com":      "https://ai-services.beeper.com/models?feature=bridge%3Aai",
+		"https://ai-services.beeper.com/":     "https://ai-services.beeper.com/models?feature=bridge%3Aai",
+		"https://ai-services.beeper.com/dev":  "https://ai-services.beeper.com/dev/models?feature=bridge%3Aai",
+		"https://ai-services.beeper.com/dev/": "https://ai-services.beeper.com/dev/models?feature=bridge%3Aai",
 	}
 	for input, want := range tests {
 		got, err := aiServicesModelsURL(input)
@@ -323,14 +322,14 @@ func TestAIServicesModelsURLStripsProviderProxyPaths(t *testing.T) {
 func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[
-			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
-				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
-				{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","provider":{"id":"wpcom_vertex","model_id":"gemini-3.1-pro-preview","api":"openai-responses"}},
-				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","provider":{"id":"wpcom_google","model_id":"gemini-2.5-flash","api":"openai-responses"}},
-				{"id":"x-ai/grok-4.20","name":"Grok 4.20","provider":{"id":"wpcom_xai","model_id":"x-ai/grok-4.20","api":"openai-responses"}},
-			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","provider":{"id":"wpcom_groq","model_id":"groq/qwen/qwen3-32b","api":"openai-responses"}},
-			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","provider":{"id":"wpcom_a8c","model_id":"gpt-oss-120b","api":"openai-completions"}},
-			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-completions"}}
+			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","runtime":{"provider":"anthropic","model":"claude-sonnet-4-5","api":"anthropic-messages","baseUrl":"/proxy/anthropic"}},
+				{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash-lite","api":"google-vertex","baseUrl":"/proxy/vertex"}},
+				{"id":"google/gemini-3.1-pro-preview","name":"Gemini 3.1 Pro","runtime":{"provider":"google-vertex","model":"gemini-3.1-pro-preview","api":"google-vertex","baseUrl":"/proxy/vertex"}},
+				{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash","runtime":{"provider":"google-vertex","model":"gemini-2.5-flash","api":"google-vertex","baseUrl":"/proxy/vertex"}},
+				{"id":"x-ai/grok-4.20","name":"Grok 4.20","runtime":{"provider":"xai","model":"x-ai/grok-4.20","api":"openai-responses","baseUrl":"/proxy/xai/v1"}},
+			{"id":"groq/qwen/qwen3-32b","name":"Qwen 3 32B","runtime":{"provider":"groq","model":"groq/qwen/qwen3-32b","api":"openai-responses","baseUrl":"/proxy/groq/v1"}},
+			{"id":"openai/gpt-oss-120b","name":"GPT OSS 120B","runtime":{"provider":"a8c","model":"gpt-oss-120b","api":"openai-completions","baseUrl":"/proxy/a8c/v1"}},
+			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","metadata":{"family":"claude","provider_logo_url":"/models/providers/anthropic.png"},"runtime":{"provider":"openrouter","model":"anthropic/claude-sonnet-4.5","api":"openai-completions","baseUrl":"/proxy/openrouter/v1","compat":{"supportsDeveloperRole":false,"thinkingFormat":"openrouter","cacheControlFormat":"anthropic"}}}
 		]}`))
 	}))
 	defer server.Close()
@@ -345,7 +344,7 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
-		BaseURL:  server.URL + "/proxy/openai/v1",
+		BaseURL:  server.URL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -378,8 +377,11 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 	if got := byID["anthropic/claude-sonnet-4.5"]; got.API != ai.ApiOpenAICompletions || got.Provider != ai.ProviderOpenRouter || got.BaseURL != server.URL+"/proxy/openrouter/v1" {
 		t.Fatalf("unexpected OpenRouter route %#v", got)
 	}
-	if got := byID["anthropic/claude-sonnet-4.5"]; got.Compat["provider_logo_url"] != "/models/providers/anthropic.png" || got.Compat["provider_model_id"] != "anthropic/claude-sonnet-4.5" || got.Compat["family"] != "claude" {
+	if got := byID["anthropic/claude-sonnet-4.5"]; got.Compat["provider_logo_url"] != "/models/providers/anthropic.png" || got.Compat["runtime_model"] != "anthropic/claude-sonnet-4.5" || got.Compat["family"] != "claude" {
 		t.Fatalf("expected AI Services catalog identity metadata, got %#v", got.Compat)
+	}
+	if got := byID["anthropic/claude-sonnet-4.5"]; got.Compat["supportsDeveloperRole"] != false || got.Compat["thinkingFormat"] != "openrouter" || got.Compat["cacheControlFormat"] != "anthropic" {
+		t.Fatalf("expected AI Services catalog provider compat, got %#v", got.Compat)
 	}
 }
 

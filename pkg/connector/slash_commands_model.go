@@ -57,7 +57,7 @@ func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal
 		return err
 	}
 	cl.refreshRoomCapabilities(ctx, portal)
-	return responder.Reply(ctx, fmt.Sprintf("Model set to `%s`. Current reasoning is `%s`.%s", canonical, target.ThinkingLevel, reasoningModeSentence(target.ReasoningMode)))
+	return responder.Reply(ctx, fmt.Sprintf("Model set to `%s`. %s%s", canonical, reasoningSettingSentence(target.ThinkingLevel, canonical, model), reasoningModeSentence(target.ReasoningMode)))
 }
 
 func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string, responder aiCommandResponder) error {
@@ -89,7 +89,7 @@ func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Po
 		return err
 	}
 	cl.refreshRoomCapabilities(ctx, portal)
-	return responder.Reply(ctx, fmt.Sprintf("Reasoning set to `%s` for `%s`.", reasoning, canonical))
+	return responder.Reply(ctx, fmt.Sprintf("%s's reasoning is now set to `%s`.", reasoningStatusModelName(model, canonical), reasoning))
 }
 
 func (cl *Client) applyReasoningModeCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string, responder aiCommandResponder) error {
@@ -136,7 +136,30 @@ func displayReasoningLevel(level string) string {
 }
 
 func reasoningStatusText(current string, canonicalModel string, model ai.Model) string {
-	return fmt.Sprintf("Current reasoning is `%s` for `%s`. Options: %s.", displayReasoningLevel(current), canonicalModel, reasoningOptionsText(model))
+	return reasoningSettingSentence(current, canonicalModel, model)
+}
+
+func reasoningSettingSentence(current string, canonicalModel string, model ai.Model) string {
+	levels := ai.GetSupportedThinkingLevels(model)
+	name := reasoningStatusModelName(model, canonicalModel)
+	if len(levels) == 1 {
+		currentLevel := displayReasoningLevel(current)
+		if current == "" {
+			currentLevel = string(levels[0])
+		}
+		if levels[0] == ai.ModelThinkingLevelOff {
+			return fmt.Sprintf("%s doesn't support reasoning.", name)
+		}
+		return fmt.Sprintf("%s's reasoning is set to `%s` and it doesn't support changing reasoning settings.", name, currentLevel)
+	}
+	return fmt.Sprintf("%s's reasoning is set to `%s`. Available settings: %s.", name, displayReasoningLevel(current), reasoningOptionsText(model))
+}
+
+func reasoningStatusModelName(model ai.Model, canonicalModel string) string {
+	if model.Name != "" && model.Name != model.ID {
+		return model.Name
+	}
+	return canonicalModel
 }
 
 func displayReasoningMode(mode string) string {
@@ -147,14 +170,14 @@ func displayReasoningMode(mode string) string {
 }
 
 func reasoningModeStatusText(current string, canonicalModel string, model ai.Model) string {
-	return fmt.Sprintf("Current reasoning mode is `%s` for `%s`. Options: %s.", displayReasoningMode(current), canonicalModel, reasoningModeOptionsText(model))
+	return fmt.Sprintf("%s's reasoning mode is set to `%s`. Available modes: %s.", reasoningStatusModelName(model, canonicalModel), displayReasoningMode(current), reasoningModeOptionsText(model))
 }
 
 func reasoningModeSentence(mode string) string {
 	if mode == "" {
 		return ""
 	}
-	return fmt.Sprintf(" Current reasoning mode is `%s`.", mode)
+	return fmt.Sprintf(" Reasoning mode: `%s`.", mode)
 }
 
 func reasoningOptionsText(model ai.Model) string {
@@ -178,11 +201,11 @@ func reasoningModeOptionsText(model ai.Model) string {
 }
 
 func (cl *Client) modelStatusText(currentModel string, currentReasoning string, currentReasoningMode string, currentProvider aiid.ProviderConfig) string {
-	text := fmt.Sprintf("Current model is `%s`. Current reasoning is `%s`.", currentModel, currentReasoning)
+	text := fmt.Sprintf("Current model: `%s`. Reasoning: `%s`.", currentModel, currentReasoning)
 	if currentReasoningMode != "" {
-		text += fmt.Sprintf(" Current reasoning mode is `%s`.", currentReasoningMode)
+		text += fmt.Sprintf(" Reasoning mode: `%s`.", currentReasoningMode)
 	}
-	return fmt.Sprintf("%s Options: %s.", text, cl.modelOptionsText(currentProvider))
+	return fmt.Sprintf("%s Available models: %s.", text, cl.modelOptionsText(currentProvider))
 }
 
 func (cl *Client) modelOptionsText(currentProvider aiid.ProviderConfig) string {

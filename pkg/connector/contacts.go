@@ -454,42 +454,21 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			BuiltInTools:         item.builtInTools(),
 			Compat:               item.compat(),
 		}
-		model = item.applyProviderRoute(model, provider)
+		model = item.applyRuntime(model, provider)
 		models = append(models, normalizeProviderModel(model, provider))
 	}
 	return models, nil
 }
 
-func aiServicesModelsURL(proxyBaseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesModelsURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = trimAIProxyProviderPath(parsed.Path)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
-	parsed.RawQuery = url.Values{"feature": {"bridge:ai"}, "route": {"responses"}}.Encode()
+	parsed.RawQuery = url.Values{"feature": {"bridge:ai"}}.Encode()
 	parsed.Fragment = ""
 	return parsed.String(), nil
-}
-
-func trimAIProxyProviderPath(path string) string {
-	for _, suffix := range []string{
-		"/proxy/openai/v1",
-		"/proxy/openai",
-		"/proxy/openrouter/v1",
-		"/proxy/openrouter",
-		"/proxy/anthropic/v1",
-		"/proxy/anthropic",
-		"/proxy/vertex/v1",
-		"/proxy/vertex",
-		"/proxy/a8c/v1",
-		"/proxy/a8c",
-		"/proxy/_/v1",
-		"/proxy/_",
-	} {
-		path = strings.TrimSuffix(path, suffix)
-	}
-	return path
 }
 
 type aiServicesModelListResponse struct {
@@ -511,11 +490,13 @@ type aiServicesModelEntry struct {
 	TopProvider *struct {
 		MaxCompletionTokens int `json:"max_completion_tokens"`
 	} `json:"top_provider"`
-	Provider *struct {
-		ID      string `json:"id"`
-		ModelID string `json:"model_id"`
-		API     string `json:"api"`
-	} `json:"provider"`
+	Runtime *struct {
+		API      string                 `json:"api"`
+		Provider string                 `json:"provider"`
+		BaseURL  string                 `json:"baseUrl"`
+		Model    string                 `json:"model"`
+		Compat   *aiServicesModelCompat `json:"compat"`
+	} `json:"runtime"`
 	Capabilities *struct {
 		Input struct {
 			Modalities []string `json:"modalities"`
@@ -541,56 +522,91 @@ type aiServicesModelEntry struct {
 	} `json:"capabilities"`
 }
 
-func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider aiid.ProviderConfig) ai.Model {
-	if entry.Provider == nil || entry.Provider.ID == "" {
+type aiServicesModelCompat struct {
+	SupportsStore                               *bool  `json:"supportsStore,omitempty"`
+	SupportsDeveloperRole                       *bool  `json:"supportsDeveloperRole,omitempty"`
+	SupportsReasoningEffort                     *bool  `json:"supportsReasoningEffort,omitempty"`
+	SupportsUsageInStreaming                    *bool  `json:"supportsUsageInStreaming,omitempty"`
+	MaxTokensField                              string `json:"maxTokensField,omitempty"`
+	RequiresToolResultName                      *bool  `json:"requiresToolResultName,omitempty"`
+	RequiresAssistantAfterToolResult            *bool  `json:"requiresAssistantAfterToolResult,omitempty"`
+	RequiresThinkingAsText                      *bool  `json:"requiresThinkingAsText,omitempty"`
+	RequiresReasoningContentOnAssistantMessages *bool  `json:"requiresReasoningContentOnAssistantMessages,omitempty"`
+	ThinkingFormat                              string `json:"thinkingFormat,omitempty"`
+	ZaiToolStream                               *bool  `json:"zaiToolStream,omitempty"`
+	SupportsStrictMode                          *bool  `json:"supportsStrictMode,omitempty"`
+	CacheControlFormat                          string `json:"cacheControlFormat,omitempty"`
+	SendSessionAffinityHeaders                  *bool  `json:"sendSessionAffinityHeaders,omitempty"`
+	SupportsLongCacheRetention                  *bool  `json:"supportsLongCacheRetention,omitempty"`
+	SendSessionIDHeader                         *bool  `json:"sendSessionIdHeader,omitempty"`
+	SupportsEagerToolInputStreaming             *bool  `json:"supportsEagerToolInputStreaming,omitempty"`
+	SupportsCacheControlOnTools                 *bool  `json:"supportsCacheControlOnTools,omitempty"`
+	SupportsTemperature                         *bool  `json:"supportsTemperature,omitempty"`
+	ForceAdaptiveThinking                       *bool  `json:"forceAdaptiveThinking,omitempty"`
+	AllowEmptySignature                         *bool  `json:"allowEmptySignature,omitempty"`
+}
+
+func (entry aiServicesModelEntry) applyRuntime(model ai.Model, provider aiid.ProviderConfig) ai.Model {
+	if entry.Runtime == nil {
 		return model
 	}
 	if model.Compat == nil {
 		model.Compat = map[string]any{}
 	}
-	model.Compat["provider_id"] = entry.Provider.ID
-	model.Compat["provider_model_id"] = entry.Provider.ModelID
-	switch entry.Provider.ID {
-	case "wpcom_anthropic":
-		model.API = ai.ApiAnthropicMessages
-		model.Provider = ai.ProviderAnthropic
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "anthropic", false)
-	case "wpcom_vertex":
-		model.API = ai.ApiGoogleVertex
-		model.Provider = ai.ProviderGoogleVertex
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "vertex", false)
-	case "wpcom_openai":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderOpenAI
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openai", true)
-	case "wpcom_google":
-		model.API = ai.ApiGoogleVertex
-		model.Provider = ai.ProviderGoogleVertex
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "vertex", false)
-	case "wpcom_xai":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderXAI
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "xai", true)
-	case "wpcom_groq":
-		model.API = ai.ApiOpenAIResponses
-		model.Provider = ai.ProviderGroq
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "groq", true)
-	case "wpcom_a8c":
-		model.API = ai.ApiOpenAICompletions
-		if entry.Provider.API == string(ai.ApiOpenAIResponses) {
-			model.API = ai.ApiOpenAIResponses
-		}
-		model.Provider = ai.Provider("a8c")
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "a8c", true)
-	case "openrouter":
-		model.API = ai.ApiOpenAICompletions
-		if entry.Provider.API == string(ai.ApiOpenAIResponses) {
-			model.API = ai.ApiOpenAIResponses
-		}
-		model.Provider = ai.ProviderOpenRouter
-		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openrouter", true)
+	if entry.Runtime.Model != "" {
+		model.Compat["runtime_model"] = entry.Runtime.Model
 	}
+	if entry.Runtime.API != "" {
+		model.API = ai.Api(entry.Runtime.API)
+	}
+	if entry.Runtime.Provider != "" {
+		model.Provider = ai.Provider(entry.Runtime.Provider)
+		model.Compat["runtime_provider"] = entry.Runtime.Provider
+	}
+	if entry.Runtime.BaseURL != "" {
+		model.BaseURL = aiServicesRuntimeBaseURL(provider.BaseURL, entry.Runtime.BaseURL)
+	}
+	entry.Runtime.Compat.applyTo(model.Compat)
 	return model
+}
+
+func (compat *aiServicesModelCompat) applyTo(dst map[string]any) {
+	if compat == nil {
+		return
+	}
+	setBoolCompat(dst, "supportsStore", compat.SupportsStore)
+	setBoolCompat(dst, "supportsDeveloperRole", compat.SupportsDeveloperRole)
+	setBoolCompat(dst, "supportsReasoningEffort", compat.SupportsReasoningEffort)
+	setBoolCompat(dst, "supportsUsageInStreaming", compat.SupportsUsageInStreaming)
+	setStringCompat(dst, "maxTokensField", compat.MaxTokensField)
+	setBoolCompat(dst, "requiresToolResultName", compat.RequiresToolResultName)
+	setBoolCompat(dst, "requiresAssistantAfterToolResult", compat.RequiresAssistantAfterToolResult)
+	setBoolCompat(dst, "requiresThinkingAsText", compat.RequiresThinkingAsText)
+	setBoolCompat(dst, "requiresReasoningContentOnAssistantMessages", compat.RequiresReasoningContentOnAssistantMessages)
+	setStringCompat(dst, "thinkingFormat", compat.ThinkingFormat)
+	setBoolCompat(dst, "zaiToolStream", compat.ZaiToolStream)
+	setBoolCompat(dst, "supportsStrictMode", compat.SupportsStrictMode)
+	setStringCompat(dst, "cacheControlFormat", compat.CacheControlFormat)
+	setBoolCompat(dst, "sendSessionAffinityHeaders", compat.SendSessionAffinityHeaders)
+	setBoolCompat(dst, "supportsLongCacheRetention", compat.SupportsLongCacheRetention)
+	setBoolCompat(dst, "sendSessionIdHeader", compat.SendSessionIDHeader)
+	setBoolCompat(dst, "supportsEagerToolInputStreaming", compat.SupportsEagerToolInputStreaming)
+	setBoolCompat(dst, "supportsCacheControlOnTools", compat.SupportsCacheControlOnTools)
+	setBoolCompat(dst, "supportsTemperature", compat.SupportsTemperature)
+	setBoolCompat(dst, "forceAdaptiveThinking", compat.ForceAdaptiveThinking)
+	setBoolCompat(dst, "allowEmptySignature", compat.AllowEmptySignature)
+}
+
+func setBoolCompat(dst map[string]any, key string, value *bool) {
+	if value != nil {
+		dst[key] = *value
+	}
+}
+
+func setStringCompat(dst map[string]any, key string, value string) {
+	if value != "" {
+		dst[key] = value
+	}
 }
 
 func (entry aiServicesModelEntry) compat() map[string]any {
@@ -612,15 +628,12 @@ func (entry aiServicesModelEntry) compat() map[string]any {
 	return compat
 }
 
-func aiServicesProxyBaseURL(baseURL string, providerPath string, includeV1 bool) string {
+func aiServicesRuntimeBaseURL(baseURL string, runtimeBaseURL string) string {
 	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return baseURL
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/" + providerPath
-	if includeV1 {
-		parsed.Path += "/v1"
-	}
+	parsed.Path = joinURLPath(parsed.Path, runtimeBaseURL)
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()

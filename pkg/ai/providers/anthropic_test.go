@@ -78,6 +78,35 @@ func TestAnthropicStreamStatePreservesToolInputFromContentBlockStart(t *testing.
 	}
 }
 
+func TestConvertAnthropicMessagesReplaysEmptyToolInputAsObject(t *testing.T) {
+	model := ai.Model{ID: "claude-test", API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic}
+	messages := ConvertAnthropicMessages(model, ai.Context{Messages: []ai.Message{
+		{
+			Role:     "assistant",
+			API:      model.API,
+			Provider: model.Provider,
+			Model:    model.ID,
+			Content: []ai.ContentBlock{
+				{Type: "toolCall", ID: "toolu_1", Name: "get_session"},
+			},
+		},
+		{
+			Role:       "toolResult",
+			ToolCallID: "toolu_1",
+			Content:    []ai.ContentBlock{{Type: "text", Text: "ok"}},
+		},
+	}}, false, nil)
+
+	blocks, ok := messages[0]["content"].([]map[string]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("expected assistant tool_use block, got %#v", messages)
+	}
+	input, ok := blocks[0]["input"].(map[string]any)
+	if !ok || input == nil || len(input) != 0 {
+		t.Fatalf("expected empty tool input object, got %#v", blocks[0]["input"])
+	}
+}
+
 func TestAnthropicStreamStateStreamsRedactedThinkingImmediately(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := ai.Model{ID: "claude-test", API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic}

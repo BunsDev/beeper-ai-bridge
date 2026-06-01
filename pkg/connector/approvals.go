@@ -323,12 +323,12 @@ func (cl *Client) fetchBeeperProfile(ctx context.Context) (*chattools.SessionPro
 	}, nil
 }
 
-func aiServicesWhoamiURL(proxyBaseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(proxyBaseURL), "/"))
+func aiServicesWhoamiURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/whoami"
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/whoami"
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
