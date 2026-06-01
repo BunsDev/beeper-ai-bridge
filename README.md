@@ -386,7 +386,7 @@ Tools are gated per-room via the `com.beeper.ai.tools` state event. `search` may
 4. Wire config in `pkg/connector/chat_tools.go` and honor `DisabledTools`.
 5. If it produces citable sources, add canonical source observations in `pkg/connector/sources.go` so URLs surface as message sources.
 
-> **Security note:** the direct fetch path has **no SSRF guard** — it can reach localhost/private/link-local addresses when the bridge bypasses AI-services for raw assets and local/private targets. Treat it accordingly in your threat model.
+> **Security note:** the direct fetch path intentionally bypasses AI-services for localhost/private/link-local addresses, raw asset URLs, and source-like files, and has **no SSRF guard**. Deployments that cannot allow bridge-origin egress to private networks should enforce an upstream deny-list or network policy before enabling `fetch`.
 
 ## Sessions: the branching conversation tree
 
@@ -518,7 +518,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 - **Reasoning is double-validated and clamped** — setting a model can silently change the effective reasoning level.
 - **Two parallel session-tree implementations** (`aidb` vs `session` SQLite files) with near-duplicate SQL and one subtle difference (`ON DELETE CASCADE`).
 - **Token counts are estimates** (≈ chars/4) — compaction thresholds are approximate.
-- **The direct fetch path has no SSRF protection.**
+- **The direct fetch path intentionally allows private-network/raw-asset egress and has no SSRF protection.**
 - **`ProviderConfig` holds secrets** (API keys, refresh tokens) in login metadata and serializes to JSON *and* YAML — don't log it.
 - **AG-UI `Event` is a map, not a struct** — read typed fields via `Get`/`String`; unknown fields survive round-trips.
 

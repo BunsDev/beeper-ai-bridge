@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"maps"
 	"slices"
 	"strings"
 
@@ -202,7 +201,7 @@ func appendBuiltInTool(tools []any, toolPayload map[string]any) []any {
 			}
 		}
 	}
-	return append(tools, maps.Clone(toolPayload))
+	return append(tools, clonePayloadMap(toolPayload))
 }
 
 func builtInToolKey(tool map[string]any) string {
@@ -245,5 +244,37 @@ func toolsAsAny(raw any) []any {
 }
 
 func clonePayloadMap(in map[string]any) map[string]any {
-	return maps.Clone(in)
+	return cloneAnyMap(in)
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAny(value)
+	}
+	return out
+}
+
+func cloneAny(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneAny(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneAnyMap(item)
+		}
+		return out
+	default:
+		return value
+	}
 }

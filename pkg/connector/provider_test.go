@@ -712,7 +712,7 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 	}
 }
 
-func TestResolveProviderDefersModelValidationToCatalogLoad(t *testing.T) {
+func TestResolveProviderRejectsUnknownConfiguredModel(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
 		ID:           "custom",
@@ -726,11 +726,8 @@ func TestResolveProviderDefersModelValidationToCatalogLoad(t *testing.T) {
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{provider.ID: provider}},
 	}}
 	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "missing"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if modelID != "missing" {
-		t.Fatalf("unexpected model ID %q", modelID)
+	if err == nil {
+		t.Fatalf("expected missing model to fail, got model ID %q", modelID)
 	}
 	_, modelID, err = conn.ResolveProvider(context.Background(), login, RoomConfig{ProviderID: "custom", ModelID: "allowed"})
 	if err != nil {

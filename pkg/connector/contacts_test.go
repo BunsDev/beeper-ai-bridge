@@ -238,6 +238,45 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 }
 
+func TestResolveCanonicalRoomModelUsesAIServicesCatalogBeforeValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.4","name":"GPT-5.4","runtime":{"provider":"openai","model":"gpt-5.4","api":"openai-responses","base_url":"/proxy/openai/v1"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
+	}))
+	defer server.Close()
+
+	provider := aiid.ProviderConfig{
+		ID:           aiid.DefaultProvider,
+		Provider:     ai.ProviderOpenAI,
+		API:          ai.ApiOpenAIResponses,
+		BaseURL:      server.URL,
+		DefaultModel: "beeper/default",
+		Models:       []ai.Model{{ID: "beeper/default", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+	}
+	client := &Client{
+		Main: &Connector{
+			AppServiceToken: "as-token",
+		},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			ID:       "login",
+			UserMXID: "@test:beeper.localtest.me",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				provider.ID: provider,
+			}},
+		}},
+	}
+
+	_, model, canonical, err := client.resolveCanonicalRoomModel(context.Background(), RoomConfig{ProviderID: aiid.DefaultProvider, ModelID: "openai/gpt-5.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.ID != "openai/gpt-5.4" || model.BaseURL != server.URL+"/proxy/openai/v1" || canonical != "beeper/openai/gpt-5.4" {
+		t.Fatalf("unexpected resolved model canonical=%q model=%#v", canonical, model)
+	}
+}
+
 func TestAIServicesModelEntryReasoningDefaultsCanRequireReasoning(t *testing.T) {
 	var entry aiServicesModelEntry
 	if err := json.Unmarshal([]byte(`{"id":"deepseek/deepseek-r1-0528","name":"DeepSeek R1 (0528)","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["minimal","low","medium","high"],"level_map":{"off":null},"default_level":"minimal"}}}`), &entry); err != nil {
@@ -402,6 +441,47 @@ func TestResolveModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
 	model, ok = resolveModelForProvider(provider, "openai/gpt-5.5")
 	if !ok || model.ID != "openai/gpt-5.5" {
 		t.Fatalf("expected OpenAI catalog model ID to resolve, got ok=%v model=%#v", ok, model)
+	}
+}
+
+func TestMergeProviderCatalogModelsPreservesConfiguredCustomModels(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:       "custom",
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  "https://custom.test/v1",
+		Models: []ai.Model{
+			{ID: "local-model", Name: "Local Model", Input: []string{"text", "image"}},
+			{ID: "gpt-5.5"},
+		},
+	}
+	catalog := []ai.Model{
+		{
+			ID:                   "gpt-5.5",
+			Name:                 "GPT-5.5",
+			Provider:             ai.ProviderOpenAI,
+			API:                  ai.ApiOpenAIResponses,
+			BaseURL:              "https://custom.test/v1",
+			Reasoning:            true,
+			DefaultThinkingLevel: ai.ModelThinkingLevelLow,
+			ContextWindow:        128000,
+		},
+		{
+			ID:       "catalog-only",
+			Provider: ai.ProviderOpenAI,
+			API:      ai.ApiOpenAIResponses,
+		},
+	}
+
+	models := mergeProviderCatalogModels(provider, catalog)
+	if len(models) != 2 {
+		t.Fatalf("expected only configured models, got %#v", models)
+	}
+	if models[0].ID != "local-model" || models[0].Name != "Local Model" || !isImageModel(models[0]) {
+		t.Fatalf("expected configured local model to be preserved, got %#v", models[0])
+	}
+	if models[1].ID != "gpt-5.5" || !models[1].Reasoning || models[1].ContextWindow != 128000 {
+		t.Fatalf("expected matching configured model to inherit catalog metadata, got %#v", models[1])
 	}
 }
 

@@ -1279,6 +1279,72 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	}
 }
 
+func TestStreamPublisherSkipsDuplicateToolResultSourcesAfterLiveToolOutput(t *testing.T) {
+	ctx := context.Background()
+	testAPI := ai.Api("test-duplicate-toolresult-sources")
+	toolCall := &ai.ToolCall{
+		ID:        "call-fetch",
+		Name:      "fetch",
+		Arguments: map[string]any{"url": "https://example.com"},
+	}
+	result := map[string]any{
+		"url":         "https://example.com",
+		"title":       "Example",
+		"description": "Example source",
+	}
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			stream.Push(ai.AssistantMessageEvent{Type: "toolresult", ToolCall: toolCall, CustomValue: result})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &ai.Message{Role: "assistant", StopReason: ai.StopReasonStop}})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5.5", "assistant:run", "GPT-5.5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.Start()
+	writer.ToolStart(toolCall.ID, toolCall.Name, 0, nil)
+	active := &activeAIRun{streams: []*assistantStreamState{{
+		eventID: "$event",
+		run:     run,
+		sources: newSourceCollector(),
+		publish: streamPublishCursor{
+			nextSeq:   1,
+			published: len(run.Events),
+			started:   true,
+		},
+	}}}
+
+	err := active.publishToolOutput(ctx, &Client{}, publisher, "!room:example.com", toolOutputEvent{
+		ID:    toolCall.ID,
+		Name:  toolCall.Name,
+		Input: toolCall.Arguments,
+		Result: agent.AgentToolResult[any]{
+			Details: result,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceEventsBefore := sourceCustomEventCount(run.Events)
+	if sourceEventsBefore != 1 {
+		t.Fatalf("expected live tool output to publish one source, got %d events=%#v", sourceEventsBefore, run.Events)
+	}
+
+	stream := active.streams[0]
+	response := (&Client{}).streamPublisherWithEndFrom(publisher, "!room:example.com", "$event", run, &stream.publish, nil)(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}).Result()
+	if response.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected stream response %#v", response)
+	}
+	if sourceEventsAfter := sourceCustomEventCount(run.Events); sourceEventsAfter != sourceEventsBefore {
+		t.Fatalf("duplicate toolresult re-emitted sources: before=%d after=%d events=%#v", sourceEventsBefore, sourceEventsAfter, run.Events)
+	}
+}
+
 func TestPublishNewStreamEventsSuppressesMautrixRequestBodyLogs(t *testing.T) {
 	logger := zerolog.New(io.Discard).Level(zerolog.DebugLevel)
 	ctx := logger.WithContext(context.Background())
@@ -1326,6 +1392,16 @@ func toolParentMessageIDs(events []agui.Event) map[string]string {
 		parents[firstNonEmptyString(evt.Get("toolCallId"))] = firstNonEmptyString(evt.Get("parentMessageId"))
 	}
 	return parents
+}
+
+func sourceCustomEventCount(events []agui.Event) int {
+	count := 0
+	for _, evt := range events {
+		if evt.Type() == agui.EventCustom && evt.Get("name") == "com.beeper.source" {
+			count++
+		}
+	}
+	return count
 }
 
 func uiPartSummary(parts []aistream.MessagePart) []string {

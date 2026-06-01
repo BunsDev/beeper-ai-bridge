@@ -45,11 +45,17 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 	}
 	log := logCtx.Logger()
 	ctx = log.WithContext(ctx)
-	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
-	if err != nil {
+	providerID := roomConfig.ProviderID
+	if providerID == "" {
+		providerID = aiid.DefaultProvider
+	}
+	provider, ok := cl.Main.providersForLogin(cl.UserLogin)[providerID]
+	if !ok {
+		err := fmt.Errorf("provider %s is not available for login %s", providerID, cl.UserLogin.ID)
 		log.Err(err).Msg("Failed to resolve AI provider")
 		return aiid.ProviderConfig{}, "", err
 	}
+	var err error
 	provider, err = cl.providerWithCatalogModelsStrict(ctx, provider)
 	if err != nil {
 		log.Err(err).Str("provider_id", provider.ID).Msg("Failed to load AI provider model catalog")
@@ -59,6 +65,10 @@ func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (a
 		err := fmt.Errorf("AI model catalog is unavailable for provider %s", provider.ID)
 		log.Err(err).Str("provider_id", provider.ID).Msg("AI provider model catalog is empty")
 		return aiid.ProviderConfig{}, "", err
+	}
+	modelID := roomConfig.ModelID
+	if modelID == "" {
+		modelID = provider.DefaultModel
 	}
 	if resolvedModelID, ok := resolveProviderModelID(provider, modelID); ok {
 		log.Debug().

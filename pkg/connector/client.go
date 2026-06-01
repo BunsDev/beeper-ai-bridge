@@ -1258,7 +1258,7 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 							writer.Custom("com.beeper.source", source)
 						}
 					}
-					if evt.Type == "toolresult" && evt.ToolCall != nil {
+					if evt.Type == "toolresult" && evt.ToolCall != nil && !hasPriorToolResult(run.Events, beforeEvents, evt.ToolCall.ID) {
 						output := toolOutputEvent{ID: evt.ToolCall.ID, Name: evt.ToolCall.Name, Input: evt.ToolCall.Arguments}
 						for _, source := range streamSources.addToolOutput(output, evt.CustomValue) {
 							writer.Custom("com.beeper.source", source)
@@ -1736,6 +1736,21 @@ type toolOutputEvent struct {
 	Input   any
 	Result  agent.AgentToolResult[any]
 	IsError bool
+}
+
+func hasPriorToolResult(events []agui.Event, before int, toolCallID string) bool {
+	if toolCallID == "" {
+		return false
+	}
+	if before > len(events) {
+		before = len(events)
+	}
+	for _, evt := range events[:before] {
+		if evt.Type() == agui.EventToolCallResult && evt.Get("toolCallId") == toolCallID {
+			return true
+		}
+	}
+	return false
 }
 
 func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent, messages ...ai.Message) {

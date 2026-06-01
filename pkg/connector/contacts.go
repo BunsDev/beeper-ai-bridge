@@ -322,7 +322,7 @@ func (cl *Client) providerWithCatalogModelsStrictWithRefresh(ctx context.Context
 		return provider, err
 	}
 	if len(models) > 0 {
-		provider.Models = models
+		provider.Models = mergeProviderCatalogModels(provider, models)
 		zerolog.Ctx(ctx).Debug().
 			Str("action", "ai_model_catalog").
 			Str("provider_id", provider.ID).
@@ -330,6 +330,58 @@ func (cl *Client) providerWithCatalogModelsStrictWithRefresh(ctx context.Context
 			Msg("Loaded AI Services model catalog")
 	}
 	return provider, nil
+}
+
+func mergeProviderCatalogModels(provider aiid.ProviderConfig, catalog []ai.Model) []ai.Model {
+	if provider.ID == aiid.DefaultProvider || len(provider.Models) == 0 {
+		return cloneModels(catalog)
+	}
+	byID := make(map[string]ai.Model, len(catalog))
+	for _, model := range catalog {
+		byID[model.ID] = model
+	}
+	models := make([]ai.Model, 0, len(provider.Models))
+	for _, configured := range provider.Models {
+		model := normalizeProviderModel(configured, provider)
+		if catalogModel, ok := byID[model.ID]; ok {
+			model = mergeProviderCatalogModel(model, catalogModel)
+		}
+		models = append(models, model)
+	}
+	return models
+}
+
+func mergeProviderCatalogModel(configured ai.Model, catalog ai.Model) ai.Model {
+	model := catalog
+	if configured.Name != "" && configured.Name != configured.ID {
+		model.Name = configured.Name
+	}
+	if len(configured.Input) > 0 {
+		model.Input = slices.Clone(configured.Input)
+	}
+	if len(configured.Output) > 0 {
+		model.Output = slices.Clone(configured.Output)
+	}
+	if len(configured.BuiltInTools) > 0 {
+		model.BuiltInTools = slices.Clone(configured.BuiltInTools)
+	}
+	if configured.ContextWindow != 0 {
+		model.ContextWindow = configured.ContextWindow
+	}
+	if configured.MaxTokens != 0 {
+		model.MaxTokens = configured.MaxTokens
+	}
+	if configured.Headers != nil {
+		model.Headers = maps.Clone(configured.Headers)
+	}
+	if configured.Compat != nil {
+		compat := maps.Clone(model.Compat)
+		for key, value := range configured.Compat {
+			compat[key] = value
+		}
+		model.Compat = compat
+	}
+	return model
 }
 
 func (cl *Client) cachedAIServicesCatalogModels(ctx context.Context, provider aiid.ProviderConfig, refresh bool) ([]ai.Model, error) {
