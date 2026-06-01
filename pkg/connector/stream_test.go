@@ -74,6 +74,57 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamPublisherWithAnchorSetupStartsProviderBeforeAnchor(t *testing.T) {
+	ctx := context.Background()
+	testAPI := ai.Api("test-stream-delayed-anchor")
+	providerStarted := make(chan struct{})
+	ai.RegisterAPIProvider(testAPI, func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		close(providerStarted)
+		stream := ai.NewAssistantMessageEventStream()
+		go func() {
+			message := ai.Message{Role: "assistant", Content: []ai.ContentBlock{{Type: "text", Text: "hello"}}, StopReason: ai.StopReasonStop}
+			stream.Push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "hello"})
+			stream.Push(ai.AssistantMessageEvent{Type: "done", Reason: ai.StopReasonStop, Message: &message})
+		}()
+		return stream
+	})
+	defer ai.UnregisterAPIProvider(testAPI)
+
+	publisher := &recordingStreamPublisher{}
+	client := &Client{}
+	run := aistream.NewRun("run", "thread", "beeper/fake", "assistant:run", "Fake", timeNow())
+	run.MessageID = "assistant:run"
+	setupStarted := make(chan struct{})
+	releaseAnchor := make(chan struct{})
+	stream := client.streamPublisherWithAnchorSetup(ctx, ai.Model{ID: "fake", API: testAPI}, ai.Context{}, ai.SimpleStreamOptions{}, publisher, "!room:example.com", run, &streamPublishCursor{nextSeq: 1}, func(context.Context) (id.EventID, func(), error) {
+		close(setupStarted)
+		<-releaseAnchor
+		return "$event", nil, nil
+	})
+
+	select {
+	case <-setupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("anchor setup did not start")
+	}
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start before anchor setup completed")
+	}
+	if len(publisher.updates) != 0 {
+		t.Fatalf("published before anchor setup completed: %#v", publisher.updates)
+	}
+	close(releaseAnchor)
+	result := stream.Result()
+	if result.StopReason != ai.StopReasonStop {
+		t.Fatalf("unexpected stream result %#v", result)
+	}
+	if len(publisher.updates) == 0 {
+		t.Fatal("expected stream updates after anchor setup completed")
+	}
+}
+
 func TestStreamPublisherPublishesThinkingDeltasLiveAfterThinkingStart(t *testing.T) {
 	ctx := context.Background()
 	testAPI := ai.Api("test-stream-thinking")
@@ -1000,6 +1051,27 @@ func TestAssistantFallbackEventsUseStrictMatrixOrder(t *testing.T) {
 	)
 	if !edit.Timestamp.After(assistantEvent.Timestamp) || edit.StreamOrder <= assistantEvent.StreamOrder {
 		t.Fatalf("final edit not after anchor: timestamp=%s stream_order=%d anchor=%s/%d", edit.Timestamp, edit.StreamOrder, assistantEvent.Timestamp, assistantEvent.StreamOrder)
+	}
+}
+
+func TestPendingUserMessageSeedsAssistantAnchorOrder(t *testing.T) {
+	userTimestamp := time.Now().Add(10 * time.Second).Truncate(time.Millisecond)
+	active := &activeAIRun{
+		provider: aiid.ProviderConfig{ID: "beeper"},
+		model:    ai.Model{ID: "gpt-5"},
+		runID:    "run",
+	}
+	active.addPending(&pendingAIMessage{
+		msg: &bridgev2.MatrixMessage{
+			MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+				Event: &event.Event{Timestamp: userTimestamp.UnixMilli()},
+			},
+		},
+		metadata: &aiid.MessageMetadata{},
+	})
+	anchorTimestamp := active.nextAssistantAnchorTimestamp()
+	if !anchorTimestamp.Equal(userTimestamp.Add(time.Millisecond)) {
+		t.Fatalf("anchor timestamp = %s, want %s", anchorTimestamp, userTimestamp.Add(time.Millisecond))
 	}
 }
 

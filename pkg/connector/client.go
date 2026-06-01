@@ -101,8 +101,14 @@ type activeAIRun struct {
 	last      *assistantStreamState
 	status    *bridgev2.MessageStatusEventInfo
 	approvals map[string]*activeApproval
+	echoWaits []*consumedEchoWait
 
 	lastConsumedTimestamp time.Time
+}
+
+type consumedEchoWait struct {
+	done chan struct{}
+	err  error
 }
 
 type assistantStreamState struct {
@@ -685,15 +691,15 @@ func (cl *Client) markConsumedFailed(ctx context.Context, pending *pendingAIMess
 	cl.Main.Bridge.Matrix.SendMessageStatus(ctx, &status, bridgev2.StatusEventInfoFromEvent(pending.msg.Event))
 }
 
-func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIMessage, userEntryID string, echoTimestamp time.Time) {
+func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIMessage, userEntryID string, echoTimestamp time.Time) error {
 	if pending == nil || pending.msg == nil {
-		return
+		return nil
 	}
 	pending.metadata.SessionEntryID = userEntryID
 	pending.metadata.Role = "user"
 	pending.metadata.StreamStatus = "done"
 	messageID := aiid.UserMessageID(userEntryID)
-	cl.UserLogin.QueueRemoteEvent(&simplevent.PreConvertedMessage{
+	result := cl.UserLogin.QueueRemoteEvent(&simplevent.PreConvertedMessage{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessage,
 			PortalKey: pending.msg.Portal.PortalKey,
@@ -712,6 +718,17 @@ func (cl *Client) queueConsumedUserEcho(ctx context.Context, pending *pendingAIM
 			DBMetadata: pending.metadata,
 		}}},
 	})
+	if !result.Success {
+		if result.Error != nil {
+			return result.Error
+		}
+		return fmt.Errorf("failed to queue consumed user echo")
+	}
+	if result.EventID != "" {
+		return nil
+	}
+	_, err := cl.waitForMessageEventID(ctx, pending.msg.Portal, messageID, aiid.PartID("text"), 30*time.Second)
+	return err
 }
 
 func (cl *Client) queueAssistantRunError(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, metadata *aiid.MessageMetadata, timestamp time.Time, err error) {
@@ -1088,24 +1105,9 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 			evt.Str("stream_type", descriptor.Type).Str("descriptor_user_id", string(descriptor.UserID))
 		})
 		assistantEvent, metadata := cl.assistantEvent(ctx, portal.PortalKey, messageID, provider.ID, model.ID, runID, descriptor, *run, anchorTimestamp)
-		eventID, err := cl.queueAssistantStreamAnchor(ctx, portal, assistantEvent, messageID)
-		if err != nil {
-			cl.logStreamError(err, portal.MXID, "", run, "Failed to queue AI stream anchor")
-			return hookStreamError(err)
-		}
-		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Queued AI stream anchor")
-		if err := publisher.Register(ctx, portal.MXID, eventID, descriptor); err != nil {
-			cl.logStreamError(err, portal.MXID, eventID, run, "Failed to register AI stream publisher")
-			cl.queueAssistantRunError(portal.PortalKey, messageID, provider.ID, model.ID, runID, *run, metadata, afterMatrixTimestamp(anchorTimestamp), err)
-			return hookStreamError(err)
-		}
-		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Registered AI stream publisher", func(evt *zerolog.Event) {
-			evt.Str("stream_type", descriptor.Type)
-		})
 		if active := cl.getActiveRun(portal.PortalKey); active != nil {
 			stream := &assistantStreamState{
 				messageID:       messageID,
-				eventID:         eventID,
 				runID:           runID,
 				run:             run,
 				metadata:        metadata,
@@ -1116,12 +1118,49 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 			stream.publish.persist = func(ctx context.Context, run *aistream.Run) error {
 				return cl.persistActiveStream(ctx, portal, provider.ID, model.ID, active, stream, run)
 			}
-			active.addAssistantStream(stream)
-			return cl.streamPublisherWithEndFrom(publisher, portal.MXID, eventID, run, &stream.publish, nil, onSecondVisibleChunk...)(ctx, model, llmContext, options)
+			return cl.streamPublisherWithAnchorSetup(ctx, model, llmContext, options, publisher, portal.MXID, run, &stream.publish, func(setupCtx context.Context) (id.EventID, func(), error) {
+				if err := active.waitForConsumedEchoes(setupCtx); err != nil {
+					cl.logStreamError(err, portal.MXID, "", run, "Timed out waiting for consumed user echo before AI stream anchor")
+					return "", nil, err
+				}
+				eventID, err := cl.queueAssistantStreamAnchor(setupCtx, portal, assistantEvent, messageID)
+				if err != nil {
+					cl.logStreamError(err, portal.MXID, "", run, "Failed to queue AI stream anchor")
+					return "", nil, err
+				}
+				cl.logStreamDebug(setupCtx, portal.MXID, eventID, run, "Queued AI stream anchor")
+				if err := publisher.Register(setupCtx, portal.MXID, eventID, descriptor); err != nil {
+					cl.logStreamError(err, portal.MXID, eventID, run, "Failed to register AI stream publisher")
+					cl.queueAssistantRunError(portal.PortalKey, messageID, provider.ID, model.ID, runID, *run, metadata, afterMatrixTimestamp(anchorTimestamp), err)
+					return eventID, nil, err
+				}
+				cl.logStreamDebug(setupCtx, portal.MXID, eventID, run, "Registered AI stream publisher", func(evt *zerolog.Event) {
+					evt.Str("stream_type", descriptor.Type)
+				})
+				stream.eventID = eventID
+				active.addAssistantStream(stream)
+				return eventID, nil, nil
+			}, onSecondVisibleChunk...)
 		}
-		return cl.streamPublisherWithEnd(publisher, portal.MXID, eventID, run, func() {
-			publisher.Unregister(portal.MXID, eventID)
-		}, onSecondVisibleChunk...)(ctx, model, llmContext, options)
+		return cl.streamPublisherWithAnchorSetup(ctx, model, llmContext, options, publisher, portal.MXID, run, &streamPublishCursor{nextSeq: 1}, func(setupCtx context.Context) (id.EventID, func(), error) {
+			eventID, err := cl.queueAssistantStreamAnchor(setupCtx, portal, assistantEvent, messageID)
+			if err != nil {
+				cl.logStreamError(err, portal.MXID, "", run, "Failed to queue AI stream anchor")
+				return "", nil, err
+			}
+			cl.logStreamDebug(setupCtx, portal.MXID, eventID, run, "Queued AI stream anchor")
+			if err := publisher.Register(setupCtx, portal.MXID, eventID, descriptor); err != nil {
+				cl.logStreamError(err, portal.MXID, eventID, run, "Failed to register AI stream publisher")
+				cl.queueAssistantRunError(portal.PortalKey, messageID, provider.ID, model.ID, runID, *run, metadata, afterMatrixTimestamp(anchorTimestamp), err)
+				return eventID, nil, err
+			}
+			cl.logStreamDebug(setupCtx, portal.MXID, eventID, run, "Registered AI stream publisher", func(evt *zerolog.Event) {
+				evt.Str("stream_type", descriptor.Type)
+			})
+			return eventID, func() {
+				publisher.Unregister(portal.MXID, eventID)
+			}, nil
+		}, onSecondVisibleChunk...)
 	}
 }
 
@@ -1165,36 +1204,50 @@ func (cl *Client) streamPublisher(publisher bridgev2.BeeperStreamPublisher, room
 	return cl.streamPublisherWithEnd(publisher, roomID, eventID, run, nil, onSecondVisibleChunk...)
 }
 
-func (cl *Client) streamPublisherWithEnd(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, onEnd func(), onSecondVisibleChunk ...func()) agent.StreamFn {
-	return cl.streamPublisherWithEndFrom(publisher, roomID, eventID, run, &streamPublishCursor{nextSeq: 1}, onEnd, onSecondVisibleChunk...)
-}
-
-func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, cursor *streamPublishCursor, onEnd func(), onSecondVisibleChunk ...func()) agent.StreamFn {
-	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
-		streamCtx, cancelStream := context.WithCancel(ctx)
-		upstream := ai.StreamSimple(streamCtx, model, llmContext, options)
-		downstream := ai.NewAssistantMessageEventStream()
-		writer := aistream.NewWriter(run, time.Now)
-		if cursor == nil {
-			cursor = &streamPublishCursor{nextSeq: 1}
+func (cl *Client) streamPublisherWithAnchorSetup(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, run *aistream.Run, cursor *streamPublishCursor, setup func(context.Context) (id.EventID, func(), error), onSecondVisibleChunk ...func()) *ai.AssistantMessageEventStream {
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	upstream := ai.StreamSimple(streamCtx, model, llmContext, options)
+	downstream := ai.NewAssistantMessageEventStream()
+	writer := aistream.NewWriter(run, time.Now)
+	if cursor == nil {
+		cursor = &streamPublishCursor{nextSeq: 1}
+	}
+	visibleChunks := 0
+	secondVisibleSent := false
+	maybeSecondVisibleChunk := func(evt ai.AssistantMessageEvent) {
+		if evt.Type != "text_delta" || evt.Delta == "" || secondVisibleSent {
+			return
 		}
-		visibleChunks := 0
-		secondVisibleSent := false
-		maybeSecondVisibleChunk := func(evt ai.AssistantMessageEvent) {
-			if evt.Type != "text_delta" || evt.Delta == "" || secondVisibleSent {
-				return
-			}
-			visibleChunks++
-			if visibleChunks < 2 {
-				return
-			}
-			secondVisibleSent = true
-			for _, cb := range onSecondVisibleChunk {
-				if cb != nil {
-					cb()
-				}
+		visibleChunks++
+		if visibleChunks < 2 {
+			return
+		}
+		secondVisibleSent = true
+		for _, cb := range onSecondVisibleChunk {
+			if cb != nil {
+				cb()
 			}
 		}
+	}
+	go func() {
+		defer cancelStream()
+		defer downstream.End()
+		eventID, onEnd, setupErr := setup(ctx)
+		if onEnd != nil {
+			defer onEnd()
+		}
+		if setupErr != nil {
+			downstream.Push(ai.AssistantMessageEvent{
+				Type: "error",
+				Error: &ai.Message{
+					Role:         "assistant",
+					ErrorMessage: setupErr.Error(),
+					StopReason:   ai.StopReasonError,
+				},
+			})
+			return
+		}
+		streamSources := newSourceCollector()
 		cursor.mu.Lock()
 		if !cursor.started {
 			enrichAIRunMetadata(run, model, options)
@@ -1205,29 +1258,93 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 		cursor.mu.Unlock()
 		if startErr != nil {
 			cl.logStreamError(startErr, roomID, eventID, run, "Failed to publish AI stream start carrier")
-			stream := hookStreamError(startErr)
-			downstream.End()
-			return stream
+			downstream.Push(ai.AssistantMessageEvent{
+				Type: "error",
+				Error: &ai.Message{
+					Role:         "assistant",
+					ErrorMessage: startErr.Error(),
+					StopReason:   ai.StopReasonError,
+				},
+			})
+			return
 		}
-		streamSources := newSourceCollector()
-		go func() {
-			defer cancelStream()
-			if onEnd != nil {
-				defer onEnd()
-			}
-			defer downstream.End()
-			seenFirstDelta := false
-			idleTimer := time.NewTimer(activeStreamIdleTimeout)
-			defer idleTimer.Stop()
-			for {
-				select {
-				case <-idleTimer.C:
-					err := fmt.Errorf("AI stream timed out after %s without updates", activeStreamIdleTimeout)
+		seenFirstDelta := false
+		idleTimer := time.NewTimer(activeStreamIdleTimeout)
+		defer idleTimer.Stop()
+		for {
+			select {
+			case <-idleTimer.C:
+				err := fmt.Errorf("AI stream timed out after %s without updates", activeStreamIdleTimeout)
+				cursor.mu.Lock()
+				writer.Error(err.Error())
+				if publishErr := cl.publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); publishErr != nil {
+					cl.logStreamError(publishErr, roomID, eventID, run, "Failed to publish AI stream timeout carrier")
+				}
+				cursor.mu.Unlock()
+				downstream.Push(ai.AssistantMessageEvent{
+					Type: "error",
+					Error: &ai.Message{
+						Role:         "assistant",
+						ErrorMessage: err.Error(),
+						StopReason:   ai.StopReasonError,
+					},
+				})
+				cl.logStreamError(err, roomID, eventID, run, "AI stream timed out")
+				return
+			case evt, ok := <-upstream.Events():
+				if !ok {
 					cursor.mu.Lock()
-					writer.Error(err.Error())
-					if publishErr := cl.publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); publishErr != nil {
-						cl.logStreamError(publishErr, roomID, eventID, run, "Failed to publish AI stream timeout carrier")
+					publishedEvents := cursor.published
+					nextSeq := cursor.nextSeq
+					cursor.mu.Unlock()
+					cl.logStreamDebug(ctx, roomID, eventID, run, "Finished AI stream publishing", func(logEvt *zerolog.Event) {
+						logEvt.Int("published_agui_events", publishedEvents).
+							Int("next_seq", nextSeq)
+					})
+					return
+				}
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
 					}
+				}
+				idleTimer.Reset(activeStreamIdleTimeout)
+
+				cursor.mu.Lock()
+				beforeEvents := len(run.Events)
+				applyAIStreamEvent(writer, evt, model.ContextWindow)
+				if evt.Partial != nil {
+					for _, source := range streamSources.addProviderSources(*evt.Partial) {
+						writer.Custom("com.beeper.source", source)
+					}
+				}
+				if evt.Type == "toolresult" && evt.ToolCall != nil && !hasPriorToolResult(run.Events, beforeEvents, evt.ToolCall.ID) {
+					output := toolOutputEvent{ID: evt.ToolCall.ID, Name: evt.ToolCall.Name, Input: evt.ToolCall.Arguments}
+					for _, source := range streamSources.addToolOutput(output, evt.CustomValue) {
+						writer.Custom("com.beeper.source", source)
+					}
+				}
+				afterEvents := len(run.Events)
+				maybeSecondVisibleChunk(evt)
+				if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
+					seenFirstDelta = true
+					cl.logStreamDebug(ctx, roomID, eventID, run, "Received first AI stream delta", func(logEvt *zerolog.Event) {
+						logEvt.Str("upstream_event_type", evt.Type).
+							Int("content_index", evt.ContentIndex).
+							Int("delta_bytes", len(evt.Delta)).
+							Int("agui_events_added", afterEvents-beforeEvents)
+					})
+				}
+				if afterEvents > beforeEvents {
+					cl.logStreamDebug(ctx, roomID, eventID, run, "Transformed AI stream event to AG-UI", func(logEvt *zerolog.Event) {
+						logEvt.Str("upstream_event_type", evt.Type).
+							Int("content_index", evt.ContentIndex).
+							Int("agui_events_added", afterEvents-beforeEvents).
+							Int("pending_agui_events", afterEvents-cursor.published)
+					})
+				}
+				if err := cl.publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); err != nil {
 					cursor.mu.Unlock()
 					downstream.Push(ai.AssistantMessageEvent{
 						Type: "error",
@@ -1237,80 +1354,26 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 							StopReason:   ai.StopReasonError,
 						},
 					})
-					cl.logStreamError(err, roomID, eventID, run, "AI stream timed out")
+					cl.logStreamError(err, roomID, eventID, run, "Failed to publish AI stream carrier")
 					return
-				case evt, ok := <-upstream.Events():
-					if !ok {
-						cursor.mu.Lock()
-						publishedEvents := cursor.published
-						nextSeq := cursor.nextSeq
-						cursor.mu.Unlock()
-						cl.logStreamDebug(ctx, roomID, eventID, run, "Finished AI stream publishing", func(logEvt *zerolog.Event) {
-							logEvt.Int("published_agui_events", publishedEvents).
-								Int("next_seq", nextSeq)
-						})
-						return
-					}
-					if !idleTimer.Stop() {
-						select {
-						case <-idleTimer.C:
-						default:
-						}
-					}
-					idleTimer.Reset(activeStreamIdleTimeout)
-
-					cursor.mu.Lock()
-					beforeEvents := len(run.Events)
-					applyAIStreamEvent(writer, evt, model.ContextWindow)
-					if evt.Partial != nil {
-						for _, source := range streamSources.addProviderSources(*evt.Partial) {
-							writer.Custom("com.beeper.source", source)
-						}
-					}
-					if evt.Type == "toolresult" && evt.ToolCall != nil && !hasPriorToolResult(run.Events, beforeEvents, evt.ToolCall.ID) {
-						output := toolOutputEvent{ID: evt.ToolCall.ID, Name: evt.ToolCall.Name, Input: evt.ToolCall.Arguments}
-						for _, source := range streamSources.addToolOutput(output, evt.CustomValue) {
-							writer.Custom("com.beeper.source", source)
-						}
-					}
-					afterEvents := len(run.Events)
-					maybeSecondVisibleChunk(evt)
-					if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
-						seenFirstDelta = true
-						cl.logStreamDebug(ctx, roomID, eventID, run, "Received first AI stream delta", func(logEvt *zerolog.Event) {
-							logEvt.Str("upstream_event_type", evt.Type).
-								Int("content_index", evt.ContentIndex).
-								Int("delta_bytes", len(evt.Delta)).
-								Int("agui_events_added", afterEvents-beforeEvents)
-						})
-					}
-					if afterEvents > beforeEvents {
-						cl.logStreamDebug(ctx, roomID, eventID, run, "Transformed AI stream event to AG-UI", func(logEvt *zerolog.Event) {
-							logEvt.Str("upstream_event_type", evt.Type).
-								Int("content_index", evt.ContentIndex).
-								Int("agui_events_added", afterEvents-beforeEvents).
-								Int("pending_agui_events", afterEvents-cursor.published)
-						})
-					}
-					if err := cl.publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); err != nil {
-						cursor.mu.Unlock()
-						downstream.Push(ai.AssistantMessageEvent{
-							Type: "error",
-							Error: &ai.Message{
-								Role:         "assistant",
-								ErrorMessage: err.Error(),
-								StopReason:   ai.StopReasonError,
-							},
-						})
-						cl.logStreamError(err, roomID, eventID, run, "Failed to publish AI stream carrier")
-						return
-					}
-					cursor.mu.Unlock()
-					downstream.Push(evt)
 				}
+				cursor.mu.Unlock()
+				downstream.Push(evt)
 			}
-		}()
-		return downstream
+		}
+	}()
+	return downstream
+}
+
+func (cl *Client) streamPublisherWithEnd(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, onEnd func(), onSecondVisibleChunk ...func()) agent.StreamFn {
+	return cl.streamPublisherWithEndFrom(publisher, roomID, eventID, run, &streamPublishCursor{nextSeq: 1}, onEnd, onSecondVisibleChunk...)
+}
+
+func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, cursor *streamPublishCursor, onEnd func(), onSecondVisibleChunk ...func()) agent.StreamFn {
+	return func(ctx context.Context, model ai.Model, llmContext ai.Context, options ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+		return cl.streamPublisherWithAnchorSetup(ctx, model, llmContext, options, publisher, roomID, run, cursor, func(context.Context) (id.EventID, func(), error) {
+			return eventID, onEnd, nil
+		}, onSecondVisibleChunk...)
 	}
 }
 
@@ -2306,6 +2369,13 @@ func (r *activeAIRun) addPending(pending *pendingAIMessage) {
 	pending.metadata.ProviderID = r.provider.ID
 	pending.metadata.ModelID = r.model.ID
 	pending.metadata.RunID = r.runID
+	pendingTimestamp := time.Now()
+	if pending != nil && pending.msg != nil {
+		pendingTimestamp = matrixEventTime(pending.msg.Event)
+	}
+	if pendingTimestamp.After(r.lastConsumedTimestamp) {
+		r.lastConsumedTimestamp = pendingTimestamp
+	}
 	r.pending = append(r.pending, pending)
 }
 
@@ -2363,7 +2433,20 @@ func (r *activeAIRun) replyTarget() *networkid.MessageOptionalPartID {
 	}
 }
 
+func (w *consumedEchoWait) wait(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	select {
+	case <-w.done:
+		return w.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID string) {
+	wait := &consumedEchoWait{done: make(chan struct{})}
 	r.mu.Lock()
 	if len(r.pending) == 0 {
 		r.mu.Unlock()
@@ -2372,6 +2455,7 @@ func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID stri
 	pending := r.pending[0]
 	r.pending = r.pending[1:]
 	r.consumed = append(r.consumed, pending)
+	r.echoWaits = append(r.echoWaits, wait)
 	echoTimestamp := time.Now()
 	if pending != nil && pending.msg != nil {
 		echoTimestamp = matrixEventTime(pending.msg.Event)
@@ -2383,7 +2467,22 @@ func (r *activeAIRun) markConsumed(ctx context.Context, cl *Client, entryID stri
 		r.status = bridgev2.StatusEventInfoFromEvent(pending.msg.Event)
 	}
 	r.mu.Unlock()
-	cl.queueConsumedUserEcho(ctx, pending, entryID, echoTimestamp)
+	go func() {
+		wait.err = cl.queueConsumedUserEcho(ctx, pending, entryID, echoTimestamp)
+		close(wait.done)
+	}()
+}
+
+func (r *activeAIRun) waitForConsumedEchoes(ctx context.Context) error {
+	r.mu.Lock()
+	waits := append([]*consumedEchoWait(nil), r.echoWaits...)
+	r.mu.Unlock()
+	for _, wait := range waits {
+		if err := wait.wait(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *activeAIRun) failAll(ctx context.Context, cl *Client, err error) {
