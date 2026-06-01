@@ -695,6 +695,16 @@ func TestResponsesStreamStateSeedsFunctionCallArgumentsFromAddedItem(t *testing.
 	if len(state.blocks) != 1 || state.blocks[0].Arguments["path"] != "x" {
 		t.Fatalf("expected initial item arguments and delta to combine, got %#v", state.blocks)
 	}
+	events := drainAssistantEvents(stream)
+	var sawInitialArgs bool
+	for _, event := range events {
+		if event.Type == "toolcall_delta" && event.Delta == `{"path"` {
+			sawInitialArgs = true
+		}
+	}
+	if !sawInitialArgs {
+		t.Fatalf("expected initial function-call arguments to stream as args, got %#v", events)
+	}
 }
 
 func TestFinishResponsesStreamEmitsErrorForFailedResponse(t *testing.T) {

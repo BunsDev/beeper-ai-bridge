@@ -1006,7 +1006,14 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			push(ai.AssistantMessageEvent{Type: "text_start", ContentIndex: s.currentIndex, Partial: output})
 		case "function_call":
 			id := fmt.Sprintf("%v|%v", item["call_id"], item["id"])
-			arguments := fmt.Sprint(item["arguments"])
+			arguments := ""
+			if rawArguments, ok := item["arguments"]; ok && rawArguments != nil {
+				if text, ok := rawArguments.(string); ok {
+					arguments = text
+				} else {
+					arguments = mustJSON(rawArguments)
+				}
+			}
 			s.blocks = append(s.blocks, ai.ContentBlock{Type: "toolCall", ID: id, Name: fmt.Sprint(item["name"]), Arguments: parseJSONMap(arguments)})
 			s.currentIndex = len(s.blocks) - 1
 			s.setItemIndex(itemID, itemType, s.currentIndex)
@@ -1017,6 +1024,9 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			output.Content = s.blocks
 			toolCall := ai.ToolCall{Type: "toolCall", ID: id, Name: s.blocks[s.currentIndex].Name, Arguments: s.blocks[s.currentIndex].Arguments}
 			push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: s.currentIndex, ToolCall: &toolCall, Partial: output})
+			if arguments != "" {
+				push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: s.currentIndex, Delta: arguments, ToolCall: &toolCall, Partial: output})
+			}
 		case "image_generation_call":
 			s.blocks = append(s.blocks, imageBlockFromGenerationItem(item, ai.ContentBlock{}))
 			s.currentIndex = len(s.blocks) - 1

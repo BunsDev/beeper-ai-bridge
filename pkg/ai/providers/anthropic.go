@@ -641,6 +641,7 @@ func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			s.anthropicIndexes[index] = contentIndex
 			appendContentBlock(output, ai.ContentBlock{Type: "thinking", Thinking: "[Reasoning redacted]", ThinkingSignature: stringFromAny(blockMap["data"]), Redacted: true})
 			stream.Push(ai.AssistantMessageEvent{Type: "thinking_start", ContentIndex: contentIndex, Partial: output})
+			stream.Push(ai.AssistantMessageEvent{Type: "thinking_delta", ContentIndex: contentIndex, Delta: "[Reasoning redacted]", Partial: output})
 		case "tool_use":
 			s.anthropicIndexes[index] = contentIndex
 			name := stringFromAny(blockMap["name"])
@@ -656,6 +657,10 @@ func (s *anthropicStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			}
 			appendContentBlock(output, ai.ContentBlock{Type: "toolCall", ID: stringFromAny(blockMap["id"]), Name: name, Arguments: arguments})
 			stream.Push(ai.AssistantMessageEvent{Type: "toolcall_start", ContentIndex: contentIndex, Partial: output})
+			if len(arguments) > 0 {
+				toolCall := ai.ToolCall{Type: "toolCall", ID: stringFromAny(blockMap["id"]), Name: name, Arguments: arguments}
+				stream.Push(ai.AssistantMessageEvent{Type: "toolcall_delta", ContentIndex: contentIndex, Delta: s.partialJSON[contentIndex], ToolCall: &toolCall, Partial: output})
+			}
 		case "server_tool_use":
 			toolCall, ok := anthropicNativeServerToolCall(blockMap, index)
 			if !ok {

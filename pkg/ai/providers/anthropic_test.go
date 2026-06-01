@@ -67,6 +67,45 @@ func TestAnthropicStreamStatePreservesToolInputFromContentBlockStart(t *testing.
 	if blocks[0].Arguments["path"] != "README.md" {
 		t.Fatalf("expected tool input from content block start, got %#v", blocks[0].Arguments)
 	}
+	var sawArgs bool
+	for _, event := range drainAssistantEvents(stream) {
+		if event.Type == "toolcall_delta" && event.Delta == `{"path":"README.md"}` {
+			sawArgs = true
+		}
+	}
+	if !sawArgs {
+		t.Fatalf("expected initial Anthropic tool input to stream as args")
+	}
+}
+
+func TestAnthropicStreamStateStreamsRedactedThinkingImmediately(t *testing.T) {
+	stream := ai.NewAssistantMessageEventStream()
+	model := ai.Model{ID: "claude-test", API: ai.ApiAnthropicMessages, Provider: ai.ProviderAnthropic}
+	output := newAssistant(model)
+	state := newAnthropicStreamState()
+
+	state.apply(stream, &output, model, ai.Context{}, false, map[string]any{
+		"type":  "content_block_start",
+		"index": float64(0),
+		"content_block": map[string]any{
+			"type": "redacted_thinking",
+			"data": "signature",
+		},
+	})
+
+	events := drainAssistantEvents(stream)
+	var sawStart, sawDelta bool
+	for _, event := range events {
+		if event.Type == "thinking_start" {
+			sawStart = true
+		}
+		if event.Type == "thinking_delta" && event.Delta == "[Reasoning redacted]" {
+			sawDelta = true
+		}
+	}
+	if !sawStart || !sawDelta {
+		t.Fatalf("expected redacted thinking to stream immediately, got %#v", events)
+	}
 }
 
 func TestAnthropicStreamStateMapsNativeWebSearchToToolActivity(t *testing.T) {
