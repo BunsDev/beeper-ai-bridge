@@ -85,10 +85,10 @@ func modelSupportsAgentTools(model ai.Model) bool {
 		return false
 	}
 	if model.Compat == nil {
-		return true
+		return false
 	}
 	supported, ok := model.Compat["tools_supported"].(bool)
-	return !ok || supported
+	return ok && supported
 }
 
 func modelHasOutputModality(model ai.Model, modality string) bool {
