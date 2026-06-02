@@ -770,17 +770,15 @@ func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T)
 	}
 }
 
-func TestApprovalResolverMatchesEmojiKeysAndAliases(t *testing.T) {
+func TestApprovalResolverMatchesCommandChoices(t *testing.T) {
 	choices := DefaultApprovalChoices()
-	for _, key := range []string{"✅", "approve"} {
-		choice, ok := ResolveApprovalChoice(choices, key)
-		response := ApprovalResponseForChoice("approval-1", choice)
-		if !ok || !response.Approved || response.Always {
-			t.Fatalf("expected approve for %q, got %#v ok=%v", key, choice, ok)
-		}
-	}
-	choice, ok := ResolveApprovalChoice(choices, "☑️")
+	choice, ok := ResolveApprovalChoice(choices, "approve")
 	response := ApprovalResponseForChoice("approval-1", choice)
+	if !ok || !response.Approved || response.Always {
+		t.Fatalf("expected approve, got %#v ok=%v", choice, ok)
+	}
+	choice, ok = ResolveApprovalChoice(choices, "always")
+	response = ApprovalResponseForChoice("approval-1", choice)
 	if !ok || !response.Approved || !response.Always {
 		t.Fatalf("expected always-approve, got %#v ok=%v", choice, ok)
 	}
@@ -822,6 +820,24 @@ func TestApprovalInterruptOwnsStreamPayloadShape(t *testing.T) {
 	}
 	if !SetApprovalInterruptEventID(&interrupt, "$approval") || interrupt.Metadata["approvalEventId"] != "$approval" {
 		t.Fatalf("failed to annotate approval event id: %#v", interrupt.Metadata)
+	}
+}
+
+func TestApprovalEventLinkedAnnotatesInterruptAndEmitsEvent(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "fetch", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.ApprovalEventLinked("approval-1", "$approval")
+
+	if len(run.Interrupts) != 1 || run.Interrupts[0].Metadata["approvalEventId"] != "$approval" {
+		t.Fatalf("approval event id did not annotate interrupt: %#v", run.Interrupts)
+	}
+	if len(run.Events) != 1 {
+		t.Fatalf("expected approval link event, got %d", len(run.Events))
+	}
+	link, ok := run.Events[0].Get("value").(map[string]any)
+	if !ok || link["id"] != "approval-1" || link["approvalEventId"] != "$approval" || link["state"] != "event-linked" {
+		t.Fatalf("bad approval link event: %#v", run.Events[0])
 	}
 }
 
@@ -1059,7 +1075,7 @@ func TestApprovalNoticeOwnsHiddenMessagePayloadShape(t *testing.T) {
 		t.Fatalf("bad approval notice choices: %#v", notice["choices"])
 	}
 	first, ok := choices[0].(map[string]any)
-	if !ok || first["key"] != ApprovalChoiceApprove || first["label"] != "Allow once" || first["alias"] != "✅" {
+	if !ok || first["key"] != ApprovalChoiceApprove || first["label"] != "Allow once" || first["shortcut"] != "enter" {
 		t.Fatalf("bad first approval choice: %#v", choices[0])
 	}
 	if _, ok := first["style"]; ok {
@@ -1068,23 +1084,6 @@ func TestApprovalNoticeOwnsHiddenMessagePayloadShape(t *testing.T) {
 	deny, ok := choices[2].(map[string]any)
 	if !ok || deny["style"] != "danger" {
 		t.Fatalf("deny choice should keep danger style: %#v", choices[2])
-	}
-}
-
-func TestCleanupKeepsSelectedUserReactionAndRemovesBridgeOptions(t *testing.T) {
-	choices := DefaultApprovalChoices()
-	cleanup := CleanupApprovalReactions(choices, "✅", []ReactionEvent{
-		{EventID: "$bridge-allow", Sender: "ai", Key: "✅", Bridge: true},
-		{EventID: "$bridge-deny", Sender: "ai", Key: "❌", Bridge: true},
-		{EventID: "$user-allow", Sender: "@user:example", Key: "✅"},
-		{EventID: "$user-deny", Sender: "@user:example", Key: "❌"},
-	}, "ai")
-	if !cleanup.Matched || cleanup.SelectedReactionEvent != "$user-allow" {
-		t.Fatalf("bad selected reaction: %#v", cleanup)
-	}
-	got := strings.Join(cleanup.RedactReactionEvents, ",")
-	if !strings.Contains(got, "$bridge-allow") || !strings.Contains(got, "$bridge-deny") || !strings.Contains(got, "$user-deny") {
-		t.Fatalf("bad cleanup redactions: %#v", cleanup.RedactReactionEvents)
 	}
 }
 
