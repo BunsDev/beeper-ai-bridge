@@ -493,6 +493,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			if metadata := evt.Get("metadata"); metadata != nil {
 				part["metadata"] = metadata
 			}
+			copyEventFields(part, evt, "approval", "dynamic", "providerExecuted", "startedAtMs", "title")
 			toolParts[toolCallID] = appendPart(part)
 		case agui.EventToolCallArgs:
 			toolCallID, _ := evt.Get("toolCallId").(string)
@@ -549,6 +550,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			} else {
 				part["state"] = agui.ToolStateInputComplete
 			}
+			copyEventFields(part, evt, "completedAtMs", "preliminary", "providerExecuted", "toolName")
 		case agui.EventRunFinished:
 			for _, interrupt := range runFinishedInterrupts(evt.Get("outcome")) {
 				if interrupt.Reason != agui.InterruptReasonToolCall || interrupt.ToolCallID == "" {
@@ -1076,4 +1078,12 @@ func firstString(values ...any) string {
 		}
 	}
 	return ""
+}
+
+func copyEventFields(part MessagePart, event agui.Event, keys ...string) {
+	for _, key := range keys {
+		if value := event.Get(key); value != nil {
+			part[key] = value
+		}
+	}
 }

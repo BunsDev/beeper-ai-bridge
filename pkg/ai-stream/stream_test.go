@@ -587,6 +587,12 @@ func TestFinalBeeperAIMessageCarriesToolCallMetadata(t *testing.T) {
 		"displayName": "List Calendar Events",
 		"iconUrl":     "mxc://beeper.com/calendar",
 	})
+	run.Events[len(run.Events)-1].Set("providerExecuted", true)
+	run.Events[len(run.Events)-1].Set("startedAtMs", int64(123))
+	run.Events[len(run.Events)-1].Set("title", "List events")
+	writer.ToolResult("tool-1", `{"ok":true}`, agui.ToolResultStateComplete)
+	run.Events[len(run.Events)-1].Set("completedAtMs", int64(456))
+	run.Events[len(run.Events)-1].Set("preliminary", true)
 
 	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
@@ -595,6 +601,10 @@ func TestFinalBeeperAIMessageCarriesToolCallMetadata(t *testing.T) {
 	metadata, ok := message.Parts[0]["metadata"].(map[string]any)
 	if !ok || metadata["displayName"] != "List Calendar Events" || metadata["iconUrl"] != "mxc://beeper.com/calendar" {
 		t.Fatalf("bad tool metadata: %#v", message.Parts[0])
+	}
+	part := message.Parts[0]
+	if part["providerExecuted"] != true || part["startedAtMs"] != int64(123) || part["completedAtMs"] != int64(456) || part["preliminary"] != true || part["title"] != "List events" {
+		t.Fatalf("tool part lost rich fields: %#v", part)
 	}
 }
 
