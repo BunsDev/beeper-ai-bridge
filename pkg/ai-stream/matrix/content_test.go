@@ -1,11 +1,14 @@
 package matrix
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
@@ -163,6 +166,43 @@ func TestFinalProjectionIncludesPartsRefAfterUpload(t *testing.T) {
 	}
 }
 
+func TestFinalProjectionUploadsAttachmentWhenPartsDoNotFit(t *testing.T) {
+	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.ToolStart("tool-1", "search", 0, nil)
+	writer.ToolEnd("tool-1", "search", nil, map[string]any{"value": strings.Repeat("x", aistream.FinalMessageBudgetBytes)})
+	writer.Text("done")
+	writer.Finish(agui.FinishReasonStop)
+	intent := &finalPartsUploadIntent{}
+
+	projection, err := ProjectFinalWithAttachment(context.Background(), &bridgev2.Portal{Portal: &database.Portal{MXID: "!room:example.com"}}, intent, *run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.roomID != "!room:example.com" || intent.mimeType != aistream.FinalPartsMediaType || intent.fileName != "ai-final-parts-run-1.json" {
+		t.Fatalf("bad upload metadata: room=%s file=%q mime=%q", intent.roomID, intent.fileName, intent.mimeType)
+	}
+	var payload aistream.FinalPartsPayload
+	if err = json.Unmarshal(intent.data, &payload); err != nil {
+		t.Fatalf("bad uploaded payload: %v", err)
+	}
+	if payload.Schema != aistream.FinalPartsPayloadSchema || len(payload.Message.Parts) == 0 {
+		t.Fatalf("bad uploaded final parts payload: %#v", payload)
+	}
+	ai := projection.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if projection.NeedsAttachment || ai.Final == nil || ai.Final.PartsRef == nil || ai.Final.PartsRef.URL != "mxc://example/final-parts" {
+		t.Fatalf("missing completed attachment projection: projection=%#v final=%#v", projection, ai.Final)
+	}
+	if ai.Final.PartsComplete || ai.Final.Delivery != "attachment" {
+		t.Fatalf("bad attachment final metadata: %#v", ai.Final)
+	}
+	if ai.Message == nil || len(ai.Message.Parts) != 0 {
+		t.Fatalf("attachment final should keep parts out of inline metadata: %#v", ai.Message)
+	}
+}
+
 func TestFinalProjectionSacrificesHTMLBeforeMetadata(t *testing.T) {
 	run := aistream.NewRun("run-1", "thread-1", aistream.DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := aistream.NewWriter(run, func() time.Time { return time.Unix(10, 0) })
@@ -265,4 +305,20 @@ func TestApprovalContentIncludesContextAndChoices(t *testing.T) {
 	if !ok || len(approvalChoices) != len(choices) {
 		t.Fatalf("bad approval choices: %#v", meta["choices"])
 	}
+}
+
+type finalPartsUploadIntent struct {
+	bridgev2.MatrixAPI
+	roomID   id.RoomID
+	data     []byte
+	fileName string
+	mimeType string
+}
+
+func (f *finalPartsUploadIntent) UploadMedia(_ context.Context, roomID id.RoomID, data []byte, fileName, mimeType string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+	f.roomID = roomID
+	f.data = data
+	f.fileName = fileName
+	f.mimeType = mimeType
+	return "mxc://example/final-parts", nil, nil
 }

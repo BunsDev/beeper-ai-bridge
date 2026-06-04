@@ -1,10 +1,15 @@
 package matrix
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
@@ -67,6 +72,49 @@ func ProjectFinal(run aistream.Run, partsRef *aistream.FinalPartsRef) FinalProje
 	}
 	content = fitFinalPlaintextBody(content, finalVisibleText(run), aistream.FinalMessageBudgetBytes, extra)
 	return FinalProjection{Content: content, Extra: extra, Message: fullMessage, NeedsAttachment: needsAttachment}
+}
+
+func ProjectFinalWithAttachment(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, run aistream.Run) (FinalProjection, error) {
+	projection := ProjectFinal(run, nil)
+	if !projection.NeedsAttachment {
+		return projection, nil
+	}
+	partsRef, err := UploadFinalPartsRef(ctx, portal, intent, run, projection.Message)
+	if err != nil {
+		return FinalProjection{}, err
+	}
+	return ProjectFinal(run, partsRef), nil
+}
+
+func UploadFinalPartsRef(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, run aistream.Run, message aistream.UIMessage) (*aistream.FinalPartsRef, error) {
+	if portal == nil || portal.Portal == nil || portal.MXID == "" {
+		return nil, fmt.Errorf("missing portal for AI final parts upload")
+	}
+	if intent == nil {
+		return nil, fmt.Errorf("missing Matrix API for AI final parts upload")
+	}
+	payload, err := json.Marshal(run.FinalPartsPayload(message))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AI final parts: %w", err)
+	}
+	hash := sha256.Sum256(payload)
+	url, file, err := intent.UploadMedia(ctx, portal.MXID, payload, fmt.Sprintf("ai-final-parts-%s.json", run.RunID), aistream.FinalPartsMediaType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload AI final parts: %w", err)
+	}
+	ref := &aistream.FinalPartsRef{
+		Schema:     aistream.FinalPartsRefSchema,
+		MediaType:  aistream.FinalPartsMediaType,
+		ByteSize:   len(payload),
+		SHA256:     base64.RawURLEncoding.EncodeToString(hash[:]),
+		PartsCount: len(message.Parts),
+	}
+	if file != nil {
+		ref.File = file
+	} else {
+		ref.URL = string(url)
+	}
+	return ref, nil
 }
 
 func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
